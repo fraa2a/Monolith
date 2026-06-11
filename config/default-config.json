@@ -1,0 +1,46 @@
+{
+  "replayBuffer": {
+    "durationSeconds": 30,
+    "maxMemoryMB": 512
+  },
+  "output": {
+    "clipsFolder": "C:\\Users\\User\\Videos\\Clips",
+    "recordingsFolder": "C:\\Users\\User\\Videos\\Recordings"
+  },
+  "video": {
+    "encoder": "nvenc",
+    "codec": "h264",
+    "bitrateKbps": 20000,
+    "fps": 60,
+    "width": 1920,
+    "height": 1080
+  },
+  "audio": {
+    "enabled": true,
+    "sampleRate": 48000,
+    "channels": 2,
+    "devices": [
+      {
+        "id": "system-default-loopback",
+        "type": "loopback",
+        "enabled": true
+      },
+      {
+        "id": "default-microphone",
+        "type": "microphone",
+        "enabled": true
+      }
+    ]
+  },
+  "hotkeys": {
+    "saveReplay": "Ctrl+Shift+F8",
+    "startStopRecording": "Ctrl+Shift+F9",
+    "pauseResumeRecording": "Ctrl+Shift+F10"
+  },
+  "ipc": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 45991
+  }
+}
+
