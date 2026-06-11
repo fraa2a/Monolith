@@ -293,11 +293,19 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
                              int sample_rate, int channels,
                              int bit_depth, bool is_float)
 {
-    if (!impl_->ctx || !data || bytes <= 0) return;
+    if (!impl_->ctx || bytes <= 0) return;
+    if (sample_rate <= 0 || channels <= 0 || bit_depth <= 0) return;
 
     AVSampleFormat src_fmt   = wasapi_to_av_fmt(bit_depth, is_float);
     int            src_frames = bytes / (bit_depth / 8 * channels);
     if (src_frames <= 0) return;
+
+    std::vector<uint8_t> silence;
+    const uint8_t* src_data = data;
+    if (!src_data) {
+        silence.resize(static_cast<size_t>(bytes), 0);
+        src_data = silence.data();
+    }
 
     // (Re-)init swr if the input format changed.
     bool need_swr = !impl_->swr
@@ -341,7 +349,7 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
 
     int converted = swr_convert(impl_->swr,
         dst_data, max_out,
-        &data, src_frames);
+        &src_data, src_frames);
     if (converted > 0)
         av_audio_fifo_write(impl_->fifo, (void**)dst_data, converted);
 

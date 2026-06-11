@@ -85,7 +85,7 @@ static void capture_thread(WasapiCapture::Impl* impl)
             pkt.is_float      = is_float;
             pkt.seq           = impl->seq.fetch_add(1, std::memory_order_relaxed);
             pkt.data          = silent ? nullptr : reinterpret_cast<const uint8_t*>(data);
-            pkt.data_bytes    = silent ? 0u : bytes;
+            pkt.data_bytes    = bytes;
 
             if (impl->cb) impl->cb(pkt);
 

@@ -185,7 +185,7 @@ static void media_start(HWND hwnd)
                     p.silent ? "  [silent]" : "");
                 log_msg("audio.sys", buf);
             }
-            if (!p.silent && p.data) {
+            if (p.data_bytes > 0) {
                 g_audio_enc.push_pcm(
                     p.data, static_cast<int>(p.data_bytes),
                     static_cast<int>(p.sample_rate),
