@@ -13,6 +13,7 @@
 #include <Windows.Graphics.Capture.Interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi.h>
 
 #include <atomic>
@@ -154,7 +155,8 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
 
                 // Get the GPU texture from this frame.
                 auto surface = frame.Surface();
-                auto access  = surface.try_as<IDirect3DDxgiInterfaceAccess>();
+                auto access  = surface.try_as<
+                    ::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
                 winrt::com_ptr<ID3D11Texture2D> gpu_tex;
                 if (access && SUCCEEDED(access->GetInterface(IID_PPV_ARGS(gpu_tex.put())))) {
 

@@ -1,0 +1,168 @@
+# Codex Handoff - 2026-06-11
+
+## Conversation Summary
+
+User resumed from:
+
+- `C:\Pattumiera\Monolith\handoff.txt`
+- `C:\Pattumiera\Monolith\PROJECT_PLAN.md`
+- `C:\Pattumiera\Monolith\TASK.md`
+- `C:\Pattumiera\Monolith\WinUI3_Settings_Prompt.md`
+
+User enabled `$caveman wenyan-ultra`; responses remained terse.
+
+Earlier in this Codex session:
+
+- Continued Claude's Milestone 3 replay-buffer work.
+- Fixed WGC surface QI to use `try_as`.
+- Preserved silent WASAPI packet duration and encoded zero PCM for silence.
+- Fixed MKV packet ownership by copying packet bytes into `AVPacket`.
+- Updated `docs/handover/ACTIVE_HANDOVER.md`.
+- Committed and pushed:
+  - `d7efd86 Stabilize replay buffer capture path`
+  - pushed to `origin/main`
+
+Current user request:
+
+- "abbiamo finito la fase milostone 3 continua quello che claude doveva fare e dopo metti la chat fatta qui su handoff.txt e fai che anche questa entra nel commit e poi lo mandi con il pull"
+
+Interpreted as:
+
+- Finish/verify Milestone 3.
+- Continue the remaining handoff work.
+- Put this chat/session handoff into `handoff.txt`.
+- Include `handoff.txt` in the commit.
+- Push the commit.
+
+## Work Completed After That Request
+
+### Build Tooling
+
+Installed and verified:
+
+- CMake 4.3.3 via winget.
+- Visual Studio Build Tools 2022 with MSVC C++ workload via winget.
+- Local `vcpkg/` cloned into the repo root; this directory is ignored by `.gitignore`.
+- Bootstrapped local vcpkg.
+
+Configured with:
+
+```powershell
+& 'C:\Program Files\CMake\bin\cmake.exe' -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="C:\Pattumiera\Monolith\vcpkg\scripts\buildsystems\vcpkg.cmake"
+```
+
+Built with:
+
+```powershell
+& 'C:\Program Files\CMake\bin\cmake.exe' --build build --config Release
+```
+
+Build output:
+
+- `build/app/recorder/Release/windows_recorder.exe`
+
+### Dependency Fixes
+
+`vcpkg.json` had invalid FFmpeg feature `avutil`.
+
+Changed FFmpeg features to:
+
+```json
+["avcodec", "avformat", "swscale", "swresample", "amf", "nvcodec", "qsv", "x264", "gpl"]
+```
+
+### CMake Fix
+
+Root `CMakeLists.txt` now sets C++23 globally so all libraries build with the right standard, not only `app/recorder`.
+
+### Compile Fixes
+
+Fixed:
+
+- `audio.cpp`: private nested `WasapiCapture::Impl` access from free helper by templating the helper and wrapping thread entry in a lambda.
+- `capture.cpp`: added `d3d11_4.h` and fully qualified `Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess`.
+- `encoding.cpp`: private nested `Impl` helper access by using templated drain helpers.
+- `encoding.cpp`: added mutex protection to public video/audio encoder methods because WGC and WASAPI callbacks run on different threads.
+- Macro redefinition warnings by guarding `WIN32_LEAN_AND_MEAN` and `NOMINMAX`.
+
+### Runtime Bug Found and Fixed
+
+Smoke test initially failed:
+
+- App started.
+- WGC delivered `2560x1600` frames.
+- Video encoder was opened from `GetMonitorInfoW` dimensions `1706x1066`.
+- `VideoEncoder::push_bgra` skipped all video frames due size mismatch.
+- Replay save failed because no video keyframes were present.
+
+Fix:
+
+- `app/recorder/src/main.cpp` now opens the video encoder lazily on the first actual WGC BGRA frame.
+- Encoder dimensions now use real frame dimensions, even-aligned.
+- This made video packets/keyframes enter the replay buffer.
+
+### Runtime Smoke Test Passed
+
+Smoke procedure:
+
+```powershell
+$exe='C:\Pattumiera\Monolith\build\app\recorder\Release\windows_recorder.exe'
+$p=Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 22
+$ws=New-Object -ComObject WScript.Shell
+$ws.SendKeys('^+{F8}')
+Start-Sleep -Seconds 15
+if (!$p.HasExited) { Stop-Process -Id $p.Id -Force }
+```
+
+Log evidence:
+
+- App initialized.
+- Hotkey registered.
+- WGC display capture started.
+- AAC encoder opened.
+- Video encoder opened lazily at `2560x1600 @30fps bitrate=20Mbps`.
+- Replay buffer accumulated packets and memory.
+- `Ctrl+Shift+F8` saved a clip.
+
+Saved clip:
+
+- `C:\Users\Mario\AppData\Local\WindowsRecorder\Clips\20260611_064508_30s_clip.mkv`
+- size: `39,555,682` bytes
+
+No `windows_recorder` process remained after the smoke test.
+
+## Files Changed In Current Uncommitted Work
+
+- `CMakeLists.txt`
+- `vcpkg.json`
+- `app/recorder/src/main.cpp`
+- `libs/audio/audio.cpp`
+- `libs/audio/audio.h`
+- `libs/capture/capture.cpp`
+- `libs/capture/capture.h`
+- `libs/encoding/encoding.cpp`
+- `libs/replay-buffer/replay_buffer.cpp`
+- `docs/handover/ACTIVE_HANDOVER.md`
+- `docs/ROADMAP.md`
+- `handoff.txt`
+
+## Current Milestone State
+
+Milestone 3 is complete:
+
+- Encoded-packet replay buffer exists.
+- FFmpeg H.264/AAC encode path exists.
+- Tray hotkey triggers save.
+- Runtime smoke test saved a valid MKV artifact.
+
+## Next Recommended Work
+
+Milestone 4 candidate:
+
+- Add replay-buffer test harness.
+- Add graceful shutdown for capture/encoder/save threads.
+- Add recording state machine skeleton.
+- Wire tray start/stop/pause commands into explicit domain state transitions.
+- Later: Stream Deck IPC server.
+

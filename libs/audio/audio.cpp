@@ -46,7 +46,8 @@ static bool detect_float(const WAVEFORMATEX* fmt)
     return false;
 }
 
-static void capture_thread(WasapiCapture::Impl* impl)
+template <typename ImplT>
+static void capture_thread(ImplT* impl)
 {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
@@ -152,7 +153,7 @@ bool WasapiCapture::start(Mode mode, PacketCallback cb)
     if (FAILED(hr)) return false;
 
     impl_->running = true;
-    impl_->thread  = std::thread(capture_thread, impl_);
+    impl_->thread  = std::thread([impl = impl_]() { capture_thread(impl); });
     return true;
 }
 

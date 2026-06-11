@@ -49,16 +49,34 @@
 
 ## Milestone 3: Replay Buffer Proof of Concept
 
+Status: complete.
+
 - Goal:
   - Prove the rolling-buffer design and save-last-X-seconds behavior.
 - Deliverables:
-  - encoded-packet or temporary packet ring buffer prototype
+  - encoded-packet ring buffer prototype
   - save replay trigger path
-  - clip write flow prototype
+  - Matroska clip write flow prototype
 - Acceptance criteria:
-  - triggering replay save produces a valid test output path or artifact
+  - triggering replay save produces a valid MKV artifact
   - memory behavior is measured and logged
   - basic timing boundaries are understood
 - Next action:
-  - decide whether the ring buffer stores encoded packets only or needs a temporary hybrid path during prototyping
+  - add replay-buffer test harness and begin runtime hardening / next product milestone
+
+## Milestone 4: Runtime Hardening and Manual Recording Foundation
+
+- Goal:
+  - Convert the replay-buffer proof into a safer recorder core and prepare manual recording.
+- Deliverables:
+  - recording state machine skeleton
+  - graceful shutdown path for capture, encoders, and pending clip saves
+  - clearer encoder/capture failure states in logs
+  - basic replay-buffer test harness
+- Acceptance criteria:
+  - repeated save hotkey presses do not corrupt output or deadlock
+  - app exits cleanly through tray without killing worker threads
+  - recording commands have explicit accepted/rejected states
+- Next action:
+  - implement the domain recording state machine and wire tray commands to it
 
