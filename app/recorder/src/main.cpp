@@ -1,5 +1,9 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <shellapi.h>
 #include <strsafe.h>
@@ -11,6 +15,7 @@
 #include <encoding/encoding.h>
 #include <replay-buffer/replay_buffer.h>
 
+#include <atomic>
 #include <cstdio>
 #include <mutex>
 
@@ -79,6 +84,7 @@ static replay_buffer::ReplayBuffer  g_replay;
 
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
+static std::atomic<bool> g_video_enc_open_attempted{ false };
 
 // ── Media start / stop ────────────────────────────────────────────────────────
 
@@ -87,14 +93,9 @@ static void media_start(HWND hwnd)
     HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
 
     // ── Determine monitor resolution ─────────────────────────────────────────
-    MONITORINFO mi{};
-    mi.cbSize = sizeof(mi);
-    if (GetMonitorInfoW(hmon, &mi)) {
-        g_enc_w = (mi.rcMonitor.right  - mi.rcMonitor.left) & ~1;
-        g_enc_h = (mi.rcMonitor.bottom - mi.rcMonitor.top)  & ~1;
-    } else {
-        g_enc_w = 1920; g_enc_h = 1080; // safe fallback
-    }
+    g_video_enc_open_attempted.store(false, std::memory_order_release);
+    g_enc_w = 0;
+    g_enc_h = 0;
 
     // ── Clips output directory ────────────────────────────────────────────────
     WCHAR clips_dir[MAX_PATH];
@@ -102,23 +103,7 @@ static void media_start(HWND hwnd)
     StringCchCatW(clips_dir, MAX_PATH, L"\\WindowsRecorder\\Clips");
 
     // ── Video encoder ─────────────────────────────────────────────────────────
-    {
-        encoding::VideoEncoder::Config vcfg;
-        vcfg.width   = g_enc_w;
-        vcfg.height  = g_enc_h;
-        vcfg.fps     = 30;           // encode at 30fps (every 2nd WGC frame)
-        vcfg.bitrate = 20'000'000;
-
-        bool ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
-            g_replay.push(std::move(pkt));
-        });
-
-        char buf[128];
-        snprintf(buf, sizeof(buf), "%dx%d @30fps bitrate=20Mbps", g_enc_w, g_enc_h);
-        log_msg("encoding", ok ? buf : "WARNING: no H.264 encoder — replay disabled");
-
-        if (ok) g_replay.set_video_params(g_video_enc.stream_params());
-    }
+    log_msg("encoding", "video encoder deferred until first WGC frame");
 
     // ── Audio encoder ─────────────────────────────────────────────────────────
     {
@@ -161,6 +146,37 @@ static void media_start(HWND hwnd)
             }
             // Encode every 2nd frame → 30fps effective for software encoder.
             if (f.seq % 2 != 0 || f.bgra_data == nullptr) return;
+            if (!g_video_enc.is_open()) {
+                bool expected = false;
+                if (!g_video_enc_open_attempted.compare_exchange_strong(
+                        expected, true, std::memory_order_acq_rel)) {
+                    return;
+                }
+
+                g_enc_w = static_cast<int>(f.width & ~1u);
+                g_enc_h = static_cast<int>(f.height & ~1u);
+
+                encoding::VideoEncoder::Config vcfg;
+                vcfg.width   = g_enc_w;
+                vcfg.height  = g_enc_h;
+                vcfg.fps     = 30;
+                vcfg.bitrate = 20'000'000;
+
+                bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
+                    g_replay.push(std::move(pkt));
+                });
+
+                char enc_msg[128];
+                snprintf(enc_msg, sizeof(enc_msg),
+                    "%dx%d @30fps bitrate=20Mbps", g_enc_w, g_enc_h);
+                log_msg("encoding", enc_ok ? enc_msg : "WARNING: no H.264 encoder - replay disabled");
+
+                if (enc_ok) {
+                    g_replay.set_video_params(g_video_enc.stream_params());
+                } else {
+                    return;
+                }
+            }
             g_video_enc.push_bgra(
                 f.bgra_data,
                 static_cast<int>(f.bgra_stride),
@@ -220,6 +236,7 @@ static void media_stop()
     g_audio_mic.stop();
     g_video_enc.close(); // flushes + frees encoder
     g_audio_enc.close();
+    g_video_enc_open_attempted.store(false, std::memory_order_release);
     log_msg("app", "capture + audio + encoding stopped");
 }
 

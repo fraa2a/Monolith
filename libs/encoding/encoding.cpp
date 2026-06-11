@@ -12,6 +12,7 @@ extern "C" {
 }
 
 #include <cstring>
+#include <mutex>
 
 namespace encoding {
 
@@ -61,6 +62,7 @@ std::string probe_video_encoder(int width, int height)
 // ── VideoEncoder ──────────────────────────────────────────────────────────────
 
 struct VideoEncoder::Impl {
+    std::mutex       mutex;
     AVCodecContext* ctx      = nullptr;
     AVFrame*        frame    = nullptr;
     SwsContext*     sws      = nullptr;
@@ -74,12 +76,36 @@ struct VideoEncoder::Impl {
 VideoEncoder::VideoEncoder()  : impl_(new Impl()) {}
 VideoEncoder::~VideoEncoder() { close(); delete impl_; }
 
-bool VideoEncoder::is_open() const { return impl_->ctx != nullptr; }
-VideoStreamParams VideoEncoder::stream_params() const { return impl_->vsp; }
+bool VideoEncoder::is_open() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return impl_->ctx != nullptr;
+}
+
+VideoStreamParams VideoEncoder::stream_params() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return impl_->vsp;
+}
 
 bool VideoEncoder::open(Config const& cfg, PacketSink sink)
 {
+    if (cfg.width <= 0 || cfg.height <= 0 || cfg.fps <= 0 || cfg.bitrate <= 0)
+        return false;
+
     close();
+    std::lock_guard lk(impl_->mutex);
+    auto cleanup = [this]() {
+        if (impl_->sws)   { sws_freeContext(impl_->sws);   impl_->sws   = nullptr; }
+        if (impl_->frame) { av_frame_free(&impl_->frame);               }
+        if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);           }
+        impl_->next_pts = 0;
+        impl_->cfg_w    = 0;
+        impl_->cfg_h    = 0;
+        impl_->vsp      = {};
+        impl_->sink     = nullptr;
+    };
+
     impl_->sink  = std::move(sink);
     impl_->cfg_w = cfg.width;
     impl_->cfg_h = cfg.height;
@@ -113,22 +139,23 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
 
     if (avcodec_open2(ctx, codec, &opts) < 0) {
         av_dict_free(&opts);
-        close();
+        cleanup();
         return false;
     }
     av_dict_free(&opts);
 
     impl_->frame = av_frame_alloc();
+    if (!impl_->frame) { cleanup(); return false; }
     impl_->frame->format = ctx->pix_fmt;
     impl_->frame->width  = cfg.width;
     impl_->frame->height = cfg.height;
-    if (av_frame_get_buffer(impl_->frame, 0) < 0) { close(); return false; }
+    if (av_frame_get_buffer(impl_->frame, 0) < 0) { cleanup(); return false; }
 
     impl_->sws = sws_getContext(
         cfg.width, cfg.height, AV_PIX_FMT_BGRA,
         cfg.width, cfg.height, ctx->pix_fmt,
         SWS_BILINEAR, nullptr, nullptr, nullptr);
-    if (!impl_->sws) { close(); return false; }
+    if (!impl_->sws) { cleanup(); return false; }
 
     // Store stream params for replay buffer.
     impl_->vsp.width   = cfg.width;
@@ -143,9 +170,11 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     return true;
 }
 
-static void drain_video(VideoEncoder::Impl* impl)
+template <typename ImplT>
+static void drain_video(ImplT* impl)
 {
     AVPacket* pkt = av_packet_alloc();
+    if (!pkt) return;
     while (avcodec_receive_packet(impl->ctx, pkt) == 0) {
         EncodedPacket ep;
         ep.data.assign(pkt->data, pkt->data + pkt->size);
@@ -163,6 +192,7 @@ static void drain_video(VideoEncoder::Impl* impl)
 
 void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int height)
 {
+    std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx || !bgra) return;
     if (width != impl_->cfg_w || height != impl_->cfg_h) return; // skip size mismatch
 
@@ -181,6 +211,7 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
 
 void VideoEncoder::flush()
 {
+    std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx) return;
     avcodec_send_frame(impl_->ctx, nullptr);
     drain_video(impl_);
@@ -188,7 +219,11 @@ void VideoEncoder::flush()
 
 void VideoEncoder::close()
 {
-    flush();
+    std::lock_guard lk(impl_->mutex);
+    if (impl_->ctx) {
+        avcodec_send_frame(impl_->ctx, nullptr);
+        drain_video(impl_);
+    }
     if (impl_->sws)   { sws_freeContext(impl_->sws);   impl_->sws   = nullptr; }
     if (impl_->frame) { av_frame_free(&impl_->frame);               }
     if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);           }
@@ -199,6 +234,7 @@ void VideoEncoder::close()
 // ── AudioEncoder ──────────────────────────────────────────────────────────────
 
 struct AudioEncoder::Impl {
+    std::mutex       mutex;
     AVCodecContext* ctx      = nullptr;
     AVFrame*        frame    = nullptr;
     SwrContext*     swr      = nullptr;
@@ -215,12 +251,38 @@ struct AudioEncoder::Impl {
 AudioEncoder::AudioEncoder()  : impl_(new Impl()) {}
 AudioEncoder::~AudioEncoder() { close(); delete impl_; }
 
-bool AudioEncoder::is_open() const { return impl_->ctx != nullptr; }
-AudioStreamParams AudioEncoder::stream_params() const { return impl_->asp; }
+bool AudioEncoder::is_open() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return impl_->ctx != nullptr;
+}
+
+AudioStreamParams AudioEncoder::stream_params() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return impl_->asp;
+}
 
 bool AudioEncoder::open(Config const& cfg, PacketSink sink)
 {
+    if (cfg.sample_rate <= 0 || cfg.channels <= 0 || cfg.bitrate <= 0)
+        return false;
+
     close();
+    std::lock_guard lk(impl_->mutex);
+    auto cleanup = [this]() {
+        if (impl_->fifo)  { av_audio_fifo_free(impl_->fifo); impl_->fifo  = nullptr; }
+        if (impl_->swr)   { swr_free(&impl_->swr);                                   }
+        if (impl_->frame) { av_frame_free(&impl_->frame);                            }
+        if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);                       }
+        impl_->next_pts      = 0;
+        impl_->swr_src_rate  = 0;
+        impl_->swr_src_ch    = 0;
+        impl_->swr_src_fmt   = AV_SAMPLE_FMT_NONE;
+        impl_->asp           = {};
+        impl_->sink          = nullptr;
+    };
+
     impl_->sink = std::move(sink);
 
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
@@ -237,19 +299,20 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
     ctx->flags      |= AV_CODEC_FLAG_GLOBAL_HEADER;
     av_channel_layout_default(&ctx->ch_layout, cfg.channels);
 
-    if (avcodec_open2(ctx, codec, nullptr) < 0) { close(); return false; }
+    if (avcodec_open2(ctx, codec, nullptr) < 0) { cleanup(); return false; }
 
     impl_->frame = av_frame_alloc();
+    if (!impl_->frame) { cleanup(); return false; }
     impl_->frame->format      = ctx->sample_fmt;
     impl_->frame->sample_rate = ctx->sample_rate;
     av_channel_layout_copy(&impl_->frame->ch_layout, &ctx->ch_layout);
     impl_->frame->nb_samples  = ctx->frame_size; // typically 1024 for AAC
-    if (av_frame_get_buffer(impl_->frame, 0) < 0) { close(); return false; }
+    if (av_frame_get_buffer(impl_->frame, 0) < 0) { cleanup(); return false; }
 
     impl_->fifo = av_audio_fifo_alloc(ctx->sample_fmt,
                                       ctx->ch_layout.nb_channels,
                                       ctx->frame_size * 4);
-    if (!impl_->fifo) { close(); return false; }
+    if (!impl_->fifo) { cleanup(); return false; }
 
     impl_->asp.sample_rate = cfg.sample_rate;
     impl_->asp.channels    = cfg.channels;
@@ -261,9 +324,11 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
     return true;
 }
 
-static void drain_audio(AudioEncoder::Impl* impl)
+template <typename ImplT>
+static void drain_audio(ImplT* impl)
 {
     AVPacket* pkt = av_packet_alloc();
+    if (!pkt) return;
     while (avcodec_receive_packet(impl->ctx, pkt) == 0) {
         EncodedPacket ep;
         ep.data.assign(pkt->data, pkt->data + pkt->size);
@@ -293,6 +358,7 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
                              int sample_rate, int channels,
                              int bit_depth, bool is_float)
 {
+    std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx || bytes <= 0) return;
     if (sample_rate <= 0 || channels <= 0 || bit_depth <= 0) return;
 
@@ -371,6 +437,7 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
 
 void AudioEncoder::flush()
 {
+    std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx) return;
 
     // Flush any leftover samples in the fifo.
@@ -391,7 +458,21 @@ void AudioEncoder::flush()
 
 void AudioEncoder::close()
 {
-    flush();
+    std::lock_guard lk(impl_->mutex);
+    if (impl_->ctx) {
+        int rem = impl_->fifo ? av_audio_fifo_size(impl_->fifo) : 0;
+        if (rem > 0) {
+            av_frame_make_writable(impl_->frame);
+            impl_->frame->nb_samples = rem;
+            av_audio_fifo_read(impl_->fifo, (void**)impl_->frame->data, rem);
+            impl_->frame->pts = impl_->next_pts;
+            impl_->next_pts  += rem;
+            avcodec_send_frame(impl_->ctx, impl_->frame);
+            drain_audio(impl_);
+        }
+        avcodec_send_frame(impl_->ctx, nullptr);
+        drain_audio(impl_);
+    }
     if (impl_->fifo)  { av_audio_fifo_free(impl_->fifo); impl_->fifo  = nullptr; }
     if (impl_->swr)   { swr_free(&impl_->swr);                                   }
     if (impl_->frame) { av_frame_free(&impl_->frame);                            }

@@ -8,7 +8,7 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 
 - Milestone 1 complete: Win32 tray + hotkey app shell.
 - Milestone 2 complete: WGC display capture + WASAPI loopback + mic ingress.
-- Milestone 3 in progress: FFmpeg encode + encoded-packet replay buffer are wired into the app shell.
+- Milestone 3 complete: FFmpeg encode + encoded-packet replay buffer save a valid MKV clip from the tray/hotkey app shell.
 
 ## Locked Architecture
 
@@ -38,10 +38,15 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 - `libs/encoding/encoding.cpp`: `AudioEncoder::push_pcm` now converts null PCM input into zeroed silence, preserving AAC timeline during silent stretches.
 - `app/recorder/src/main.cpp`: system-audio encoder now receives silent packets too.
 - `libs/replay-buffer/replay_buffer.cpp`: MKV writer now copies packet bytes into `AVPacket` via `av_new_packet` instead of borrowing vector memory.
+- `libs/encoding/encoding.cpp`: video/audio encoder public methods are now mutex-protected because WGC and WASAPI drive them from different worker threads.
+- Build tooling was installed and verified: CMake 4.3.3, Visual Studio Build Tools 2022 with MSVC, and local ignored `vcpkg/`.
+- `vcpkg.json` now uses valid FFmpeg features: `avcodec`, `avformat`, `swscale`, `swresample`, `amf`, `nvcodec`, `qsv`, `x264`, `gpl`.
+- Release build succeeds: `build/app/recorder/Release/windows_recorder.exe`.
+- Runtime smoke test succeeds: app starts, WGC captures `2560x1600`, H.264 opens lazily from the first real WGC frame, `Ctrl+Shift+F8` saves `20260611_064508_30s_clip.mkv`.
+- Fix: video encoder is now opened lazily from actual WGC frame dimensions instead of `GetMonitorInfoW` virtual DPI coordinates, which previously caused all 2560x1600 frames to be skipped by a 1706x1066 encoder.
 
 ## Not Implemented Yet
 
-- Native build verification on this machine.
 - Recording state machine.
 - Real IPC server/client.
 - Stream Deck plugin code.
@@ -51,19 +56,20 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 - Microphone mixing into replay output; mic is logged only.
 - MP4 remux policy details.
 
-## Build/Verification Blocker
+## Build/Verification
 
-On 2026-06-11, `dotnet` existed, but `cmake` was not on PATH and `vswhere` did not report an MSBuild installation. Native C++ build verification could not be completed in this continuation.
+Native C++ build verification now succeeds. Use:
+
+```powershell
+& 'C:\Program Files\CMake\bin\cmake.exe' -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="C:\Pattumiera\Monolith\vcpkg\scripts\buildsystems\vcpkg.cmake"
+& 'C:\Program Files\CMake\bin\cmake.exe' --build build --config Release
+```
 
 ## Next Steps
 
-1. Install or expose CMake + MSVC Build Tools.
-2. Configure with vcpkg manifest mode and verify `find_package(FFMPEG REQUIRED)` resolves.
-3. Build `windows_recorder`.
-4. Run the app and test `Ctrl+Shift+F8`.
-5. Verify a valid MKV appears under `%LOCALAPPDATA%\WindowsRecorder\Clips`.
-6. If FFmpeg API/version errors appear, fix `libs/encoding` and `libs/replay-buffer` first.
-7. Add a small integration/unit test harness for `ReplayBuffer::save_clip` once build tooling is available.
+1. Add a small integration/unit test harness for `ReplayBuffer::save_clip`.
+2. Begin runtime hardening: graceful shutdown, capture stop races, encoder failure UX/logs, and A/V sync checks.
+3. Start the next product milestone: manual recording state machine or Stream Deck IPC, depending on priority.
 
 ## Open Risks
 
