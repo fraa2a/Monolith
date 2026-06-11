@@ -6,9 +6,8 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 
 ## Current phase
 
-- Planning/setup phase
-- Repository foundation created
-- No production multimedia implementation started
+- Milestone 1 complete: minimal Win32 tray + hotkey app shell implemented
+- No capture, audio, encoder, or replay buffer logic yet
 
 ## Recommended architecture
 
@@ -42,10 +41,16 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 - root `CMakeLists.txt` wiring `app/recorder/`
 - placeholder script/test readmes
 
+## What has been implemented
+
+- `app/recorder/src/main.cpp`: Win32 app shell (WinMain, message-only HWND_MESSAGE window)
+- System tray icon with context menu (Save Replay, Start/Stop Recording, Pause/Resume, Settings grayed, Exit)
+- Global hotkey: Ctrl+Shift+F8 → save_replay (with MOD_NOREPEAT)
+- Single-instance mutex guard
+- Structured log to `%LOCALAPPDATA%\WindowsRecorder\recorder.log` + OutputDebugString
+
 ## What has not been implemented yet
 
-- no tray icon logic
-- no hotkey registration logic
 - no WGC capture code
 - no Desktop Duplication fallback
 - no WASAPI capture
@@ -54,31 +59,23 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 - no recording state machine
 - no real IPC server/client
 - no Stream Deck plugin code
+- Settings window (grayed in tray menu)
 
-## First module to implement next
+## Next module to implement
 
-Implement the minimal Win32 tray + hotkey prototype in `app/recorder/`:
-
-- hidden window/message loop
-- tray icon ownership
-- one placeholder hotkey registration
-- placeholder command dispatch logging
-
-This is the safest first implementation slice because it proves the app lifecycle and control surface without pulling in capture or encoder dependencies.
+Milestone 2: Video/Audio Capture Prototype (ROADMAP.md)
+- `libs/capture`: WGC display capture spike — wrap `Windows.Graphics.Capture`, emit `ID3D11Texture2D` frames with timestamps
+- `libs/audio`: WASAPI loopback + mic spike — enumerate devices, PCM capture, callbacks
+- Wire both into the app shell message loop (no encoding yet, just confirm stable ingress + logging)
 
 ## Exact next steps for the next AI session
 
-1. Read `TASK.md`, `PROJECT_PLAN.md`, and this handover.
-2. Keep scope limited to Milestone 1 only.
-3. Implement a minimal Win32 app shell in `app/recorder/src/`:
-   - hidden window
-   - message loop
-   - tray icon
-   - tray menu with placeholder commands
-4. Add one configurable hotkey parser stub and register one test hotkey.
-5. Add lightweight logging to stdout or a simple file for tray/hotkey events.
-6. Do not implement capture, encoding, or replay buffer yet.
-7. Update this handover at the end of the session with what changed and what remains.
+1. Read `PROJECT_PLAN.md` §2 subsystems 2–4 and this handover.
+2. Implement `libs/capture/` WGC capture wrapper (C++23, D3D11, WinRT interop).
+3. Implement `libs/audio/` WASAPI loopback capture.
+4. Integrate both into `app/recorder/src/main.cpp` as stubs that log frame/audio packet counts.
+5. Do not implement encoding, replay buffer, or IPC yet.
+6. Update this handover at end of session.
 
 ## Known risks and blockers
 
