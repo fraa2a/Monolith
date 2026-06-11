@@ -42,17 +42,25 @@ This file is the architecture decision record index for the project.
 
 ## ADR-0007: Local IPC for Stream Deck plugin communication
 
+- Status: accepted / resolved
+- Decision:
+  - v1 IPC transport = localhost WebSocket/TCP JSON-RPC (JSON-RPC over TCP).
+  - Named pipes deferred; rationale preserved for future evaluation.
+- Notes:
+  - host: 127.0.0.1, port: 45991 (matches default-config.json).
+
+## ADR-0008: Single-process MVP with modular internals
+
 - Status: accepted
 - Decision:
-  - Use local IPC between the native app and Stream Deck plugin.
+  - Build the MVP as a single executable (app/recorder) with strict internal module
+    boundaries enforced by /libs separation. Two-process split is the future target
+    once the MVP is stable.
 - Notes:
-  - Current docs contain both localhost TCP and named-pipe references.
-  - Final transport must be normalized in a future ADR before implementation spreads.
+  - Deferred rationale: crash isolation and independent restart remain the long-term goal.
 
 ## Open decisions
 
-- Final IPC transport: named pipes vs localhost TCP for v1
 - Final UI stack for settings: WinUI 3 vs fallback to Qt Widgets if necessary
-- Exact process model timing: single-process prototype first vs immediate two-process split
 - Final output/remux policy details for MP4 handling
 

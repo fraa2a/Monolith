@@ -129,3 +129,15 @@ L’app sarà suddivisa in moduli autonomi per facilitare sviluppo e manutenzion
 - Stream Deck SDK Getting Started – Introduce i prerequisiti (Node.js 24+, Stream Deck 7.1+, device), l’uso del CLI `streamdeck create` e la struttura del plugin `.sdPlugin`【229780622368871†L78-L204】.
 
 Questa roadmap fornisce una guida dettagliata per lo sviluppo dell’app, ponendo enfasi sulla leggerezza, sulle API native di Windows e su una modularità che consente di espandere funzioni e integrare facilmente un plugin Stream Deck.
+---
+
+## Reconciled decisions (v1)
+
+The following foundational choices have been locked after planning. See `docs/DECISIONS.md`
+for the full ADR records.
+
+- **Repo layout**: `/app` + `/libs` + `/plugins` (see §7 of PROJECT_PLAN.md)
+- **Config schema**: snake_case rich JSON (see §8 of PROJECT_PLAN.md)
+- **IPC transport**: localhost WebSocket/TCP JSON-RPC for v1; named pipes deferred (ADR-0007)
+- **Process model**: single-process MVP with isolated /libs modules; two-process deferred (ADR-0008)
+- **Command vocab**: `save_replay`, `recording_start`, `recording_stop`, `pause_resume`

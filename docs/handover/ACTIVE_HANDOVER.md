@@ -14,9 +14,7 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 
 - Recorder-first native Windows architecture
 - Prefer custom implementation rather than an OBS fork
-- Two-process target design:
-  - UI/tray process
-  - recording engine process
+- Single-process MVP with isolated internal modules (/libs); two-process target is deferred
 - Use OBS as a reference/benchmark only
 
 ## Chosen stack
@@ -28,16 +26,20 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 - Hotkeys: Win32 `RegisterHotKey`
 - Tray: Win32 `Shell_NotifyIcon`
 - Encoding direction: FFmpeg/libav preferred, not implemented
-- Stream Deck: separate plugin project, local IPC to native app
+- IPC transport: localhost WebSocket/TCP JSON-RPC (host 127.0.0.1, port 45991)
+- Stream Deck: separate plugin project under plugins/stream-deck/, remote controller only
 
 ## What already exists in the repo
 
 - `TASK.md`
 - `PROJECT_PLAN.md`
-- native app scaffold under `apps/windows-recorder/`
+- native app scaffold under `app/recorder/` (single MVP executable)
+- future placeholders under `app/engine/` and `app/desktop-ui/`
+- library placeholders under `libs/` (capture, audio, encoding, mux, replay-buffer, config, ipc, platform-win, logging, domain)
 - docs scaffold under `docs/`
-- Stream Deck placeholder docs under `plugins/streamdeck/`
-- default config draft under `config/default-config.json`
+- Stream Deck placeholder docs under `plugins/stream-deck/`
+- default config draft under `config/default-config.json` (snake_case rich schema, schema_version 1)
+- root `CMakeLists.txt` wiring `app/recorder/`
 - placeholder script/test readmes
 
 ## What has not been implemented yet
@@ -55,7 +57,7 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 
 ## First module to implement next
 
-Implement the minimal Win32 tray + hotkey prototype in `apps/windows-recorder/`:
+Implement the minimal Win32 tray + hotkey prototype in `app/recorder/`:
 
 - hidden window/message loop
 - tray icon ownership
@@ -68,7 +70,7 @@ This is the safest first implementation slice because it proves the app lifecycl
 
 1. Read `TASK.md`, `PROJECT_PLAN.md`, and this handover.
 2. Keep scope limited to Milestone 1 only.
-3. Implement a minimal Win32 app shell:
+3. Implement a minimal Win32 app shell in `app/recorder/src/`:
    - hidden window
    - message loop
    - tray icon
@@ -94,11 +96,11 @@ This is the safest first implementation slice because it proves the app lifecycl
 - WASAPI for audio capture
 - Win32 tray and global hotkeys
 - FFmpeg/libav as the preferred encoding direction
+- IPC transport for v1: localhost WebSocket/TCP JSON-RPC (ADR-0007)
+- Process model for MVP: single-process with modular internals (ADR-0008)
 
 ## Decisions still open
 
-- Final IPC transport for v1: named pipes vs localhost TCP
-- Final settings UI framework choice
-- Exact point where the app splits into two processes during implementation
+- Final settings UI framework choice (WinUI 3 vs Qt Widgets)
 - Final mux/remux policy details for MP4 output
 
