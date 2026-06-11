@@ -29,6 +29,7 @@ target_link_libraries(windows_recorder
         audio
         encoding
         replay_buffer
+        recording
         # System libs
         d3d11
         dxgi

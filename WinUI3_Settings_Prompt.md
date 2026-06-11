@@ -2,7 +2,7 @@
 
 ## Overview
 
-Create a production-grade Windows Recorder application settings UI using **WinUI 3 (C#)**. This implementation must be aesthetically distinctive while remaining functional and performance-optimized for a native Windows application.
+Create a production-grade Monolith application settings UI using **WinUI 3 (C#)**. This implementation must be aesthetically distinctive while remaining functional and performance-optimized for a native Windows application.
 
 ## Technical Requirements
 

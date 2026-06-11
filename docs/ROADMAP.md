@@ -66,17 +66,19 @@ Status: complete.
 
 ## Milestone 4: Runtime Hardening and Manual Recording Foundation
 
+Status: in progress.
+
 - Goal:
   - Convert the replay-buffer proof into a safer recorder core and prepare manual recording.
 - Deliverables:
-  - recording state machine skeleton
+  - recording state machine skeleton (implemented in the current app shell)
+  - manual recording start/stop/pause/resume from tray and hotkeys (implemented; needs runtime verification)
   - graceful shutdown path for capture, encoders, and pending clip saves
   - clearer encoder/capture failure states in logs
   - basic replay-buffer test harness
 - Acceptance criteria:
   - repeated save hotkey presses do not corrupt output or deadlock
   - app exits cleanly through tray without killing worker threads
-  - recording commands have explicit accepted/rejected states
+  - recording commands have explicit accepted/rejected states (implemented)
 - Next action:
-  - implement the domain recording state machine and wire tray commands to it
-
+  - build and smoke-test replay save plus manual recording start/stop/pause/resume
