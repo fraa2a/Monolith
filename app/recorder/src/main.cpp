@@ -5,6 +5,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <knownfolders.h>
+#include <shlobj.h>
 #include <shellapi.h>
 #include <strsafe.h>
 
@@ -14,16 +16,18 @@
 #include <audio/audio.h>
 #include <encoding/encoding.h>
 #include <replay-buffer/replay_buffer.h>
+#include <recording/recording.h>
 
 #include <atomic>
 #include <cstdio>
 #include <mutex>
+#include <string>
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-static constexpr WCHAR kWindowClass[] = L"WinRecorderMsgWnd";
-static constexpr WCHAR kAppName[]     = L"Windows Recorder";
-static constexpr WCHAR kMutexName[]   = L"WinRecorder_SingleInstance";
+static constexpr WCHAR kWindowClass[] = L"MonolithMsgWnd";
+static constexpr WCHAR kAppName[]     = L"Monolith";
+static constexpr WCHAR kMutexName[]   = L"Monolith_SingleInstance";
 static constexpr UINT  WM_TRAYICON   = WM_APP + 1;
 
 enum Cmd : UINT {
@@ -36,7 +40,10 @@ enum Cmd : UINT {
 };
 
 enum HotkeyId : int {
-    HK_SAVE_REPLAY = 1,
+    HK_SAVE_REPLAY     = 1,
+    HK_RECORDING_START = 2,
+    HK_RECORDING_STOP  = 3,
+    HK_PAUSE_RESUME    = 4,
 };
 
 // ── Logging ───────────────────────────────────────────────────────────────────
@@ -44,16 +51,61 @@ enum HotkeyId : int {
 static FILE*      g_log       = nullptr;
 static std::mutex g_log_mutex;
 
+static std::wstring known_folder_path(REFKNOWNFOLDERID folder)
+{
+    PWSTR raw = nullptr;
+    std::wstring result;
+    if (SUCCEEDED(SHGetKnownFolderPath(folder, KF_FLAG_DEFAULT, nullptr, &raw)) && raw)
+        result = raw;
+    if (raw) CoTaskMemFree(raw);
+    return result;
+}
+
+static std::wstring env_path(const wchar_t* name)
+{
+    WCHAR buf[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(name, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return buf;
+}
+
+static void ensure_directory(const std::wstring& path)
+{
+    if (!path.empty()) SHCreateDirectoryExW(nullptr, path.c_str(), nullptr);
+}
+
+static std::wstring app_data_dir()
+{
+    std::wstring dir = known_folder_path(FOLDERID_LocalAppData);
+    if (dir.empty()) dir = env_path(L"LOCALAPPDATA");
+    if (dir.empty()) return {};
+    dir += L"\\Monolith";
+    ensure_directory(dir);
+    return dir;
+}
+
+static std::wstring videos_dir(const wchar_t* child)
+{
+    std::wstring dir = known_folder_path(FOLDERID_Videos);
+    if (dir.empty()) {
+        dir = env_path(L"USERPROFILE");
+        if (!dir.empty()) dir += L"\\Videos";
+    }
+    if (dir.empty()) return {};
+    dir += L"\\Monolith";
+    ensure_directory(dir);
+    dir += L"\\";
+    dir += child;
+    ensure_directory(dir);
+    return dir;
+}
+
 static void log_init()
 {
-    WCHAR dir[MAX_PATH];
-    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH)) return;
-    StringCchCatW(dir, MAX_PATH, L"\\WindowsRecorder");
-    CreateDirectoryW(dir, nullptr);
-    WCHAR path[MAX_PATH];
-    StringCchCopyW(path, MAX_PATH, dir);
-    StringCchCatW(path, MAX_PATH, L"\\recorder.log");
-    _wfopen_s(&g_log, path, L"a");
+    std::wstring dir = app_data_dir();
+    if (dir.empty()) return;
+    std::wstring path = dir + L"\\monolith.log";
+    _wfopen_s(&g_log, path.c_str(), L"a");
 }
 
 static void log_msg(const char* tag, const char* msg)
@@ -73,6 +125,16 @@ static void log_msg(const char* tag, const char* msg)
     OutputDebugStringA(buf);
 }
 
+static void log_path(const char* tag, const char* prefix, const std::wstring& path)
+{
+    char narrow[MAX_PATH * 2];
+    WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
+        narrow, sizeof(narrow), nullptr, nullptr);
+    char msg[MAX_PATH * 2 + 64];
+    snprintf(msg, sizeof(msg), "%s%s", prefix, narrow);
+    log_msg(tag, msg);
+}
+
 // ── Globals ───────────────────────────────────────────────────────────────────
 
 static capture::DisplayCapture      g_video;
@@ -81,10 +143,12 @@ static audio::WasapiCapture         g_audio_mic;
 static encoding::VideoEncoder       g_video_enc;
 static encoding::AudioEncoder       g_audio_enc;
 static replay_buffer::ReplayBuffer  g_replay;
+static recording::ManualRecorder    g_recording;
 
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
+static std::wstring g_recordings_dir;
 
 // ── Media start / stop ────────────────────────────────────────────────────────
 
@@ -98,9 +162,8 @@ static void media_start(HWND hwnd)
     g_enc_h = 0;
 
     // ── Clips output directory ────────────────────────────────────────────────
-    WCHAR clips_dir[MAX_PATH];
-    GetEnvironmentVariableW(L"LOCALAPPDATA", clips_dir, MAX_PATH);
-    StringCchCatW(clips_dir, MAX_PATH, L"\\WindowsRecorder\\Clips");
+    std::wstring clips_dir = videos_dir(L"Clips");
+    g_recordings_dir = videos_dir(L"Recordings");
 
     // ── Video encoder ─────────────────────────────────────────────────────────
     log_msg("encoding", "video encoder deferred until first WGC frame");
@@ -113,12 +176,18 @@ static void media_start(HWND hwnd)
         acfg.bitrate     = 192'000;
 
         bool ok = g_audio_enc.open(acfg, [](encoding::EncodedPacket pkt) {
-            g_replay.push(std::move(pkt));
+            auto replay_pkt = pkt;
+            g_replay.push(std::move(replay_pkt));
+            g_recording.push(std::move(pkt));
         });
         log_msg("encoding", ok ? "AAC encoder opened (48kHz stereo 192kbps)"
                                : "WARNING: AAC encoder failed");
 
-        if (ok) g_replay.set_audio_params(g_audio_enc.stream_params());
+        if (ok) {
+            auto params = g_audio_enc.stream_params();
+            g_replay.set_audio_params(params);
+            g_recording.set_audio_params(params);
+        }
     }
 
     // ── Replay buffer config ───────────────────────────────────────────────────
@@ -129,6 +198,8 @@ static void media_start(HWND hwnd)
         rbcfg.output_dir    = clips_dir;
         g_replay.configure(rbcfg);
         log_msg("replay", "replay buffer configured: 30s / 512MB cap");
+        log_path("replay", "clips dir: ", clips_dir);
+        log_path("recording", "recordings dir: ", g_recordings_dir);
     }
 
     // ── WGC display capture ───────────────────────────────────────────────────
@@ -163,7 +234,9 @@ static void media_start(HWND hwnd)
                 vcfg.bitrate = 20'000'000;
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
-                    g_replay.push(std::move(pkt));
+                    auto replay_pkt = pkt;
+                    g_replay.push(std::move(replay_pkt));
+                    g_recording.push(std::move(pkt));
                 });
 
                 char enc_msg[128];
@@ -172,7 +245,9 @@ static void media_start(HWND hwnd)
                 log_msg("encoding", enc_ok ? enc_msg : "WARNING: no H.264 encoder - replay disabled");
 
                 if (enc_ok) {
-                    g_replay.set_video_params(g_video_enc.stream_params());
+                    auto params = g_video_enc.stream_params();
+                    g_replay.set_video_params(params);
+                    g_recording.set_video_params(params);
                 } else {
                     return;
                 }
@@ -236,6 +311,11 @@ static void media_stop()
     g_audio_mic.stop();
     g_video_enc.close(); // flushes + frees encoder
     g_audio_enc.close();
+    if (g_recording.state() != recording::RecordingState::Idle) {
+        std::wstring path;
+        g_recording.stop(&path);
+        if (!path.empty()) log_path("recording", "recording saved: ", path);
+    }
     g_video_enc_open_attempted.store(false, std::memory_order_release);
     log_msg("app", "capture + audio + encoding stopped");
 }
@@ -263,11 +343,19 @@ static void tray_remove() { Shell_NotifyIconW(NIM_DELETE, &g_nid); }
 static void tray_show_menu(HWND hwnd)
 {
     HMENU menu = CreatePopupMenu();
+    recording::RecordingState state = g_recording.state();
+    UINT start_flags = (state == recording::RecordingState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
+    UINT stop_flags  = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
+    UINT pause_flags = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
+    const wchar_t* pause_text =
+        (state == recording::RecordingState::Paused)
+            ? L"Resume Recording\tCtrl+Shift+F11"
+            : L"Pause Recording\tCtrl+Shift+F11";
     AppendMenuW(menu, MF_STRING,             CMD_SAVE_REPLAY,     L"Save Replay\tCtrl+Shift+F8");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
-    AppendMenuW(menu, MF_STRING,             CMD_RECORDING_START, L"Start Recording\tCtrl+Shift+F9");
-    AppendMenuW(menu, MF_STRING,             CMD_RECORDING_STOP,  L"Stop Recording\tCtrl+Shift+F10");
-    AppendMenuW(menu, MF_STRING,             CMD_PAUSE_RESUME,    L"Pause / Resume\tCtrl+Shift+F11");
+    AppendMenuW(menu, start_flags,            CMD_RECORDING_START, L"Start Recording\tCtrl+Shift+F9");
+    AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  L"Stop Recording\tCtrl+Shift+F10");
+    AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text);
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING | MF_GRAYED, CMD_SETTINGS,        L"Settings\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
@@ -285,14 +373,35 @@ static void hotkeys_register(HWND hwnd)
 {
     if (!RegisterHotKey(hwnd, HK_SAVE_REPLAY,
                         MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F8))
-        log_msg("hotkey", "WARNING: save_replay (Ctrl+Shift+F8) failed — key in use");
+        log_msg("hotkey", "WARNING: save_replay (Ctrl+Shift+F8) failed - key in use");
     else
         log_msg("hotkey", "save_replay (Ctrl+Shift+F8) registered");
+
+    if (!RegisterHotKey(hwnd, HK_RECORDING_START,
+                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F9))
+        log_msg("hotkey", "WARNING: recording_start (Ctrl+Shift+F9) failed - key in use");
+    else
+        log_msg("hotkey", "recording_start (Ctrl+Shift+F9) registered");
+
+    if (!RegisterHotKey(hwnd, HK_RECORDING_STOP,
+                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F10))
+        log_msg("hotkey", "WARNING: recording_stop (Ctrl+Shift+F10) failed - key in use");
+    else
+        log_msg("hotkey", "recording_stop (Ctrl+Shift+F10) registered");
+
+    if (!RegisterHotKey(hwnd, HK_PAUSE_RESUME,
+                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F11))
+        log_msg("hotkey", "WARNING: pause_resume (Ctrl+Shift+F11) failed - key in use");
+    else
+        log_msg("hotkey", "pause_resume (Ctrl+Shift+F11) registered");
 }
 
 static void hotkeys_unregister(HWND hwnd)
 {
     UnregisterHotKey(hwnd, HK_SAVE_REPLAY);
+    UnregisterHotKey(hwnd, HK_RECORDING_START);
+    UnregisterHotKey(hwnd, HK_RECORDING_STOP);
+    UnregisterHotKey(hwnd, HK_PAUSE_RESUME);
 }
 
 // ── Command dispatch ──────────────────────────────────────────────────────────
@@ -311,25 +420,42 @@ static void dispatch(Cmd cmd, HWND hwnd)
             if (path.empty()) {
                 log_msg("replay", "WARNING: clip save failed or encoder not ready");
             } else {
-                // Convert wide path for logging.
-                char narrow[MAX_PATH * 2];
-                WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
-                    narrow, sizeof(narrow), nullptr, nullptr);
-                char msg[MAX_PATH * 2 + 32];
-                snprintf(msg, sizeof(msg), "clip saved: %s", narrow);
-                log_msg("replay", msg);
+                log_path("replay", "clip saved: ", path);
             }
         });
         break;
     }
     case CMD_RECORDING_START:
-        log_msg("tray", "recording_start triggered");
+        if (g_recording.start(g_recordings_dir)) {
+            log_path("recording", "recording started: ", g_recording.current_path());
+        } else {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "recording_start rejected: state=%s",
+                     recording::state_name(g_recording.state()));
+            log_msg("recording", msg);
+        }
         break;
-    case CMD_RECORDING_STOP:
-        log_msg("tray", "recording_stop triggered");
+    case CMD_RECORDING_STOP: {
+        std::wstring path;
+        if (g_recording.stop(&path)) {
+            if (path.empty()) log_msg("recording", "recording stopped: no packets written");
+            else log_path("recording", "recording saved: ", path);
+        } else {
+            log_msg("recording", "recording_stop rejected: state=idle");
+        }
         break;
+    }
     case CMD_PAUSE_RESUME:
-        log_msg("tray", "pause_resume triggered");
+        if (g_recording.state() == recording::RecordingState::Paused) {
+            if (g_recording.resume()) log_msg("recording", "recording resumed");
+        } else if (g_recording.pause()) {
+            log_msg("recording", "recording paused");
+        } else {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "pause_resume rejected: state=%s",
+                     recording::state_name(g_recording.state()));
+            log_msg("recording", msg);
+        }
         break;
     case CMD_SETTINGS:
         log_msg("tray", "settings triggered (not implemented)");
@@ -373,6 +499,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_HOTKEY:
         if (wp == HK_SAVE_REPLAY)
             dispatch(CMD_SAVE_REPLAY, hwnd);
+        else if (wp == HK_RECORDING_START)
+            dispatch(CMD_RECORDING_START, hwnd);
+        else if (wp == HK_RECORDING_STOP)
+            dispatch(CMD_RECORDING_STOP, hwnd);
+        else if (wp == HK_PAUSE_RESUME)
+            dispatch(CMD_PAUSE_RESUME, hwnd);
         return 0;
 
     default:
@@ -393,7 +525,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
     log_init();
-    log_msg("app", "initializing (Milestone 3: encoding + replay buffer)");
+    log_msg("app", "initializing (Monolith: replay + manual recording)");
 
     WNDCLASSEXW wc   = {};
     wc.cbSize        = sizeof(wc);

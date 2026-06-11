@@ -42,8 +42,9 @@ long-term target; the split is deferred to reduce early IPC complexity.
 
 ## Current implementation state
 
-- Documentation scaffold created
-- Native app folder scaffold created
-- Scaffold reorganised to /app + /libs + /plugins layout
-- No real capture, encoding, tray, hotkey, or IPC implementation yet
+- Native app lives in `app/recorder` as the single-process MVP.
+- Win32 tray, message-only window, single-instance guard, and global hotkeys are implemented.
+- WGC display capture, WASAPI loopback/microphone ingress, FFmpeg H.264/AAC encoding, replay-buffer MKV clip save, and basic manual recording are implemented.
+- User-facing branding is Monolith. User video output defaults under `Videos\Monolith`; logs/runtime data default under `AppData\Local\Monolith`.
+- IPC server/client, Stream Deck plugin, settings UI, Desktop Duplication fallback, GPU-resident encoder path, and microphone mixing into output are still pending.
 

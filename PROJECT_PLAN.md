@@ -650,9 +650,9 @@ Build the smallest prototype that proves the hardest v1 engineering problems wit
     ]
   },
   "output": {
-    "clips_directory": "C:\\Users\\User\\Videos\\Clips",
-    "recordings_directory": "C:\\Users\\User\\Videos\\Recordings",
-    "temp_directory": "C:\\Users\\User\\AppData\\Local\\ClipApp\\Temp",
+    "clips_directory": "C:\\Users\\User\\Videos\\Monolith\\Clips",
+    "recordings_directory": "C:\\Users\\User\\Videos\\Monolith\\Recordings",
+    "temp_directory": "C:\\Users\\User\\AppData\\Local\\Monolith\\Temp",
     "storage_cap_gb": 200,
     "auto_cleanup": true
   },
