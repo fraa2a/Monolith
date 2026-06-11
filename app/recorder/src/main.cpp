@@ -18,6 +18,9 @@
 #include <replay-buffer/replay_buffer.h>
 #include <recording/recording.h>
 
+#include "settings_config.h"
+#include "settings_window.h"
+
 #include <atomic>
 #include <cstdio>
 #include <mutex>
@@ -100,6 +103,15 @@ static std::wstring videos_dir(const wchar_t* child)
     return dir;
 }
 
+static std::wstring app_temp_dir()
+{
+    std::wstring dir = app_data_dir();
+    if (dir.empty()) return {};
+    dir += L"\\Temp";
+    ensure_directory(dir);
+    return dir;
+}
+
 static void log_init()
 {
     std::wstring dir = app_data_dir();
@@ -149,6 +161,96 @@ static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
 static std::wstring g_recordings_dir;
+static settings::Config g_settings;
+
+static std::wstring ascii_to_wide(const std::string& value)
+{
+    return std::wstring(value.begin(), value.end());
+}
+
+static void apply_runtime_settings()
+{
+    ensure_directory(g_settings.clips_directory);
+    ensure_directory(g_settings.recordings_directory);
+    ensure_directory(g_settings.temp_directory);
+
+    replay_buffer::ReplayBuffer::Config rbcfg;
+    rbcfg.duration_sec  = g_settings.replay_duration_seconds;
+    rbcfg.memory_cap_mb = g_settings.replay_memory_budget_mb;
+    rbcfg.output_dir    = g_settings.clips_directory;
+    g_replay.configure(rbcfg);
+
+    g_recordings_dir = g_settings.recordings_directory;
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "settings applied: replay=%ds / %lldMB",
+             g_settings.replay_duration_seconds,
+             static_cast<long long>(g_settings.replay_memory_budget_mb));
+    log_msg("settings", msg);
+    log_path("replay", "clips dir: ", g_settings.clips_directory);
+    log_path("recording", "recordings dir: ", g_recordings_dir);
+}
+
+static void load_app_settings()
+{
+    settings::LoadResult result = settings::load(
+        app_data_dir(),
+        videos_dir(L"Clips"),
+        videos_dir(L"Recordings"),
+        app_temp_dir());
+
+    g_settings = result.config;
+    g_recordings_dir = g_settings.recordings_directory;
+
+    for (const auto& warning : result.warnings)
+        log_msg("settings", warning.c_str());
+
+    log_path("settings", "config path: ", g_settings.user_config_path);
+}
+
+static settings_window::Model settings_model()
+{
+    settings_window::Model model;
+    model.clips_directory = g_settings.clips_directory;
+    model.recordings_directory = g_settings.recordings_directory;
+    model.replay_duration_seconds = g_settings.replay_duration_seconds;
+    model.replay_memory_budget_mb = g_settings.replay_memory_budget_mb;
+    model.save_replay_hotkey = L"Ctrl+Shift+F8";
+    model.recording_start_hotkey = L"Ctrl+Shift+F9";
+    model.recording_stop_hotkey = L"Ctrl+Shift+F10";
+    model.pause_resume_hotkey = L"Ctrl+Shift+F11";
+    return model;
+}
+
+static bool save_settings_from_window(const settings_window::Model& model, std::wstring* error)
+{
+    settings::Config next = g_settings;
+    next.clips_directory = model.clips_directory;
+    next.recordings_directory = model.recordings_directory;
+    next.replay_duration_seconds = model.replay_duration_seconds;
+    next.replay_memory_budget_mb = model.replay_memory_budget_mb;
+
+    ensure_directory(next.clips_directory);
+    ensure_directory(next.recordings_directory);
+    ensure_directory(next.temp_directory);
+
+    std::string save_error;
+    if (!settings::save(next, &save_error)) {
+        if (error) *error = L"Failed to save settings: " + ascii_to_wide(save_error);
+        log_msg("settings", save_error.c_str());
+        return false;
+    }
+
+    g_settings = next;
+    apply_runtime_settings();
+    log_msg("settings", "settings saved");
+    return true;
+}
+
+static void show_settings(HWND hwnd)
+{
+    settings_window::show(hwnd, settings_model(), save_settings_from_window);
+}
 
 // ── Media start / stop ────────────────────────────────────────────────────────
 
@@ -160,10 +262,6 @@ static void media_start(HWND hwnd)
     g_video_enc_open_attempted.store(false, std::memory_order_release);
     g_enc_w = 0;
     g_enc_h = 0;
-
-    // ── Clips output directory ────────────────────────────────────────────────
-    std::wstring clips_dir = videos_dir(L"Clips");
-    g_recordings_dir = videos_dir(L"Recordings");
 
     // ── Video encoder ─────────────────────────────────────────────────────────
     log_msg("encoding", "video encoder deferred until first WGC frame");
@@ -192,14 +290,7 @@ static void media_start(HWND hwnd)
 
     // ── Replay buffer config ───────────────────────────────────────────────────
     {
-        replay_buffer::ReplayBuffer::Config rbcfg;
-        rbcfg.duration_sec  = 30;
-        rbcfg.memory_cap_mb = 512;
-        rbcfg.output_dir    = clips_dir;
-        g_replay.configure(rbcfg);
-        log_msg("replay", "replay buffer configured: 30s / 512MB cap");
-        log_path("replay", "clips dir: ", clips_dir);
-        log_path("recording", "recordings dir: ", g_recordings_dir);
+        apply_runtime_settings();
     }
 
     // ── WGC display capture ───────────────────────────────────────────────────
@@ -357,7 +448,7 @@ static void tray_show_menu(HWND hwnd)
     AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  L"Stop Recording\tCtrl+Shift+F10");
     AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text);
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
-    AppendMenuW(menu, MF_STRING | MF_GRAYED, CMD_SETTINGS,        L"Settings\x2026");
+    AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Settings\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_EXIT,            L"Exit");
     POINT pt;
@@ -458,7 +549,8 @@ static void dispatch(Cmd cmd, HWND hwnd)
         }
         break;
     case CMD_SETTINGS:
-        log_msg("tray", "settings triggered (not implemented)");
+        log_msg("tray", "settings opened");
+        show_settings(hwnd);
         break;
     case CMD_EXIT:
         log_msg("app", "exit requested");
@@ -526,6 +618,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 
     log_init();
     log_msg("app", "initializing (Monolith: replay + manual recording)");
+    load_app_settings();
 
     WNDCLASSEXW wc   = {};
     wc.cbSize        = sizeof(wc);
