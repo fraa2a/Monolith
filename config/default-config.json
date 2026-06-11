@@ -1,46 +1,112 @@
 {
-  "replayBuffer": {
-    "durationSeconds": 30,
-    "maxMemoryMB": 512
+  "schema_version": 1,
+  "app": {
+    "start_minimized": true,
+    "minimize_to_tray": true,
+    "language": "en-US",
+    "log_level": "info",
+    "diagnostics_retention_days": 14
   },
-  "output": {
-    "clipsFolder": "C:\\Users\\User\\Videos\\Clips",
-    "recordingsFolder": "C:\\Users\\User\\Videos\\Recordings"
+  "capture": {
+    "mode": "display",
+    "target_display_id": "\\\\.\\DISPLAY1",
+    "target_window": null,
+    "capture_api": "windows_graphics_capture",
+    "adapter_preference": "high_performance",
+    "resolution": {
+      "mode": "source"
+    },
+    "frame_rate": 60,
+    "color_format": "nv12",
+    "hdr_mode": "off"
   },
-  "video": {
-    "encoder": "nvenc",
+  "replay_buffer": {
+    "enabled": true,
+    "duration_seconds": 30,
+    "memory_budget_mb": 512,
+    "save_container": "mkv",
+    "auto_remux_to_mp4": false,
+    "clip_naming_pattern": "{date}_{time}_{game}_{duration}s_clip"
+  },
+  "recording": {
+    "default_container": "mkv",
+    "auto_remux_to_mp4": true,
+    "split_files": false,
+    "max_file_size_mb": 0,
+    "pause_behavior": "timestamp_gap",
+    "recording_naming_pattern": "{date}_{time}_{game}_recording"
+  },
+  "video_encoder": {
     "codec": "h264",
-    "bitrateKbps": 20000,
-    "fps": 60,
-    "width": 1920,
-    "height": 1080
+    "backend": "nvenc",
+    "bitrate_kbps": 20000,
+    "rate_control": "cbr",
+    "preset": "p5",
+    "profile": "high",
+    "gop_seconds": 2,
+    "b_frames": 2,
+    "lookahead": false,
+    "aq": true,
+    "extra_ffmpeg_options": ""
   },
   "audio": {
-    "enabled": true,
-    "sampleRate": 48000,
-    "channels": 2,
-    "devices": [
+    "sample_rate_hz": 48000,
+    "channel_layout": "stereo",
+    "tracks": [
       {
-        "id": "system-default-loopback",
-        "type": "loopback",
-        "enabled": true
+        "id": "system",
+        "enabled": true,
+        "source_type": "loopback",
+        "device_id": "system-default-loopback",
+        "codec": "aac",
+        "bitrate_kbps": 192
       },
       {
-        "id": "default-microphone",
-        "type": "microphone",
-        "enabled": true
+        "id": "microphone",
+        "enabled": true,
+        "source_type": "capture",
+        "device_id": "default-microphone",
+        "codec": "aac",
+        "bitrate_kbps": 160
       }
     ]
   },
-  "hotkeys": {
-    "saveReplay": "Ctrl+Shift+F8",
-    "startStopRecording": "Ctrl+Shift+F9",
-    "pauseResumeRecording": "Ctrl+Shift+F10"
+  "output": {
+    "clips_directory": "C:\\Users\\User\\Videos\\Clips",
+    "recordings_directory": "C:\\Users\\User\\Videos\\Recordings",
+    "temp_directory": "C:\\Users\\User\\AppData\\Local\\ClipApp\\Temp",
+    "storage_cap_gb": 200,
+    "auto_cleanup": true
   },
-  "ipc": {
+  "hotkeys": {
+    "save_replay": "Ctrl+Shift+F8",
+    "recording_start": "Ctrl+Shift+F9",
+    "recording_stop": "Ctrl+Shift+F10",
+    "pause_resume": "Ctrl+Shift+F11"
+  },
+  "stream_deck": {
     "enabled": true,
+    "ipc_transport": "websocket",
     "host": "127.0.0.1",
-    "port": 45991
-  }
+    "port": 45991,
+    "request_timeout_ms": 1500,
+    "allow_multiple_clients": true
+  },
+  "profiles": [
+    {
+      "match_type": "process_name",
+      "match_value": "game.exe",
+      "overrides": {
+        "capture": {
+          "frame_rate": 120
+        },
+        "video_encoder": {
+          "bitrate_kbps": 35000
+        },
+        "replay_buffer": {
+          "duration_seconds": 45
+        }
+      }
+    }
+  ]
 }
-

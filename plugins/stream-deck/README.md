@@ -2,12 +2,14 @@
 
 This folder is reserved for the future Elgato Stream Deck plugin.
 
+Plugin role: remote controller only — sends commands over WebSocket/TCP JSON-RPC, contains no recording logic.
+
 Planned scope:
 
-- Save replay clip
-- Start recording
-- Stop recording
-- Pause/resume recording
+- `save_replay`
+- `recording_start`
+- `recording_stop`
+- `pause_resume`
 
 Status:
 

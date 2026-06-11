@@ -35,21 +35,25 @@
 
 ### Process structure
 
-Use a **two-process model**:
+Use a **single-process MVP** with strictly isolated internal modules. Module boundaries are
+enforced by library separation under `/libs`, not process separation.
 
-- **UI/Tray Process**
-  - Owns system tray icon, settings window, global hotkeys, notifications, and Stream Deck IPC endpoint registration.
-  - Remains responsive and lightweight.
-  - Can restart independently if the engine survives.
-- **Recording Engine Process**
-  - Owns capture, audio ingest, sync clocking, encoding, replay buffer, file writing, health reporting, and crash dump generation.
-  - Runs headless in the background with a strict non-UI event loop.
+- **app shell** (app/recorder) — tray, hotkeys, settings UI, notifications, IPC endpoint
+- **libs/capture** — video capture abstraction and implementations
+- **libs/audio** — WASAPI device capture, routing, resampling
+- **libs/encoding** — FFmpeg wrappers, encoder capability probing
+- **libs/mux** — container writing/remux logic
+- **libs/replay-buffer** — encoded packet ring buffer and clip extraction
+- **libs/config** — schema, validation, migration
+- **libs/ipc** — WebSocket/TCP JSON-RPC server and protocol
+- **libs/platform-win** — Win32 helpers, COM/D3D utilities, crash support
+- **libs/logging** — structured logging facade
+- **libs/domain** — state machine and command models
 
-Reasoning:
-
-- Keeps capture/encode isolated from UI faults.
-- Simplifies watchdog/restart behavior.
-- Matches the requirement that recorder behavior remains resilient even if UI has issues.
+**Future: two-process split** — once the MVP is stable, the recording engine (capture
+through replay) will be extracted into a separate headless process (`app/engine`). The
+rationale for crash isolation and independent restarts remains valid; the split is deferred
+to reduce early IPC complexity. A settings UI process (`app/desktop-ui`) follows after that.
 
 ### Main subsystems
 
@@ -58,10 +62,9 @@ Reasoning:
    - Validates state transitions before forwarding to the engine.
    - Supported commands in v1:
      - `save_replay`
-     - `start_recording`
-     - `stop_recording`
-     - `pause_recording`
-     - `resume_recording`
+     - `recording_start`
+     - `recording_stop`
+     - `pause_resume`
      - `reload_settings`
      - `query_status`
 
@@ -134,8 +137,9 @@ Reasoning:
 
 10. **Stream Deck IPC Subsystem**
     - Stream Deck plugin written separately in TypeScript/Node as required by Elgato tooling.
-    - Communication to app over local named pipe using newline-delimited JSON messages.
-    - Optional localhost TCP/WebSocket support is deferred unless required by plugin constraints.
+    - Communication to app over localhost WebSocket/TCP JSON-RPC (host 127.0.0.1, port 45991).
+    - Named-pipe transport is deferred to a future milestone (see ADR-0007).
+    - Plugin role: remote controller only — sends commands, contains no recording logic.
 
 11. **Logging and Diagnostics**
     - Structured logs with subsystem tags:
@@ -225,10 +229,14 @@ Reasoning:
 
 ### IPC method for Stream Deck
 
-- **Recommendation:** `Named Pipes` on Windows.
+- **Recommendation:** `localhost WebSocket/TCP JSON-RPC`.
 - Why:
-  - Native, local-only, low-overhead, no firewall prompts, and strong fit for command-style IPC.
-  - Simple security model versus opening a localhost server by default.
+  - Simple cross-language integration (TypeScript plugin connects directly).
+  - Easy to debug with standard WebSocket/HTTP tools.
+  - JSON-RPC provides structured request/response correlation out of the box.
+- **Deferred alternative:** Named Pipes on Windows.
+  - Rationale preserved: native, local-only, low-overhead, no firewall prompts.
+  - May be revisited in a future milestone if WebSocket overhead proves problematic (ADR-0007).
 
 ### Installer/packaging system
 
@@ -409,7 +417,7 @@ Reasoning:
   - Add first-party Stream Deck control path.
 - Deliverables:
   - Elgato plugin.
-  - Named-pipe client and reconnect logic.
+  - WebSocket/TCP JSON-RPC client and reconnect logic.
   - Action icons and state feedback.
 - Acceptance criteria:
   - All required actions work reliably across app restarts and temporary disconnects.
@@ -492,8 +500,9 @@ Build the smallest prototype that proves the hardest v1 engineering problems wit
 
 ```text
 /app
-  /desktop-ui              # WinUI 3 + Win32 tray host
-  /engine                  # Headless recording engine process
+  /recorder                # Single MVP executable (links all libs)
+  /engine                  # (future) Headless recording engine process — two-process target
+  /desktop-ui              # (future) WinUI 3 settings UI
 
 /libs
   /capture                 # Video capture abstractions and implementations
@@ -502,13 +511,13 @@ Build the smallest prototype that proves the hardest v1 engineering problems wit
   /mux                     # Container writing/remux logic
   /replay-buffer           # Encoded packet ring buffer and clip extraction
   /config                  # Schema, validation, migration
-  /ipc                     # Named-pipe protocol and clients
+  /ipc                     # WebSocket/TCP JSON-RPC server and clients
   /platform-win            # Win32 helpers, COM/D3D utilities, crash support
   /logging                 # Structured logging facade
   /domain                  # State machine and command models
 
 /plugins
-  /stream-deck             # Elgato plugin project
+  /stream-deck             # Elgato plugin project (remote controller only)
 
 /docs
   /architecture
@@ -649,14 +658,15 @@ Build the smallest prototype that proves the hardest v1 engineering problems wit
   },
   "hotkeys": {
     "save_replay": "Ctrl+Shift+F8",
-    "start_recording": "Ctrl+Shift+F9",
-    "stop_recording": "Ctrl+Shift+F10",
-    "pause_resume_recording": "Ctrl+Shift+F11"
+    "recording_start": "Ctrl+Shift+F9",
+    "recording_stop": "Ctrl+Shift+F10",
+    "pause_resume": "Ctrl+Shift+F11"
   },
   "stream_deck": {
     "enabled": true,
-    "ipc_transport": "named_pipe",
-    "pipe_name": "\\\\.\\pipe\\clipapp.streamdeck",
+    "ipc_transport": "websocket",
+    "host": "127.0.0.1",
+    "port": 45991,
     "request_timeout_ms": 1500,
     "allow_multiple_clients": true
   },
@@ -719,6 +729,6 @@ No blocking questions were found for the planning phase.
 - v1 avoids invasive game injection/hooking and relies on OS-supported capture APIs.
 - Default active-write container is MKV.
 - Initial engine language is C++23.
-- Initial Stream Deck transport is named pipes.
+- Initial Stream Deck transport is localhost WebSocket/TCP JSON-RPC (ADR-0007 resolved).
 - Initial UI direction is WinUI 3 plus Win32 tray host, with Qt Widgets as fallback if Windows App SDK friction proves unacceptable during milestone work.
 
