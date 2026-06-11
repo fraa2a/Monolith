@@ -1,21 +1,25 @@
 cmake_minimum_required(VERSION 3.27)
 
-project(windows_recorder LANGUAGES CXX)
+project(monolith LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(windows_recorder WIN32
+add_executable(monolith WIN32
     src/main.cpp
 )
 
-target_include_directories(windows_recorder
+set_target_properties(monolith PROPERTIES
+    OUTPUT_NAME "Monolith"
+)
+
+target_include_directories(monolith
     PRIVATE
         include
 )
 
-target_compile_definitions(windows_recorder
+target_compile_definitions(monolith
     PRIVATE
         UNICODE
         _UNICODE
@@ -23,7 +27,7 @@ target_compile_definitions(windows_recorder
         NOMINMAX
 )
 
-target_link_libraries(windows_recorder
+target_link_libraries(monolith
     PRIVATE
         capture
         audio
@@ -40,8 +44,8 @@ target_link_libraries(windows_recorder
 )
 
 if(MSVC)
-    target_compile_options(windows_recorder PRIVATE /W4 /permissive-)
-    target_link_options(windows_recorder PRIVATE
+    target_compile_options(monolith PRIVATE /W4 /permissive-)
+    target_link_options(monolith PRIVATE
         /MANIFEST:EMBED
         /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
     )
