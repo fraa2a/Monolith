@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Windows recorder
+    name: Build Monolith for Windows
     runs-on: windows-latest
 
     env:
@@ -44,6 +44,6 @@ jobs:
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: windows-recorder-release
-          path: build/app/recorder/Release/windows_recorder.exe
+          name: monolith-windows-release
+          path: build/app/recorder/Release/Monolith.exe
           if-no-files-found: error

@@ -82,7 +82,7 @@ Manual recording code still needs build and runtime smoke verification on the Wi
 
 1. Configure with the available MSVC/vcpkg environment.
 2. Build Release.
-3. Launch `windows_recorder.exe`.
+3. Launch `Monolith.exe`.
 4. Wait for WGC and encoders to initialize.
 5. Press `Ctrl+Shift+F8` and verify replay clip under `Videos\Monolith\Clips`.
 6. Press `Ctrl+Shift+F9`, wait, press `Ctrl+Shift+F10`, and verify recording under `Videos\Monolith\Recordings`.

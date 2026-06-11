@@ -1,48 +1,66 @@
-name: Tag Version
+name: Release on Version Tag
 
 on:
   push:
-    branches: [main]
-    paths:
-      - VERSION
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  tag:
-    name: Create version tag
-    runs-on: ubuntu-latest
+  release:
+    name: Build and release Monolith
+    runs-on: windows-latest
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      RELEASE_ASSET_PATH: build/app/recorder/Release/Monolith.exe
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Read version
-        id: version
-        shell: bash
+      - name: Clone vcpkg
+        shell: pwsh
+        run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Verify release asset
+        shell: pwsh
         run: |
-          version="$(tr -d '[:space:]' < VERSION)"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "VERSION must be semantic version text, got: $version" >&2
+          if (-not (Test-Path "$env:RELEASE_ASSET_PATH")) {
+            Write-Error "Release asset not found: $env:RELEASE_ASSET_PATH"
             exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          }
 
-      - name: Create tag if missing
-        shell: bash
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists; nothing to do."
-            exit 0
-          fi
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: ${{ env.RELEASE_ASSET_PATH }}
+          body: |
+            New Monolith version released.
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
+            Included in this release:
+            - Windows executable attached to this release
+
+            Notes:
+            - This changelog is intentionally minimal for now.
+            - The attached asset will be switched to the installer `.exe` once packaging is ready.
