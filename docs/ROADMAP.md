@@ -81,4 +81,35 @@ Status: in progress.
   - app exits cleanly through tray without killing worker threads
   - recording commands have explicit accepted/rejected states (implemented)
 - Next action:
-  - build and smoke-test replay save plus manual recording start/stop/pause/resume
+  - verify the Settings foundation via CI build and runtime smoke test
+
+## Milestone 5: Settings Foundation
+
+Status: implemented in code; build/runtime verification pending.
+
+- Goal:
+  - Add the first persistent per-user settings path without redesigning replay or recording.
+- Deliverables:
+  - `AppData\Local\Monolith\config.json` load/save path
+  - default config merge from `config/default-config.json`
+  - minimal Win32 settings window opened from the tray
+  - editable replay clip folder, manual recording folder, replay duration, and replay memory budget
+  - read-only hotkey display
+- Acceptance criteria:
+  - settings opens from the tray
+  - missing or invalid user config does not crash startup
+  - output folder changes are saved and used for replay/manual recording
+  - replay duration and memory budget are saved and applied to the replay buffer
+  - unsupported hotkey rebinding is not presented as working
+- Live-applied settings:
+  - replay clip output folder
+  - manual recording output folder
+  - replay duration
+  - replay memory budget
+- Restart-required settings:
+  - none exposed in this pass
+- Not implemented:
+  - hotkey rebinding
+  - encoder/capture/audio device settings UI
+  - Stream Deck settings
+  - WinUI 3 settings shell

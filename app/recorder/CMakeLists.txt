@@ -2,12 +2,16 @@ cmake_minimum_required(VERSION 3.27)
 
 project(monolith LANGUAGES CXX)
 
+find_package(nlohmann_json CONFIG REQUIRED)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(monolith WIN32
     src/main.cpp
+    src/settings_config.cpp
+    src/settings_window.cpp
 )
 
 set_target_properties(monolith PROPERTIES
@@ -34,6 +38,7 @@ target_link_libraries(monolith
         encoding
         replay_buffer
         recording
+        nlohmann_json::nlohmann_json
         # System libs
         d3d11
         dxgi

@@ -93,8 +93,28 @@ Manual recording code still needs build and runtime smoke verification on the Wi
 
 - Stream Deck IPC/server/client.
 - Stream Deck plugin.
-- Settings UI.
+- Hotkey rebinding.
+- Encoder/capture/audio device settings UI.
 - Desktop Duplication fallback.
 - GPU-resident encoder path.
 - Microphone mixing into replay/manual recording output.
 - Automated replay/manual recording tests.
+
+## Settings Foundation Update
+
+- Added first-pass persistent settings under `AppData\Local\Monolith\config.json`.
+- Defaults load from `config/default-config.json`, then user overrides are merged.
+- Invalid user config logs a warning and falls back to defaults.
+- Tray Settings opens a minimal Win32 window.
+- Live-applied settings:
+  - replay clip output folder
+  - manual recording output folder
+  - replay duration
+  - replay memory budget
+- Display-only settings:
+  - current hotkeys (`Ctrl+Shift+F8/F9/F10/F11`)
+- Not exposed:
+  - fake encoder/audio/capture controls
+  - Stream Deck settings
+  - hotkey rebinding
+- Local build was blocked by vcpkg host-tool/dependency download state; GitHub Actions should verify the commit.

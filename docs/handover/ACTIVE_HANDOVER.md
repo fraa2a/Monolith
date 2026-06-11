@@ -33,6 +33,7 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 - `libs/recording`: live MKV writer for manual recordings, fed by the same encoded packet stream as replay.
 - App wiring: WGC frames and WASAPI system audio feed encoders; encoded packets feed replay buffer and, when armed, the manual recorder.
 - User media output defaults to `Videos\Monolith\Clips` and `Videos\Monolith\Recordings`; logs/runtime data stay under `AppData\Local\Monolith`.
+- Settings foundation: `AppData\Local\Monolith\config.json`, default/user JSON merge through `nlohmann-json`, and a minimal Win32 tray-launched settings window.
 
 ## Latest Continuation Notes
 
@@ -50,12 +51,16 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 - Legacy app branding changed to Monolith for user-facing app identity and runtime folders.
 - Manual recording start/stop/pause/resume now has accepted/rejected state transitions instead of log-only tray stubs.
 - Manual recording pause omits paused time from the output file and resumes writing on the next video keyframe.
+- Settings exposes replay clip folder, manual recording folder, replay duration, replay memory budget, and read-only hotkey display.
+- Settings save applies exposed replay/recording paths and replay buffer values live.
+- WGC capture now attempts `GraphicsCaptureSession::IsBorderRequired(false)` before `StartCapture`; failure is ignored so capture still starts.
 
 ## Not Implemented Yet
 
 - Real IPC server/client.
 - Stream Deck plugin code.
-- Settings window; tray menu item remains disabled.
+- Hotkey rebinding; current hotkeys are display-only in Settings.
+- Encoder/capture/audio device settings UI.
 - Desktop Duplication fallback.
 - GPU-resident encoder path; current spike uses CPU-readable BGRA staging.
 - Microphone mixing into replay/manual recording output; mic is logged only.
@@ -64,7 +69,7 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 
 ## Build/Verification
 
-Previous native C++ build verification succeeded in the earlier environment. Current verification should use:
+Previous native C++ build verification succeeded before the Settings changes. Current local verification was blocked by vcpkg host-tool/dependency download issues, so GitHub Actions should be used as the next build check:
 
 ```powershell
 & '<cmake>\cmake.exe' -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="<vcpkg>\scripts\buildsystems\vcpkg.cmake"
@@ -73,9 +78,10 @@ Previous native C++ build verification succeeded in the earlier environment. Cur
 
 ## Next Steps
 
-1. Build and smoke-test replay save plus manual recording start/stop/pause/resume on the Windows dev machine.
-2. Add a small integration/unit test harness for `ReplayBuffer::save_clip` and the manual recording writer.
-3. Continue runtime hardening: graceful shutdown, capture stop races, encoder failure UX/logs, and A/V sync checks.
+1. Check the GitHub Actions Windows build for the Settings commit.
+2. Runtime smoke-test Settings from the tray: config creation, folder changes, replay save path, manual recording path.
+3. Add a small integration/unit test harness for settings merge/load behavior and `ReplayBuffer::save_clip`.
+4. Continue runtime hardening: graceful shutdown, capture stop races, encoder failure UX/logs, and A/V sync checks.
 
 ## Open Risks
 
@@ -83,4 +89,5 @@ Previous native C++ build verification succeeded in the earlier environment. Cur
 - WGC callback and encoder flow need runtime soak testing.
 - A/V sync needs real capture validation, especially around silence and long sessions.
 - Manual recording pause/resume needs runtime validation across longer sessions.
-- Settings UI framework is still WinUI 3 preferred, Qt fallback if Windows App SDK friction is too high.
+- Settings is minimal Win32 for now; future WinUI 3 shell remains optional after core behavior stabilizes.
+- WGC border suppression requires `GraphicsCaptureSession::IsBorderRequired` / `IGraphicsCaptureSession3`, introduced in `Windows.Foundation.UniversalApiContract` 12.0. The local SDK exposes it under Windows Kits `10.0.26100.0`.

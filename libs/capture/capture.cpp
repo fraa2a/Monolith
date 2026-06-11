@@ -201,6 +201,11 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
             });
 
         impl_->session = impl_->pool.CreateCaptureSession(item);
+        try {
+            impl_->session.IsBorderRequired(false);
+        } catch (...) {
+            // Capture must continue even when the OS denies border suppression.
+        }
         impl_->session.StartCapture();
     }
     catch (...) {
