@@ -1,0 +1,49 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows recorder
+    runs-on: windows-latest
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone vcpkg
+        shell: pwsh
+        run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-recorder-release
+          path: build/app/recorder/Release/windows_recorder.exe
+          if-no-files-found: error
