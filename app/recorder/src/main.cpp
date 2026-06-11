@@ -4,10 +4,12 @@
 #include <shellapi.h>
 #include <strsafe.h>
 
-#include <winrt/base.h>          // winrt::init_apartment / uninit_apartment
+#include <winrt/base.h>
 
 #include <capture/capture.h>
 #include <audio/audio.h>
+#include <encoding/encoding.h>
+#include <replay-buffer/replay_buffer.h>
 
 #include <cstdio>
 #include <mutex>
@@ -33,10 +35,9 @@ enum HotkeyId : int {
 };
 
 // ── Logging ───────────────────────────────────────────────────────────────────
-// Thread-safe: called from the WGC thread pool and the WASAPI capture thread.
 
-static FILE*       g_log       = nullptr;
-static std::mutex  g_log_mutex;
+static FILE*      g_log       = nullptr;
+static std::mutex g_log_mutex;
 
 static void log_init()
 {
@@ -56,7 +57,7 @@ static void log_msg(const char* tag, const char* msg)
     GetSystemTime(&st);
     char buf[512];
     snprintf(buf, sizeof(buf),
-        "[%04d-%02d-%02dT%02d:%02d:%02dZ] [%-10s] %s\n",
+        "[%04d-%02d-%02dT%02d:%02d:%02dZ] [%-12s] %s\n",
         st.wYear, st.wMonth, st.wDay,
         st.wHour, st.wMinute, st.wSecond,
         tag, msg);
@@ -67,26 +68,104 @@ static void log_msg(const char* tag, const char* msg)
     OutputDebugStringA(buf);
 }
 
-// ── Capture + Audio globals ───────────────────────────────────────────────────
+// ── Globals ───────────────────────────────────────────────────────────────────
 
-static capture::DisplayCapture g_video;
-static audio::WasapiCapture    g_audio_system;
-static audio::WasapiCapture    g_audio_mic;
+static capture::DisplayCapture      g_video;
+static audio::WasapiCapture         g_audio_system;
+static audio::WasapiCapture         g_audio_mic;
+static encoding::VideoEncoder       g_video_enc;
+static encoding::AudioEncoder       g_audio_enc;
+static replay_buffer::ReplayBuffer  g_replay;
+
+static int g_enc_w = 0; // configured encoder width (even-aligned)
+static int g_enc_h = 0; // configured encoder height (even-aligned)
+
+// ── Media start / stop ────────────────────────────────────────────────────────
 
 static void media_start(HWND hwnd)
 {
-    // Capture the monitor that owns the message-window (primary display).
     HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
 
+    // ── Determine monitor resolution ─────────────────────────────────────────
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(hmon, &mi)) {
+        g_enc_w = (mi.rcMonitor.right  - mi.rcMonitor.left) & ~1;
+        g_enc_h = (mi.rcMonitor.bottom - mi.rcMonitor.top)  & ~1;
+    } else {
+        g_enc_w = 1920; g_enc_h = 1080; // safe fallback
+    }
+
+    // ── Clips output directory ────────────────────────────────────────────────
+    WCHAR clips_dir[MAX_PATH];
+    GetEnvironmentVariableW(L"LOCALAPPDATA", clips_dir, MAX_PATH);
+    StringCchCatW(clips_dir, MAX_PATH, L"\\WindowsRecorder\\Clips");
+
+    // ── Video encoder ─────────────────────────────────────────────────────────
+    {
+        encoding::VideoEncoder::Config vcfg;
+        vcfg.width   = g_enc_w;
+        vcfg.height  = g_enc_h;
+        vcfg.fps     = 30;           // encode at 30fps (every 2nd WGC frame)
+        vcfg.bitrate = 20'000'000;
+
+        bool ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
+            g_replay.push(std::move(pkt));
+        });
+
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%dx%d @30fps bitrate=20Mbps", g_enc_w, g_enc_h);
+        log_msg("encoding", ok ? buf : "WARNING: no H.264 encoder — replay disabled");
+
+        if (ok) g_replay.set_video_params(g_video_enc.stream_params());
+    }
+
+    // ── Audio encoder ─────────────────────────────────────────────────────────
+    {
+        encoding::AudioEncoder::Config acfg;
+        acfg.sample_rate = 48000;
+        acfg.channels    = 2;
+        acfg.bitrate     = 192'000;
+
+        bool ok = g_audio_enc.open(acfg, [](encoding::EncodedPacket pkt) {
+            g_replay.push(std::move(pkt));
+        });
+        log_msg("encoding", ok ? "AAC encoder opened (48kHz stereo 192kbps)"
+                               : "WARNING: AAC encoder failed");
+
+        if (ok) g_replay.set_audio_params(g_audio_enc.stream_params());
+    }
+
+    // ── Replay buffer config ───────────────────────────────────────────────────
+    {
+        replay_buffer::ReplayBuffer::Config rbcfg;
+        rbcfg.duration_sec  = 30;
+        rbcfg.memory_cap_mb = 512;
+        rbcfg.output_dir    = clips_dir;
+        g_replay.configure(rbcfg);
+        log_msg("replay", "replay buffer configured: 30s / 512MB cap");
+    }
+
+    // ── WGC display capture ───────────────────────────────────────────────────
     if (capture::is_supported()) {
         bool ok = g_video.start(hmon, [](capture::FrameInfo const& f) {
-            // Log every 300th frame (~5 s at 60 fps).
+            // Log buffer stats every 300 frames (~5s at 60fps).
             if (f.seq % 300 == 0) {
-                char buf[128];
+                char buf[160];
                 snprintf(buf, sizeof(buf),
-                    "seq=%-6u  %ux%u", f.seq, f.width, f.height);
+                    "seq=%-6u  %ux%u  buf=%zu pkt / %.1f MB",
+                    f.seq, f.width, f.height,
+                    g_replay.packet_count(),
+                    static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
                 log_msg("capture", buf);
             }
+            // Encode every 2nd frame → 30fps effective for software encoder.
+            if (f.seq % 2 != 0 || f.bgra_data == nullptr) return;
+            g_video_enc.push_bgra(
+                f.bgra_data,
+                static_cast<int>(f.bgra_stride),
+                static_cast<int>(f.width),
+                static_cast<int>(f.height));
         });
         log_msg("capture", ok ? "WGC display capture started"
                                : "WARNING: WGC display capture failed");
@@ -94,6 +173,7 @@ static void media_start(HWND hwnd)
         log_msg("capture", "WARNING: Windows.Graphics.Capture not supported");
     }
 
+    // ── WASAPI loopback (system audio → encoder + replay buffer) ─────────────
     bool ok_sys = g_audio_system.start(
         audio::WasapiCapture::Mode::Loopback,
         [](audio::PacketInfo const& p) {
@@ -105,10 +185,18 @@ static void media_start(HWND hwnd)
                     p.silent ? "  [silent]" : "");
                 log_msg("audio.sys", buf);
             }
+            if (!p.silent && p.data) {
+                g_audio_enc.push_pcm(
+                    p.data, static_cast<int>(p.data_bytes),
+                    static_cast<int>(p.sample_rate),
+                    static_cast<int>(p.channels),
+                    static_cast<int>(p.bit_depth), p.is_float);
+            }
         });
     log_msg("audio.sys", ok_sys ? "WASAPI loopback started"
                                  : "WARNING: WASAPI loopback failed");
 
+    // ── WASAPI microphone (monitor only, not fed to replay buffer for MVP) ───
     bool ok_mic = g_audio_mic.start(
         audio::WasapiCapture::Mode::Microphone,
         [](audio::PacketInfo const& p) {
@@ -130,7 +218,9 @@ static void media_stop()
     g_video.stop();
     g_audio_system.stop();
     g_audio_mic.stop();
-    log_msg("app", "capture + audio stopped");
+    g_video_enc.close(); // flushes + frees encoder
+    g_audio_enc.close();
+    log_msg("app", "capture + audio + encoding stopped");
 }
 
 // ── System tray ───────────────────────────────────────────────────────────────
@@ -151,10 +241,7 @@ static void tray_add(HWND hwnd)
         log_msg("tray", "WARNING: Shell_NotifyIconW NIM_ADD failed");
 }
 
-static void tray_remove()
-{
-    Shell_NotifyIconW(NIM_DELETE, &g_nid);
-}
+static void tray_remove() { Shell_NotifyIconW(NIM_DELETE, &g_nid); }
 
 static void tray_show_menu(HWND hwnd)
 {
@@ -181,7 +268,7 @@ static void hotkeys_register(HWND hwnd)
 {
     if (!RegisterHotKey(hwnd, HK_SAVE_REPLAY,
                         MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F8))
-        log_msg("hotkey", "WARNING: save_replay (Ctrl+Shift+F8) failed — key may be in use");
+        log_msg("hotkey", "WARNING: save_replay (Ctrl+Shift+F8) failed — key in use");
     else
         log_msg("hotkey", "save_replay (Ctrl+Shift+F8) registered");
 }
@@ -196,13 +283,30 @@ static void hotkeys_unregister(HWND hwnd)
 static void dispatch(Cmd cmd, HWND hwnd)
 {
     switch (cmd) {
-    case CMD_SAVE_REPLAY:
-        log_msg("hotkey", "save_replay triggered");
-        // TODO M3: forward to replay buffer
+    case CMD_SAVE_REPLAY: {
+        char stats[256];
+        snprintf(stats, sizeof(stats),
+            "save_replay — buffer: %zu pkt / %.1f MB",
+            g_replay.packet_count(),
+            static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
+        log_msg("replay", stats);
+        g_replay.save_clip([](std::wstring path) {
+            if (path.empty()) {
+                log_msg("replay", "WARNING: clip save failed or encoder not ready");
+            } else {
+                // Convert wide path for logging.
+                char narrow[MAX_PATH * 2];
+                WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
+                    narrow, sizeof(narrow), nullptr, nullptr);
+                char msg[MAX_PATH * 2 + 32];
+                snprintf(msg, sizeof(msg), "clip saved: %s", narrow);
+                log_msg("replay", msg);
+            }
+        });
         break;
+    }
     case CMD_RECORDING_START:
         log_msg("tray", "recording_start triggered");
-        // TODO M5: forward to recording manager
         break;
     case CMD_RECORDING_STOP:
         log_msg("tray", "recording_stop triggered");
@@ -269,11 +373,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         return 0;
     }
 
-    // Initialize COM (MTA) for WinRT (WGC) and WASAPI.
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
     log_init();
-    log_msg("app", "initializing");
+    log_msg("app", "initializing (Milestone 3: encoding + replay buffer)");
 
     WNDCLASSEXW wc   = {};
     wc.cbSize        = sizeof(wc);

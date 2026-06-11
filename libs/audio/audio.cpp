@@ -5,6 +5,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <mmreg.h>     // WAVE_FORMAT_IEEE_FLOAT, WAVE_FORMAT_EXTENSIBLE
 
 #include <atomic>
 #include <thread>
@@ -31,10 +32,26 @@ struct WasapiCapture::Impl {
 
 // ── Capture thread ────────────────────────────────────────────────────────────
 
+// KSDATAFORMAT_SUBTYPE_IEEE_FLOAT — {00000003-0000-0010-8000-00AA00389B71}
+static const GUID kSubTypeFloat =
+    { 0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71} };
+
+static bool detect_float(const WAVEFORMATEX* fmt)
+{
+    if (fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) return true;
+    if (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+        const auto* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(fmt);
+        return (ext->SubFormat == kSubTypeFloat);
+    }
+    return false;
+}
+
 static void capture_thread(WasapiCapture::Impl* impl)
 {
-    // Each audio thread owns its COM context.
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    const bool     is_float  = detect_float(impl->mix_fmt);
+    const uint16_t bit_depth = impl->mix_fmt->wBitsPerSample;
 
     while (impl->running.load(std::memory_order_acquire)) {
         UINT32 packet_size = 0;
@@ -53,13 +70,22 @@ static void capture_thread(WasapiCapture::Impl* impl)
             hr = impl->cap_client->GetBuffer(&data, &frames, &flags, nullptr, &qpc);
             if (FAILED(hr)) break;
 
+            const bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            const uint32_t bytes = frames
+                * impl->mix_fmt->nChannels
+                * (bit_depth / 8u);
+
             PacketInfo pkt{};
             pkt.timestamp_qpc = static_cast<int64_t>(qpc);
             pkt.frame_count   = frames;
             pkt.sample_rate   = impl->mix_fmt->nSamplesPerSec;
-            pkt.channels      = impl->mix_fmt->nChannels;
-            pkt.silent        = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            pkt.channels      = static_cast<uint16_t>(impl->mix_fmt->nChannels);
+            pkt.bit_depth     = bit_depth;
+            pkt.silent        = silent;
+            pkt.is_float      = is_float;
             pkt.seq           = impl->seq.fetch_add(1, std::memory_order_relaxed);
+            pkt.data          = silent ? nullptr : reinterpret_cast<const uint8_t*>(data);
+            pkt.data_bytes    = silent ? 0u : bytes;
 
             if (impl->cb) impl->cb(pkt);
 
@@ -67,7 +93,6 @@ static void capture_thread(WasapiCapture::Impl* impl)
             impl->cap_client->GetNextPacketSize(&packet_size);
         }
 
-        // ~10ms poll — low overhead, adequate latency for a spike.
         Sleep(10);
     }
 

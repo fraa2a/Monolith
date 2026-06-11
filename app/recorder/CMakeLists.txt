@@ -25,23 +25,23 @@ target_compile_definitions(windows_recorder
 
 target_link_libraries(windows_recorder
     PRIVATE
-        capture          # libs/capture — WGC display capture
-        audio            # libs/audio   — WASAPI loopback + mic
-        # System libs required by capture (D3D11, WinRT) and audio (COM)
+        capture
+        audio
+        encoding
+        replay_buffer
+        # System libs
         d3d11
         dxgi
-        windowsapp       # WinRT class factory activation
-        ole32            # CoCreateInstance, CoInitializeEx
+        windowsapp
+        ole32
         shell32
         user32
 )
 
 if(MSVC)
     target_compile_options(windows_recorder PRIVATE /W4 /permissive-)
-    # Manifest for DPI awareness and modern common controls
     target_link_options(windows_recorder PRIVATE
         /MANIFEST:EMBED
         /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
     )
 endif()
-

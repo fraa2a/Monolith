@@ -26,6 +26,11 @@ namespace capture {
 
 struct DisplayCapture::Impl {
     winrt::com_ptr<ID3D11Device>          d3d_device;
+    winrt::com_ptr<ID3D11DeviceContext>   d3d_ctx;
+    winrt::com_ptr<ID3D11Texture2D>       staging_tex;
+    uint32_t                              staging_w = 0;
+    uint32_t                              staging_h = 0;
+
     wgdx::Direct3D11::IDirect3DDevice     winrt_device{ nullptr };
     wgc::Direct3D11CaptureFramePool       pool{ nullptr };
     wgc::GraphicsCaptureSession           session{ nullptr };
@@ -94,6 +99,13 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
     impl_->d3d_device = make_d3d_device();
     if (!impl_->d3d_device) return false;
 
+    // Allow context access from any thread (WGC delivers on the thread pool).
+    winrt::com_ptr<ID3D11Multithread> mt;
+    impl_->d3d_device->QueryInterface(IID_PPV_ARGS(mt.put()));
+    if (mt) mt->SetMultithreadProtected(TRUE);
+
+    impl_->d3d_device->GetImmediateContext(impl_->d3d_ctx.put());
+
     try {
         impl_->winrt_device = wrap_d3d(impl_->d3d_device);
         auto item           = item_from_monitor(hmon);
@@ -112,7 +124,6 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
         impl_->frame_token = impl_->pool.FrameArrived(
             [this](wgc::Direct3D11CaptureFramePool const& pool, auto const&)
             {
-                // active is the first check: if stop() is racing, bail early.
                 if (!impl_->active.load(std::memory_order_acquire)) return;
 
                 auto frame = pool.TryGetNextFrame();
@@ -123,10 +134,10 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
 
                 auto sz = frame.ContentSize();
 
-                // Recreate pool if the source resolution changed.
                 if (sz.Width  != impl_->last_size.Width ||
                     sz.Height != impl_->last_size.Height) {
-                    impl_->last_size = sz;
+                    impl_->last_size    = sz;
+                    impl_->staging_tex  = nullptr; // force recreate below
                     pool.Recreate(
                         impl_->winrt_device,
                         wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -138,8 +149,52 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
                 fi.width         = static_cast<uint32_t>(sz.Width);
                 fi.height        = static_cast<uint32_t>(sz.Height);
                 fi.seq           = impl_->seq.fetch_add(1, std::memory_order_relaxed);
+                fi.bgra_data     = nullptr;
+                fi.bgra_stride   = 0;
 
-                if (impl_->cb) impl_->cb(fi);
+                // Get the GPU texture from this frame.
+                auto surface = frame.Surface();
+                auto access  = surface.as<IDirect3DDxgiInterfaceAccess>();
+                winrt::com_ptr<ID3D11Texture2D> gpu_tex;
+                if (SUCCEEDED(access->GetInterface(IID_PPV_ARGS(gpu_tex.put())))) {
+
+                    // Create / recreate staging texture when dimensions change.
+                    if (!impl_->staging_tex ||
+                        impl_->staging_w != fi.width ||
+                        impl_->staging_h != fi.height) {
+                        D3D11_TEXTURE2D_DESC d{};
+                        d.Width            = fi.width;
+                        d.Height           = fi.height;
+                        d.MipLevels        = 1;
+                        d.ArraySize        = 1;
+                        d.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+                        d.SampleDesc.Count = 1;
+                        d.Usage            = D3D11_USAGE_STAGING;
+                        d.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
+                        impl_->staging_tex = nullptr;
+                        impl_->d3d_device->CreateTexture2D(&d, nullptr, impl_->staging_tex.put());
+                        impl_->staging_w = fi.width;
+                        impl_->staging_h = fi.height;
+                    }
+
+                    if (impl_->staging_tex) {
+                        impl_->d3d_ctx->CopyResource(impl_->staging_tex.get(), gpu_tex.get());
+
+                        D3D11_MAPPED_SUBRESOURCE mapped{};
+                        if (SUCCEEDED(impl_->d3d_ctx->Map(
+                                impl_->staging_tex.get(), 0,
+                                D3D11_MAP_READ, 0, &mapped))) {
+                            fi.bgra_data   = static_cast<const uint8_t*>(mapped.pData);
+                            fi.bgra_stride = mapped.RowPitch;
+                            if (impl_->cb) impl_->cb(fi);
+                            impl_->d3d_ctx->Unmap(impl_->staging_tex.get(), 0);
+                        }
+                    }
+                }
+
+                // Fall through: call cb even if readback failed (bgra_data = nullptr).
+                if (fi.bgra_data == nullptr && impl_->cb) impl_->cb(fi);
+
                 frame.Close();
             });
 
@@ -173,9 +228,13 @@ void DisplayCapture::stop()
     if (impl_->session) { impl_->session.Close(); impl_->session = nullptr; }
     if (impl_->pool)    { impl_->pool.Close();    impl_->pool    = nullptr; }
 
+    impl_->staging_tex  = nullptr;
+    impl_->d3d_ctx      = nullptr;
     impl_->winrt_device = nullptr;
     impl_->d3d_device   = nullptr;
     impl_->cb           = nullptr;
+    impl_->staging_w    = 0;
+    impl_->staging_h    = 0;
     impl_->seq.store(0, std::memory_order_relaxed);
 }
 

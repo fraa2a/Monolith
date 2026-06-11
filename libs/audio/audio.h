@@ -12,8 +12,15 @@ struct PacketInfo {
     uint32_t frame_count;   // PCM frames in this packet
     uint32_t sample_rate;
     uint16_t channels;
+    uint16_t bit_depth;     // bits per sample (from mix format)
     bool     silent;        // AUDCLNT_BUFFERFLAGS_SILENT — don't feed to encoder
+    bool     is_float;      // true = IEEE 754 float; false = signed integer PCM
     uint32_t seq;
+
+    // Raw PCM bytes.  Valid only for the duration of the callback; do not cache.
+    // nullptr when silent.  Size = frame_count * channels * (bit_depth / 8).
+    const uint8_t* data;
+    uint32_t       data_bytes;
 };
 
 using PacketCallback = std::function<void(const PacketInfo&)>;
