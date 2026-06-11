@@ -1,0 +1,8 @@
+{
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "features": ["avcodec", "avformat", "avutil", "swscale", "swresample", "x264", "gpl"]
+    }
+  ]
+}

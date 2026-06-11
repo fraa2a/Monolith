@@ -12,6 +12,13 @@ struct FrameInfo {
     uint32_t width;
     uint32_t height;
     uint32_t seq;           // monotonic, resets on start()
+
+    // CPU-readable BGRA pixel data via a D3D11 staging texture.
+    // Valid only for the duration of the callback; do not cache the pointer.
+    // nullptr on readback failure.  Stride >= width*4 (GPU row alignment).
+    // Spike path: GPU-encoder path (NVENC direct) is deferred to Milestone 4.
+    const uint8_t* bgra_data;
+    uint32_t       bgra_stride;
 };
 
 using FrameCallback = std::function<void(const FrameInfo&)>;
@@ -20,7 +27,7 @@ using FrameCallback = std::function<void(const FrameInfo&)>;
 bool is_supported();
 
 // Captures a display via Windows.Graphics.Capture.
-// Frames stay on GPU — no CPU readback.
+// FrameInfo.bgra_data provides a CPU-readable copy via a D3D11 staging texture.
 // Caller must call winrt::init_apartment() before start().
 class DisplayCapture {
 public:
