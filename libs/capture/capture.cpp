@@ -154,9 +154,9 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
 
                 // Get the GPU texture from this frame.
                 auto surface = frame.Surface();
-                auto access  = surface.as<IDirect3DDxgiInterfaceAccess>();
+                auto access  = surface.try_as<IDirect3DDxgiInterfaceAccess>();
                 winrt::com_ptr<ID3D11Texture2D> gpu_tex;
-                if (SUCCEEDED(access->GetInterface(IID_PPV_ARGS(gpu_tex.put())))) {
+                if (access && SUCCEEDED(access->GetInterface(IID_PPV_ARGS(gpu_tex.put())))) {
 
                     // Create / recreate staging texture when dimensions change.
                     if (!impl_->staging_tex ||

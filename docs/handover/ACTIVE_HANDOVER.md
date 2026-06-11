@@ -1,107 +1,73 @@
 # Active Handover
 
-## Product summary
+## Product Summary
 
-This project is a lightweight native Windows 11 clipping and recording application. It is intended to run in the background, expose a tray icon and global hotkeys, keep a rolling replay buffer, support manual recording, and later integrate with an Elgato Stream Deck plugin.
+This project is a lightweight native Windows 11 clipping and recording application. It runs in the background, exposes a tray icon and global hotkeys, keeps a rolling replay buffer, supports manual recording later, and will integrate with an Elgato Stream Deck plugin.
 
-## Current phase
+## Current Phase
 
-- Milestone 1 complete: Win32 tray + hotkey app shell
-- Milestone 2 complete: WGC display capture + WASAPI loopback + mic — ingress proven, log output confirmed
+- Milestone 1 complete: Win32 tray + hotkey app shell.
+- Milestone 2 complete: WGC display capture + WASAPI loopback + mic ingress.
+- Milestone 3 in progress: FFmpeg encode + encoded-packet replay buffer are wired into the app shell.
 
-## Recommended architecture
+## Locked Architecture
 
-- Recorder-first native Windows architecture
-- Prefer custom implementation rather than an OBS fork
-- Single-process MVP with isolated internal modules (/libs); two-process target is deferred
-- Use OBS as a reference/benchmark only
+- Custom native Windows implementation, not an OBS fork.
+- Single-process MVP with isolated `/libs`; two-process engine split deferred.
+- C++23 + CMake.
+- Windows.Graphics.Capture first; Desktop Duplication fallback later.
+- WASAPI for audio capture.
+- FFmpeg/libav for encode and mux/remux.
+- Stream Deck IPC: localhost WebSocket/TCP JSON-RPC at `127.0.0.1:45991`.
+- Stream Deck plugin is a remote controller only; no recording logic in plugin.
 
-## Chosen stack
+## Implemented
 
-- Native language: C++23
-- Build system: CMake
-- Video capture: Windows.Graphics.Capture first, Desktop Duplication as fallback/benchmark
-- Audio capture: WASAPI
-- Hotkeys: Win32 `RegisterHotKey`
-- Tray: Win32 `Shell_NotifyIcon`
-- Encoding direction: FFmpeg/libav preferred, not implemented
-- IPC transport: localhost WebSocket/TCP JSON-RPC (host 127.0.0.1, port 45991)
-- Stream Deck: separate plugin project under plugins/stream-deck/, remote controller only
+- `app/recorder/src/main.cpp`: Win32 app shell, message-only window, tray menu, single-instance mutex, COM/WinRT init, log file.
+- Global hotkey: `Ctrl+Shift+F8` triggers `save_replay`.
+- `libs/capture`: WGC display capture via `CreateFreeThreaded`, D3D11 device, staging BGRA readback, size-change pool recreate.
+- `libs/audio`: WASAPI loopback and mic capture with packet callbacks and mix-format detection.
+- `libs/encoding`: FFmpeg H.264 probing/open path (`h264_nvenc`, `h264_amf`, `h264_qsv`, `libx264`), BGRA-to-YUV video encode, AAC audio encode with resampling.
+- `libs/replay-buffer`: encoded-packet ring buffer, keyframe-based clip start, async Matroska clip writer.
+- App wiring: WGC frames and WASAPI system audio feed encoders; encoded packets feed replay buffer; hotkey snapshots buffer and writes a clip.
 
-## What already exists in the repo
+## Latest Continuation Notes
 
-- `TASK.md`
-- `PROJECT_PLAN.md`
-- native app scaffold under `app/recorder/` (single MVP executable)
-- future placeholders under `app/engine/` and `app/desktop-ui/`
-- library placeholders under `libs/` (capture, audio, encoding, mux, replay-buffer, config, ipc, platform-win, logging, domain)
-- docs scaffold under `docs/`
-- Stream Deck placeholder docs under `plugins/stream-deck/`
-- default config draft under `config/default-config.json` (snake_case rich schema, schema_version 1)
-- root `CMakeLists.txt` wiring `app/recorder/`
-- placeholder script/test readmes
+- `libs/capture/capture.cpp`: changed WGC surface QI from `as<IDirect3DDxgiInterfaceAccess>()` to `try_as<...>()` so a missing interface does not throw on the frame callback thread.
+- `libs/audio/audio.cpp`: silent WASAPI packets now preserve `data_bytes`.
+- `libs/encoding/encoding.cpp`: `AudioEncoder::push_pcm` now converts null PCM input into zeroed silence, preserving AAC timeline during silent stretches.
+- `app/recorder/src/main.cpp`: system-audio encoder now receives silent packets too.
+- `libs/replay-buffer/replay_buffer.cpp`: MKV writer now copies packet bytes into `AVPacket` via `av_new_packet` instead of borrowing vector memory.
 
-## What has been implemented
+## Not Implemented Yet
 
-- `app/recorder/src/main.cpp`: Win32 app shell (WinMain, HWND_MESSAGE window, tray, hotkey, COM/WinRT init)
-- System tray icon with context menu (Save Replay, Start/Stop Recording, Pause/Resume, Settings grayed, Exit)
-- Global hotkey: Ctrl+Shift+F8 → save_replay (MOD_NOREPEAT)
-- Single-instance mutex guard
-- Thread-safe structured log → `%LOCALAPPDATA%\WindowsRecorder\recorder.log` + OutputDebugString
-- `libs/capture/`: WGC display capture (CreateFreeThreaded, D3D11, GPU-resident frames, size-change Recreate)
-- `libs/audio/`: WASAPI loopback + mic (polling capture thread, PacketInfo callbacks, mix format auto-detect)
+- Native build verification on this machine.
+- Recording state machine.
+- Real IPC server/client.
+- Stream Deck plugin code.
+- Settings window; tray menu item remains disabled.
+- Desktop Duplication fallback.
+- GPU-resident encoder path; current spike uses CPU-readable BGRA staging.
+- Microphone mixing into replay output; mic is logged only.
+- MP4 remux policy details.
 
-## What has not been implemented yet
+## Build/Verification Blocker
 
-- no WGC capture code
-- no Desktop Duplication fallback
-- no WASAPI capture
-- no FFmpeg or Media Foundation integration
-- no replay buffer
-- no recording state machine
-- no real IPC server/client
-- no Stream Deck plugin code
-- Settings window (grayed in tray menu)
+On 2026-06-11, `dotnet` existed, but `cmake` was not on PATH and `vswhere` did not report an MSBuild installation. Native C++ build verification could not be completed in this continuation.
 
-## Next module to implement
+## Next Steps
 
-Milestone 3: Replay Buffer Proof of Concept (ROADMAP.md)
-- `libs/encoding/`: FFmpeg/libav wrapper — video encode (H.264 via NVENC/AMF/QSV/software fallback) + AAC audio
-- `libs/replay-buffer/`: encoded-packet ring buffer with keyframe index, configurable duration + memory cap
-- Clip save path: walk back to nearest keyframe, remux forward into MKV output file
-- Wire into main.cpp: encode incoming WGC frames + WASAPI packets, feed ring buffer, Ctrl+Shift+F8 triggers clip save
+1. Install or expose CMake + MSVC Build Tools.
+2. Configure with vcpkg manifest mode and verify `find_package(FFMPEG REQUIRED)` resolves.
+3. Build `windows_recorder`.
+4. Run the app and test `Ctrl+Shift+F8`.
+5. Verify a valid MKV appears under `%LOCALAPPDATA%\WindowsRecorder\Clips`.
+6. If FFmpeg API/version errors appear, fix `libs/encoding` and `libs/replay-buffer` first.
+7. Add a small integration/unit test harness for `ReplayBuffer::save_clip` once build tooling is available.
 
-## Exact next steps for the next AI session
+## Open Risks
 
-1. Read `PROJECT_PLAN.md` §2 subsystems 3–6 and this handover.
-2. Add FFmpeg (via vcpkg or prebuilt) to the build.
-3. Implement `libs/encoding/` — encoder capability probe (NVENC/AMF/QSV/software), encode video + audio.
-4. Implement `libs/replay-buffer/` — ring buffer over `AVPacket`, keyframe index, clip materializer.
-5. Wire into main.cpp: start encode pipeline after capture/audio init.
-6. Test: Ctrl+Shift+F8 → MKV clip saved to output.clips_directory.
-7. Update this handover at end of session.
-
-## Known risks and blockers
-
-- IPC transport is not fully normalized yet across docs.
-- Settings UI stack is not finally locked if WinUI 3 friction becomes high.
-- OBS-informed benchmarking is still planned, not executed.
-- Replay buffer design depends on encoder-path decisions that are still ahead.
-- Capture/encoding complexity remains the main technical risk area.
-
-## Decisions already made
-
-- Start from scratch instead of forking OBS Studio
-- Native Windows app, no Electron/WebView
-- C++23 + CMake as the initial implementation path
-- WASAPI for audio capture
-- Win32 tray and global hotkeys
-- FFmpeg/libav as the preferred encoding direction
-- IPC transport for v1: localhost WebSocket/TCP JSON-RPC (ADR-0007)
-- Process model for MVP: single-process with modular internals (ADR-0008)
-
-## Decisions still open
-
-- Final settings UI framework choice (WinUI 3 vs Qt Widgets)
-- Final mux/remux policy details for MP4 output
-
+- Capture-to-encoder path still performs CPU readback; acceptable for spike, not final performance target.
+- WGC callback and encoder flow need runtime soak testing.
+- A/V sync needs real capture validation, especially around silence and long sessions.
+- Settings UI framework is still WinUI 3 preferred, Qt fallback if Windows App SDK friction is too high.

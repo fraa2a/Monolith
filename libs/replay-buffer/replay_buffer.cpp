@@ -12,6 +12,7 @@ extern "C" {
 #include <windows.h>
 
 #include <atomic>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -251,10 +252,13 @@ static std::wstring write_mkv(
     for (const auto& ep : pkts) {
         AVPacket* pkt = av_packet_alloc();
         if (!pkt) continue;
+        if (av_new_packet(pkt, static_cast<int>(ep.data.size())) < 0) {
+            av_packet_free(&pkt);
+            continue;
+        }
 
         pkt->stream_index = ep.stream_index;
-        pkt->data         = const_cast<uint8_t*>(ep.data.data());
-        pkt->size         = static_cast<int>(ep.data.size());
+        memcpy(pkt->data, ep.data.data(), ep.data.size());
         pkt->flags        = ep.is_keyframe ? AV_PKT_FLAG_KEY : 0;
 
         const int64_t offset = (ep.stream_index == 0) ? v_offset : a_offset;
@@ -268,7 +272,6 @@ static std::wstring write_mkv(
         av_packet_rescale_ts(pkt, src_tb, dst_tb);
 
         av_interleaved_write_frame(fmt, pkt);
-        pkt->data = nullptr; pkt->size = 0; // data not owned by pkt
         av_packet_free(&pkt);
     }
 
