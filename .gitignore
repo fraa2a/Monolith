@@ -1,0 +1,116 @@
+# --- Build ---
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CMakeUserPresets.json
+*.cmake
+!CMakeLists.txt
+
+# --- Visual Studio ---
+*.sln
+*.suo
+*.user
+*.useros
+*.userprefs
+*.vcxproj*
+*.vcxproj.filters
+*.vcxproj.user
+*.vcxproj.*.user
+*.opensdf
+*.log
+*.tlog
+*.ipch
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.idb
+Debug/
+Release/
+x64/
+x86/
+Win32/
+.vs/
+
+# --- Visual Studio Code ---
+.vscode/
+*.code-workspace
+
+# --- vcpkg ---
+vcpkg/
+vcpkg_installed/
+vcpkg-configuration.json
+
+# --- Windows ---
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+
+# --- C++ ---
+*.o
+*.obj
+*.exe
+*.dll
+*.dylib
+*.so
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.map
+*.ncb
+*.sdf
+*.suo
+*.user
+*.bsc
+*.dep
+
+# --- Python (if any scripts use it) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+venv/
+.venv/
+
+# --- Node.js (for future StreamDeck plugin) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
+
+# --- Environment / Secrets ---
+.env
+.env.*
+*.local
+
+# --- IDE ---
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Testing ---
+Testing/
+GoogleTest/
+TestResults/
+*.gtest.xml
