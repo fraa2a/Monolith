@@ -6,8 +6,8 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 
 ## Current phase
 
-- Milestone 1 complete: minimal Win32 tray + hotkey app shell implemented
-- No capture, audio, encoder, or replay buffer logic yet
+- Milestone 1 complete: Win32 tray + hotkey app shell
+- Milestone 2 complete: WGC display capture + WASAPI loopback + mic — ingress proven, log output confirmed
 
 ## Recommended architecture
 
@@ -43,11 +43,13 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 
 ## What has been implemented
 
-- `app/recorder/src/main.cpp`: Win32 app shell (WinMain, message-only HWND_MESSAGE window)
+- `app/recorder/src/main.cpp`: Win32 app shell (WinMain, HWND_MESSAGE window, tray, hotkey, COM/WinRT init)
 - System tray icon with context menu (Save Replay, Start/Stop Recording, Pause/Resume, Settings grayed, Exit)
-- Global hotkey: Ctrl+Shift+F8 → save_replay (with MOD_NOREPEAT)
+- Global hotkey: Ctrl+Shift+F8 → save_replay (MOD_NOREPEAT)
 - Single-instance mutex guard
-- Structured log to `%LOCALAPPDATA%\WindowsRecorder\recorder.log` + OutputDebugString
+- Thread-safe structured log → `%LOCALAPPDATA%\WindowsRecorder\recorder.log` + OutputDebugString
+- `libs/capture/`: WGC display capture (CreateFreeThreaded, D3D11, GPU-resident frames, size-change Recreate)
+- `libs/audio/`: WASAPI loopback + mic (polling capture thread, PacketInfo callbacks, mix format auto-detect)
 
 ## What has not been implemented yet
 
@@ -63,19 +65,21 @@ This project is a lightweight native Windows 11 clipping and recording applicati
 
 ## Next module to implement
 
-Milestone 2: Video/Audio Capture Prototype (ROADMAP.md)
-- `libs/capture`: WGC display capture spike — wrap `Windows.Graphics.Capture`, emit `ID3D11Texture2D` frames with timestamps
-- `libs/audio`: WASAPI loopback + mic spike — enumerate devices, PCM capture, callbacks
-- Wire both into the app shell message loop (no encoding yet, just confirm stable ingress + logging)
+Milestone 3: Replay Buffer Proof of Concept (ROADMAP.md)
+- `libs/encoding/`: FFmpeg/libav wrapper — video encode (H.264 via NVENC/AMF/QSV/software fallback) + AAC audio
+- `libs/replay-buffer/`: encoded-packet ring buffer with keyframe index, configurable duration + memory cap
+- Clip save path: walk back to nearest keyframe, remux forward into MKV output file
+- Wire into main.cpp: encode incoming WGC frames + WASAPI packets, feed ring buffer, Ctrl+Shift+F8 triggers clip save
 
 ## Exact next steps for the next AI session
 
-1. Read `PROJECT_PLAN.md` §2 subsystems 2–4 and this handover.
-2. Implement `libs/capture/` WGC capture wrapper (C++23, D3D11, WinRT interop).
-3. Implement `libs/audio/` WASAPI loopback capture.
-4. Integrate both into `app/recorder/src/main.cpp` as stubs that log frame/audio packet counts.
-5. Do not implement encoding, replay buffer, or IPC yet.
-6. Update this handover at end of session.
+1. Read `PROJECT_PLAN.md` §2 subsystems 3–6 and this handover.
+2. Add FFmpeg (via vcpkg or prebuilt) to the build.
+3. Implement `libs/encoding/` — encoder capability probe (NVENC/AMF/QSV/software), encode video + audio.
+4. Implement `libs/replay-buffer/` — ring buffer over `AVPacket`, keyframe index, clip materializer.
+5. Wire into main.cpp: start encode pipeline after capture/audio init.
+6. Test: Ctrl+Shift+F8 → MKV clip saved to output.clips_directory.
+7. Update this handover at end of session.
 
 ## Known risks and blockers
 

@@ -25,6 +25,13 @@ target_compile_definitions(windows_recorder
 
 target_link_libraries(windows_recorder
     PRIVATE
+        capture          # libs/capture — WGC display capture
+        audio            # libs/audio   — WASAPI loopback + mic
+        # System libs required by capture (D3D11, WinRT) and audio (COM)
+        d3d11
+        dxgi
+        windowsapp       # WinRT class factory activation
+        ole32            # CoCreateInstance, CoInitializeEx
         shell32
         user32
 )

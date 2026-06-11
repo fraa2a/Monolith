@@ -3,16 +3,22 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <strsafe.h>
-#include <cstdio>
 
-// ── Constants ────────────────────────────────────────────────────────────────
+#include <winrt/base.h>          // winrt::init_apartment / uninit_apartment
+
+#include <capture/capture.h>
+#include <audio/audio.h>
+
+#include <cstdio>
+#include <mutex>
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 static constexpr WCHAR kWindowClass[] = L"WinRecorderMsgWnd";
 static constexpr WCHAR kAppName[]     = L"Windows Recorder";
 static constexpr WCHAR kMutexName[]   = L"WinRecorder_SingleInstance";
 static constexpr UINT  WM_TRAYICON   = WM_APP + 1;
 
-// Tray context-menu command IDs (match canonical command vocab in default-config.json)
 enum Cmd : UINT {
     CMD_SAVE_REPLAY     = 1001,
     CMD_RECORDING_START = 1002,
@@ -22,25 +28,22 @@ enum Cmd : UINT {
     CMD_EXIT            = 1006,
 };
 
-// Registered hotkey IDs (WPARAM in WM_HOTKEY)
 enum HotkeyId : int {
     HK_SAVE_REPLAY = 1,
 };
 
 // ── Logging ───────────────────────────────────────────────────────────────────
-// Writes timestamped structured lines to %LOCALAPPDATA%\WindowsRecorder\recorder.log
-// and to the debugger via OutputDebugStringA.
+// Thread-safe: called from the WGC thread pool and the WASAPI capture thread.
 
-static FILE* g_log = nullptr;
+static FILE*       g_log       = nullptr;
+static std::mutex  g_log_mutex;
 
 static void log_init()
 {
     WCHAR dir[MAX_PATH];
-    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH))
-        return;
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH)) return;
     StringCchCatW(dir, MAX_PATH, L"\\WindowsRecorder");
-    CreateDirectoryW(dir, nullptr); // no-op if already exists
-
+    CreateDirectoryW(dir, nullptr);
     WCHAR path[MAX_PATH];
     StringCchCopyW(path, MAX_PATH, dir);
     StringCchCatW(path, MAX_PATH, L"\\recorder.log");
@@ -53,12 +56,81 @@ static void log_msg(const char* tag, const char* msg)
     GetSystemTime(&st);
     char buf[512];
     snprintf(buf, sizeof(buf),
-        "[%04d-%02d-%02dT%02d:%02d:%02dZ] [%-8s] %s\n",
+        "[%04d-%02d-%02dT%02d:%02d:%02dZ] [%-10s] %s\n",
         st.wYear, st.wMonth, st.wDay,
         st.wHour, st.wMinute, st.wSecond,
         tag, msg);
-    if (g_log) { fputs(buf, g_log); fflush(g_log); }
+    {
+        std::lock_guard<std::mutex> lk(g_log_mutex);
+        if (g_log) { fputs(buf, g_log); fflush(g_log); }
+    }
     OutputDebugStringA(buf);
+}
+
+// ── Capture + Audio globals ───────────────────────────────────────────────────
+
+static capture::DisplayCapture g_video;
+static audio::WasapiCapture    g_audio_system;
+static audio::WasapiCapture    g_audio_mic;
+
+static void media_start(HWND hwnd)
+{
+    // Capture the monitor that owns the message-window (primary display).
+    HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+
+    if (capture::is_supported()) {
+        bool ok = g_video.start(hmon, [](capture::FrameInfo const& f) {
+            // Log every 300th frame (~5 s at 60 fps).
+            if (f.seq % 300 == 0) {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                    "seq=%-6u  %ux%u", f.seq, f.width, f.height);
+                log_msg("capture", buf);
+            }
+        });
+        log_msg("capture", ok ? "WGC display capture started"
+                               : "WARNING: WGC display capture failed");
+    } else {
+        log_msg("capture", "WARNING: Windows.Graphics.Capture not supported");
+    }
+
+    bool ok_sys = g_audio_system.start(
+        audio::WasapiCapture::Mode::Loopback,
+        [](audio::PacketInfo const& p) {
+            if (p.seq % 500 == 0) {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                    "seq=%-6u  frames=%-4u  sr=%u  ch=%u%s",
+                    p.seq, p.frame_count, p.sample_rate, p.channels,
+                    p.silent ? "  [silent]" : "");
+                log_msg("audio.sys", buf);
+            }
+        });
+    log_msg("audio.sys", ok_sys ? "WASAPI loopback started"
+                                 : "WARNING: WASAPI loopback failed");
+
+    bool ok_mic = g_audio_mic.start(
+        audio::WasapiCapture::Mode::Microphone,
+        [](audio::PacketInfo const& p) {
+            if (p.seq % 500 == 0) {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                    "seq=%-6u  frames=%-4u  sr=%u  ch=%u%s",
+                    p.seq, p.frame_count, p.sample_rate, p.channels,
+                    p.silent ? "  [silent]" : "");
+                log_msg("audio.mic", buf);
+            }
+        });
+    log_msg("audio.mic", ok_mic ? "WASAPI mic started"
+                                 : "WARNING: WASAPI mic failed (no mic?)");
+}
+
+static void media_stop()
+{
+    g_video.stop();
+    g_audio_system.stop();
+    g_audio_mic.stop();
+    log_msg("app", "capture + audio stopped");
 }
 
 // ── System tray ───────────────────────────────────────────────────────────────
@@ -73,19 +145,15 @@ static void tray_add(HWND hwnd)
     g_nid.uID              = 1;
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon            = LoadIconW(nullptr, IDI_APPLICATION); // placeholder icon
+    g_nid.hIcon            = LoadIconW(nullptr, IDI_APPLICATION);
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), kAppName);
-
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid))
         log_msg("tray", "WARNING: Shell_NotifyIconW NIM_ADD failed");
-    else
-        log_msg("tray", "tray icon added");
 }
 
 static void tray_remove()
 {
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
-    log_msg("tray", "tray icon removed");
 }
 
 static void tray_show_menu(HWND hwnd)
@@ -100,24 +168,20 @@ static void tray_show_menu(HWND hwnd)
     AppendMenuW(menu, MF_STRING | MF_GRAYED, CMD_SETTINGS,        L"Settings\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_EXIT,            L"Exit");
-
     POINT pt;
     GetCursorPos(&pt);
-    // SetForegroundWindow is required so the menu dismisses when the user clicks elsewhere
     SetForegroundWindow(hwnd);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
 }
 
 // ── Hotkeys ───────────────────────────────────────────────────────────────────
-// Bindings come from default-config.json; hardcoded defaults for Milestone 1.
 
 static void hotkeys_register(HWND hwnd)
 {
-    // save_replay: Ctrl+Shift+F8
     if (!RegisterHotKey(hwnd, HK_SAVE_REPLAY,
                         MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F8))
-        log_msg("hotkey", "WARNING: save_replay (Ctrl+Shift+F8) registration failed - key may be in use");
+        log_msg("hotkey", "WARNING: save_replay (Ctrl+Shift+F8) failed — key may be in use");
     else
         log_msg("hotkey", "save_replay (Ctrl+Shift+F8) registered");
 }
@@ -128,7 +192,6 @@ static void hotkeys_unregister(HWND hwnd)
 }
 
 // ── Command dispatch ──────────────────────────────────────────────────────────
-// Placeholder: logs the command and returns. Real handlers wired in later milestones.
 
 static void dispatch(Cmd cmd, HWND hwnd)
 {
@@ -165,10 +228,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CREATE:
         tray_add(hwnd);
         hotkeys_register(hwnd);
-        log_msg("app", "app shell started - recording engine not yet active");
+        media_start(hwnd);
+        log_msg("app", "app shell ready");
         return 0;
 
     case WM_DESTROY:
+        media_stop();
         hotkeys_unregister(hwnd);
         tray_remove();
         log_msg("app", "app shell stopped");
@@ -176,7 +241,6 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_TRAYICON:
-        // Right-click or left double-click opens the context menu
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONDBLCLK)
             tray_show_menu(hwnd);
         return 0;
@@ -199,12 +263,14 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 {
-    // Single-instance guard: abort if another copy is already running
     HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         if (mutex) CloseHandle(mutex);
         return 0;
     }
+
+    // Initialize COM (MTA) for WinRT (WGC) and WASAPI.
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
     log_init();
     log_msg("app", "initializing");
@@ -216,17 +282,18 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     wc.lpszClassName = kWindowClass;
     if (!RegisterClassExW(&wc)) {
         log_msg("app", "FATAL: RegisterClassExW failed");
+        winrt::uninit_apartment();
         CloseHandle(mutex);
         return 1;
     }
 
-    // HWND_MESSAGE: message-only window - invisible, no taskbar entry, no painting
     HWND hwnd = CreateWindowExW(
         0, kWindowClass, kAppName,
         0, 0, 0, 0, 0,
         HWND_MESSAGE, nullptr, hInst, nullptr);
     if (!hwnd) {
         log_msg("app", "FATAL: CreateWindowExW failed");
+        winrt::uninit_apartment();
         CloseHandle(mutex);
         return 1;
     }
@@ -237,6 +304,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         DispatchMessageW(&msg);
     }
 
+    winrt::uninit_apartment();
     CloseHandle(mutex);
     if (g_log) fclose(g_log);
     return static_cast<int>(msg.wParam);

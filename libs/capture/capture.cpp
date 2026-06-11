@@ -1,0 +1,182 @@
+#include "capture.h"
+
+// Suppress macro redefinition warnings from Windows/WinRT headers
+#pragma warning(push)
+#pragma warning(disable: 4005)
+#include <winrt/base.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Capture.h>
+#include <winrt/Windows.Graphics.DirectX.h>
+#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#pragma warning(pop)
+
+#include <Windows.Graphics.Capture.Interop.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
+#include <d3d11.h>
+#include <dxgi.h>
+
+#include <atomic>
+
+namespace wgc  = winrt::Windows::Graphics::Capture;
+namespace wgdx = winrt::Windows::Graphics::DirectX;
+
+namespace capture {
+
+// ── Impl ──────────────────────────────────────────────────────────────────────
+
+struct DisplayCapture::Impl {
+    winrt::com_ptr<ID3D11Device>          d3d_device;
+    wgdx::Direct3D11::IDirect3DDevice     winrt_device{ nullptr };
+    wgc::Direct3D11CaptureFramePool       pool{ nullptr };
+    wgc::GraphicsCaptureSession           session{ nullptr };
+    winrt::event_token                    frame_token{};
+    winrt::Windows::Graphics::SizeInt32   last_size{};
+
+    std::atomic<bool>     active{ false };
+    std::atomic<uint32_t> seq{ 0 };
+    FrameCallback         cb;
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+bool is_supported()
+{
+    return wgc::GraphicsCaptureSession::IsSupported();
+}
+
+static winrt::com_ptr<ID3D11Device> make_d3d_device()
+{
+    winrt::com_ptr<ID3D11Device> dev;
+    D3D11CreateDevice(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        nullptr, 0, D3D11_SDK_VERSION,
+        dev.put(), nullptr, nullptr);
+    return dev;
+}
+
+static wgdx::Direct3D11::IDirect3DDevice
+wrap_d3d(winrt::com_ptr<ID3D11Device> const& d3d)
+{
+    auto dxgi = d3d.as<IDXGIDevice>();
+    winrt::com_ptr<::IInspectable> insp;
+    winrt::check_hresult(CreateDirect3D11DeviceFromDXGIDevice(dxgi.get(), insp.put()));
+    return insp.as<wgdx::Direct3D11::IDirect3DDevice>();
+}
+
+static wgc::GraphicsCaptureItem item_from_monitor(HMONITOR hmon)
+{
+    // IGraphicsCaptureItem default interface GUID
+    static constexpr GUID kItemGuid =
+        { 0x79C3F95B, 0x31F7, 0x4EC2, {0xA4, 0x64, 0x63, 0x2E, 0xF5, 0xD3, 0x07, 0x60} };
+
+    auto factory = winrt::get_activation_factory<
+        wgc::GraphicsCaptureItem,
+        IGraphicsCaptureItemInterop>();
+
+    wgc::GraphicsCaptureItem item{ nullptr };
+    winrt::check_hresult(factory->CreateForMonitor(hmon, kItemGuid, winrt::put_abi(item)));
+    return item;
+}
+
+// ── DisplayCapture ────────────────────────────────────────────────────────────
+
+DisplayCapture::DisplayCapture() : impl_(new Impl()) {}
+DisplayCapture::~DisplayCapture() { stop(); delete impl_; }
+bool DisplayCapture::running() const { return impl_->active.load(std::memory_order_relaxed); }
+
+bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
+{
+    if (impl_->active) return false;
+    if (!is_supported()) return false;
+
+    impl_->cb         = std::move(cb);
+    impl_->d3d_device = make_d3d_device();
+    if (!impl_->d3d_device) return false;
+
+    try {
+        impl_->winrt_device = wrap_d3d(impl_->d3d_device);
+        auto item           = item_from_monitor(hmon);
+        impl_->last_size    = item.Size();
+
+        // CreateFreeThreaded: callbacks arrive on the WinRT thread pool regardless
+        // of the calling thread's apartment — required for Win32 desktop apps.
+        impl_->pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
+            impl_->winrt_device,
+            wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            2,              // double-buffer
+            impl_->last_size);
+
+        impl_->active = true;
+
+        impl_->frame_token = impl_->pool.FrameArrived(
+            [this](wgc::Direct3D11CaptureFramePool const& pool, auto const&)
+            {
+                // active is the first check: if stop() is racing, bail early.
+                if (!impl_->active.load(std::memory_order_acquire)) return;
+
+                auto frame = pool.TryGetNextFrame();
+                if (!frame) return;
+
+                LARGE_INTEGER qpc{};
+                QueryPerformanceCounter(&qpc);
+
+                auto sz = frame.ContentSize();
+
+                // Recreate pool if the source resolution changed.
+                if (sz.Width  != impl_->last_size.Width ||
+                    sz.Height != impl_->last_size.Height) {
+                    impl_->last_size = sz;
+                    pool.Recreate(
+                        impl_->winrt_device,
+                        wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                        2, sz);
+                }
+
+                FrameInfo fi{};
+                fi.timestamp_qpc = qpc.QuadPart;
+                fi.width         = static_cast<uint32_t>(sz.Width);
+                fi.height        = static_cast<uint32_t>(sz.Height);
+                fi.seq           = impl_->seq.fetch_add(1, std::memory_order_relaxed);
+
+                if (impl_->cb) impl_->cb(fi);
+                frame.Close();
+            });
+
+        impl_->session = impl_->pool.CreateCaptureSession(item);
+        impl_->session.StartCapture();
+    }
+    catch (...) {
+        impl_->active = false;
+        impl_->cb     = nullptr;
+        impl_->d3d_device = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+void DisplayCapture::stop()
+{
+    if (!impl_->active) return;
+
+    // Signal the callback to abort immediately on next invocation.
+    impl_->active.store(false, std::memory_order_release);
+
+    // Give any in-flight callback time to see active=false and return.
+    // Spike-quality sync: 30ms >> max callback duration at 60fps (16ms).
+    Sleep(30);
+
+    // Revoke the handler — no new invocations after this returns.
+    impl_->pool.FrameArrived(impl_->frame_token);
+
+    if (impl_->session) { impl_->session.Close(); impl_->session = nullptr; }
+    if (impl_->pool)    { impl_->pool.Close();    impl_->pool    = nullptr; }
+
+    impl_->winrt_device = nullptr;
+    impl_->d3d_device   = nullptr;
+    impl_->cb           = nullptr;
+    impl_->seq.store(0, std::memory_order_relaxed);
+}
+
+} // namespace capture
