@@ -3,10 +3,48 @@
 #include <shellapi.h>
 
 #include <filesystem>
+#include <string>
 #include <thread>
 
 namespace settings_window {
 namespace {
+
+// Handle of the last spawned Settings process; owned by the UI thread
+// (show() is only called from the tray window's message loop).
+HANDLE g_settings_process = nullptr;
+
+struct FocusContext {
+    DWORD pid;
+    bool focused;
+};
+
+BOOL CALLBACK focus_enum_proc(HWND hwnd, LPARAM lp)
+{
+    auto* ctx = reinterpret_cast<FocusContext*>(lp);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == ctx->pid && IsWindowVisible(hwnd)) {
+        SetForegroundWindow(hwnd);
+        ctx->focused = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// Returns true when a previously launched Settings window is still running
+// (and tries to bring it to the foreground instead of spawning a duplicate).
+bool settings_already_running()
+{
+    if (!g_settings_process) return false;
+    if (WaitForSingleObject(g_settings_process, 0) != WAIT_TIMEOUT) {
+        CloseHandle(g_settings_process);
+        g_settings_process = nullptr;
+        return false;
+    }
+    FocusContext ctx{ GetProcessId(g_settings_process), false };
+    EnumWindows(focus_enum_proc, reinterpret_cast<LPARAM>(&ctx));
+    return true;
+}
 
 std::filesystem::path module_dir()
 {
@@ -38,6 +76,8 @@ std::filesystem::path settings_exe_path()
 
 void show(HWND owner, UINT reload_message)
 {
+    if (settings_already_running()) return;
+
     std::filesystem::path exe = settings_exe_path();
 
     SHELLEXECUTEINFOW info{};
@@ -49,15 +89,24 @@ void show(HWND owner, UINT reload_message)
     info.nShow = SW_SHOWNORMAL;
 
     if (!ShellExecuteExW(&info) || !info.hProcess) {
-        MessageBoxW(
-            owner,
-            L"Monolith.Settings.exe was not found. Build or install the WinUI settings app.",
-            L"Monolith Settings",
-            MB_ICONERROR);
+        std::wstring message =
+            L"Monolith.Settings.exe was not found or could not be started.\n\n"
+            L"Expected location:\n" + exe.wstring() +
+            L"\n\nBuild or install the WinUI settings app "
+            L"(cmake builds it when the .NET 8 SDK is installed).";
+        MessageBoxW(owner, message.c_str(), L"Monolith Settings", MB_ICONERROR);
         return;
     }
 
+    // The reload-watcher thread owns one handle; the duplicate-launch guard
+    // keeps another.  If duplication fails, skip the guard rather than share.
     HANDLE process = info.hProcess;
+    HANDLE guard = nullptr;
+    DuplicateHandle(GetCurrentProcess(), info.hProcess,
+                    GetCurrentProcess(), &guard,
+                    0, FALSE, DUPLICATE_SAME_ACCESS);
+    g_settings_process = guard;
+
     std::thread([owner, reload_message, process]() {
         WaitForSingleObject(process, INFINITE);
         CloseHandle(process);

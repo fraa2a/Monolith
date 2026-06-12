@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <vector>
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -118,7 +119,8 @@ static void log_init()
     std::wstring dir = app_data_dir();
     if (dir.empty()) return;
     std::wstring path = dir + L"\\monolith.log";
-    _wfopen_s(&g_log, path.c_str(), L"a");
+    // _SH_DENYNO: keep the log readable by Settings/diagnostics while we run.
+    g_log = _wfsopen(path.c_str(), L"a", _SH_DENYNO);
 }
 
 static void log_msg(const char* tag, const char* msg)
@@ -163,6 +165,81 @@ static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
 static std::wstring g_recordings_dir;
 static settings::Config g_settings;
+
+static std::mutex g_status_mutex;
+static settings::RuntimeStatus g_runtime_status;
+
+// Re-writes AppData\Local\Monolith\runtime-status.json from g_runtime_status.
+// Callable from the WGC callback thread (encoder opens on first frame).
+static void publish_runtime_status()
+{
+    settings::RuntimeStatus snapshot;
+    {
+        std::lock_guard<std::mutex> lk(g_status_mutex);
+        snapshot = g_runtime_status;
+    }
+    std::string error;
+    if (!settings::write_runtime_status(app_data_dir(), snapshot, &error))
+        log_msg("settings", ("runtime-status write failed: " + error).c_str());
+}
+
+// ── Monitor enumeration / selection ──────────────────────────────────────────
+
+struct MonitorEntry {
+    HMONITOR hmon = nullptr;
+    settings::RuntimeMonitor info;
+};
+
+static BOOL CALLBACK monitor_enum_proc(HMONITOR hmon, HDC, LPRECT, LPARAM lp)
+{
+    auto* list = reinterpret_cast<std::vector<MonitorEntry>*>(lp);
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(hmon, &mi)) {
+        MonitorEntry entry;
+        entry.hmon         = hmon;
+        entry.info.device  = mi.szDevice;
+        entry.info.width   = mi.rcMonitor.right - mi.rcMonitor.left;
+        entry.info.height  = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        entry.info.primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+        list->push_back(std::move(entry));
+    }
+    return TRUE;
+}
+
+static std::vector<MonitorEntry> enumerate_monitors()
+{
+    std::vector<MonitorEntry> list;
+    EnumDisplayMonitors(nullptr, nullptr, monitor_enum_proc,
+                        reinterpret_cast<LPARAM>(&list));
+    return list;
+}
+
+// Picks the configured capture monitor by device name; falls back to primary.
+static HMONITOR monitor_from_settings(const std::vector<MonitorEntry>& monitors,
+                                      std::wstring* used_device)
+{
+    HMONITOR primary = nullptr;
+    std::wstring primary_device;
+    for (const auto& entry : monitors) {
+        if (entry.info.primary) {
+            primary = entry.hmon;
+            primary_device = entry.info.device;
+        }
+        if (!g_settings.monitor_device.empty() &&
+            entry.info.device == g_settings.monitor_device) {
+            if (used_device) *used_device = entry.info.device;
+            return entry.hmon;
+        }
+    }
+    if (!g_settings.monitor_device.empty())
+        log_path("capture", "configured monitor not found, using primary: ",
+                 g_settings.monitor_device);
+    if (used_device) *used_device = primary_device;
+    if (primary) return primary;
+    const POINT origin{ 0, 0 };
+    return MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+}
 
 static void apply_runtime_settings()
 {
@@ -211,18 +288,49 @@ static void show_settings(HWND hwnd)
 
 static void reload_settings_from_disk()
 {
+    settings::Config previous = g_settings;
     load_app_settings();
     apply_runtime_settings();
     log_msg("settings", "settings reloaded from WinUI app");
+
+    // Capture/encoder settings are read once at media_start; flag the
+    // difference instead of pretending they were applied live.
+    if (previous.monitor_device       != g_settings.monitor_device ||
+        previous.resolution_mode      != g_settings.resolution_mode ||
+        previous.output_width         != g_settings.output_width ||
+        previous.output_height        != g_settings.output_height ||
+        previous.show_capture_border  != g_settings.show_capture_border ||
+        previous.encoder_backend      != g_settings.encoder_backend ||
+        previous.video_bitrate_kbps   != g_settings.video_bitrate_kbps ||
+        previous.extra_ffmpeg_options != g_settings.extra_ffmpeg_options) {
+        log_msg("settings", "capture/encoder changes saved: restart Monolith to apply");
+    }
 }
 
 // ── Media start / stop ────────────────────────────────────────────────────────
 
 static void media_start(HWND hwnd)
 {
-    HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+    (void)hwnd;
 
-    // ── Determine monitor resolution ─────────────────────────────────────────
+    // ── Capture monitor from config (restart-required setting) ───────────────
+    std::vector<MonitorEntry> monitors = enumerate_monitors();
+    std::wstring used_device;
+    HMONITOR hmon = monitor_from_settings(monitors, &used_device);
+    log_path("capture", "capture monitor: ",
+             used_device.empty() ? L"(primary)" : used_device);
+
+    {
+        std::lock_guard<std::mutex> lk(g_status_mutex);
+        g_runtime_status.monitors.clear();
+        for (const auto& entry : monitors)
+            g_runtime_status.monitors.push_back(entry.info);
+        g_runtime_status.active_monitor_device = used_device;
+        // Probe with a representative size; availability does not depend on it.
+        g_runtime_status.available_encoders =
+            encoding::available_video_encoders(1920, 1080);
+    }
+
     g_video_enc_open_attempted.store(false, std::memory_order_release);
     g_enc_w = 0;
     g_enc_h = 0;
@@ -279,14 +387,23 @@ static void media_start(HWND hwnd)
                     return;
                 }
 
-                g_enc_w = static_cast<int>(f.width & ~1u);
-                g_enc_h = static_cast<int>(f.height & ~1u);
+                // Output resolution: capture-native unless config requests custom.
+                if (g_settings.resolution_mode == "custom" &&
+                    g_settings.output_width > 0 && g_settings.output_height > 0) {
+                    g_enc_w = g_settings.output_width;
+                    g_enc_h = g_settings.output_height;
+                } else {
+                    g_enc_w = static_cast<int>(f.width & ~1u);
+                    g_enc_h = static_cast<int>(f.height & ~1u);
+                }
 
                 encoding::VideoEncoder::Config vcfg;
-                vcfg.width   = g_enc_w;
-                vcfg.height  = g_enc_h;
-                vcfg.fps     = 30;
-                vcfg.bitrate = 20'000'000;
+                vcfg.width             = g_enc_w;
+                vcfg.height            = g_enc_h;
+                vcfg.fps               = 30;
+                vcfg.bitrate           = static_cast<int64_t>(g_settings.video_bitrate_kbps) * 1000;
+                vcfg.preferred_encoder = g_settings.encoder_backend;
+                vcfg.extra_options     = g_settings.extra_ffmpeg_options;
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
                     auto replay_pkt = pkt;
@@ -294,15 +411,35 @@ static void media_start(HWND hwnd)
                     g_recording.push(std::move(pkt));
                 });
 
-                char enc_msg[128];
-                snprintf(enc_msg, sizeof(enc_msg),
-                    "%dx%d @30fps bitrate=20Mbps", g_enc_w, g_enc_h);
-                log_msg("encoding", enc_ok ? enc_msg : "WARNING: no H.264 encoder - replay disabled");
+                if (enc_ok) {
+                    char enc_msg[256];
+                    snprintf(enc_msg, sizeof(enc_msg),
+                        "%s %dx%d @30fps bitrate=%dkbps%s%s",
+                        g_video_enc.encoder_name().c_str(), g_enc_w, g_enc_h,
+                        g_settings.video_bitrate_kbps,
+                        g_settings.extra_ffmpeg_options.empty() ? "" :
+                            (g_video_enc.extra_options_rejected()
+                                ? "  extra_options=REJECTED (opened without them)"
+                                : "  extra_options="),
+                        (!g_settings.extra_ffmpeg_options.empty() &&
+                         !g_video_enc.extra_options_rejected())
+                            ? g_settings.extra_ffmpeg_options.c_str() : "");
+                    log_msg("encoding", enc_msg);
+                } else {
+                    log_msg("encoding", "WARNING: no H.264 encoder - replay disabled");
+                }
 
                 if (enc_ok) {
                     auto params = g_video_enc.stream_params();
                     g_replay.set_video_params(params);
                     g_recording.set_video_params(params);
+                    {
+                        std::lock_guard<std::mutex> lk(g_status_mutex);
+                        g_runtime_status.active_encoder = g_video_enc.encoder_name();
+                        g_runtime_status.encode_width   = g_enc_w;
+                        g_runtime_status.encode_height  = g_enc_h;
+                    }
+                    publish_runtime_status();
                 } else {
                     return;
                 }
@@ -312,9 +449,20 @@ static void media_start(HWND hwnd)
                 static_cast<int>(f.bgra_stride),
                 static_cast<int>(f.width),
                 static_cast<int>(f.height));
-        });
+        }, g_settings.show_capture_border);
         log_msg("capture", ok ? "WGC display capture started"
                                : "WARNING: WGC display capture failed");
+        if (ok) {
+            log_msg("capture", g_settings.show_capture_border
+                ? "capture border: enabled by config"
+                : (g_video.border_suppressed()
+                    ? "capture border: suppressed (IsBorderRequired=false)"
+                    : "capture border: suppression DENIED by OS (border visible)"));
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_status_mutex);
+            g_runtime_status.border_suppressed = g_video.border_suppressed();
+        }
     } else {
         log_msg("capture", "WARNING: Windows.Graphics.Capture not supported");
     }
@@ -532,6 +680,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         tray_add(hwnd);
         hotkeys_register(hwnd);
         media_start(hwnd);
+        publish_runtime_status();
         log_msg("app", "app shell ready");
         return 0;
 

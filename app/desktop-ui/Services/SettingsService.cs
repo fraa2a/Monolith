@@ -8,24 +8,32 @@ public sealed class SettingsService
 {
     private const string FallbackDefaults = """
     {
-      "schema_version": 1,
+      "schema_version": 2,
+      "capture": {
+        "monitor_device": "",
+        "resolution_mode": "source",
+        "resolution_width": 0,
+        "resolution_height": 0,
+        "show_capture_border": false
+      },
       "replay_buffer": {
-        "enabled": true,
         "duration_seconds": 30,
         "memory_budget_mb": 512,
-        "save_container": "mkv",
-        "auto_remux_to_mp4": false
+        "save_container": "mkv"
       },
       "recording": {
-        "default_container": "mkv",
-        "auto_remux_to_mp4": true
+        "container": "mkv",
+        "pause_behavior": "timestamp_gap"
+      },
+      "video_encoder": {
+        "backend": "auto",
+        "bitrate_kbps": 20000,
+        "extra_ffmpeg_options": ""
       },
       "output": {
         "clips_directory": "",
         "recordings_directory": "",
-        "temp_directory": "",
-        "storage_cap_gb": 200,
-        "auto_cleanup": true
+        "temp_directory": ""
       },
       "hotkeys": {
         "save_replay": "Ctrl+Shift+F8",
@@ -39,6 +47,11 @@ public sealed class SettingsService
     private readonly JsonSerializerOptions jsonOptions = new() { WriteIndented = true };
 
     public string ConfigPath { get; }
+    public string RuntimeStatusPath { get; }
+    public string? LoadWarning { get; private set; }
+
+    public string DefaultClipsDirectory { get; }
+    public string DefaultRecordingsDirectory { get; }
 
     public SettingsService()
     {
@@ -46,10 +59,16 @@ public sealed class SettingsService
         string monolithDir = Path.Combine(appData, "Monolith");
         Directory.CreateDirectory(monolithDir);
         ConfigPath = Path.Combine(monolithDir, "config.json");
+        RuntimeStatusPath = Path.Combine(monolithDir, "runtime-status.json");
+
+        string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        DefaultClipsDirectory = Path.Combine(videos, "Monolith", "Clips");
+        DefaultRecordingsDirectory = Path.Combine(videos, "Monolith", "Recordings");
     }
 
     public SettingsData Load()
     {
+        LoadWarning = null;
         JsonObject root = LoadMergedConfig();
         EnsureRuntimeDefaults(root);
 
@@ -67,6 +86,60 @@ public sealed class SettingsService
         SaveRoot(root);
     }
 
+    public RuntimeStatus? LoadRuntimeStatus()
+    {
+        if (!File.Exists(RuntimeStatusPath))
+            return null;
+
+        try
+        {
+            string json = File.ReadAllText(RuntimeStatusPath);
+            JsonNode? node = JsonNode.Parse(json);
+            if (node is not JsonObject obj)
+                return null;
+
+            RuntimeStatus status = new();
+
+            if (obj["monitors"] is JsonArray monitorsArr)
+            {
+                foreach (JsonNode? item in monitorsArr)
+                {
+                    if (item is not JsonObject m)
+                        continue;
+                    status.Monitors.Add(new MonitorInfo
+                    {
+                        Device = StringAt(m, "device"),
+                        Width = IntAt(m, "width", 0),
+                        Height = IntAt(m, "height", 0),
+                        Primary = BoolAt(m, "primary"),
+                    });
+                }
+            }
+
+            if (obj["available_encoders"] is JsonArray encArr)
+            {
+                foreach (JsonNode? item in encArr)
+                {
+                    string? s = item?.GetValue<string>();
+                    if (s is not null)
+                        status.AvailableEncoders.Add(s);
+                }
+            }
+
+            status.ActiveEncoder = StringAt(obj, "active_encoder");
+            status.ActiveMonitorDevice = StringAt(obj, "active_monitor_device");
+            status.BorderSuppressed = BoolAt(obj, "border_suppressed");
+            status.EncodeWidth = IntAt(obj, "encode_width", 0);
+            status.EncodeHeight = IntAt(obj, "encode_height", 0);
+
+            return status;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private JsonObject LoadMergedConfig()
     {
         JsonObject root = LoadDefaultConfig();
@@ -82,6 +155,18 @@ public sealed class SettingsService
         }
         catch
         {
+            // Corrupt config: back it up and remember the warning.
+            try
+            {
+                string bakPath = ConfigPath + ".bak";
+                File.Copy(ConfigPath, bakPath, overwrite: true);
+            }
+            catch
+            {
+                // Best-effort; ignore copy failure.
+            }
+
+            LoadWarning = $"Config file was corrupt and has been backed up to config.json.bak. Defaults have been loaded.";
             return root;
         }
 
@@ -140,13 +225,26 @@ public sealed class SettingsService
         string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
         JsonObject output = ObjectAt(root, "output");
-        SetIfMissing(output, "clips_directory", Path.Combine(videos, "Monolith", "Clips"));
-        SetIfMissing(output, "recordings_directory", Path.Combine(videos, "Monolith", "Recordings"));
-        SetIfMissing(output, "temp_directory", Path.Combine(localAppData, "Monolith", "Temp"));
+        SetIfEmpty(output, "clips_directory", Path.Combine(videos, "Monolith", "Clips"));
+        SetIfEmpty(output, "recordings_directory", Path.Combine(videos, "Monolith", "Recordings"));
+        SetIfEmpty(output, "temp_directory", Path.Combine(localAppData, "Monolith", "Temp"));
 
         JsonObject replay = ObjectAt(root, "replay_buffer");
         SetIfMissing(replay, "duration_seconds", 30);
         SetIfMissing(replay, "memory_budget_mb", 512);
+        SetIfMissing(replay, "save_container", "mkv");
+
+        JsonObject capture = ObjectAt(root, "capture");
+        SetIfMissing(capture, "monitor_device", "");
+        SetIfMissing(capture, "resolution_mode", "source");
+        SetIfMissing(capture, "resolution_width", 0);
+        SetIfMissing(capture, "resolution_height", 0);
+        SetIfMissing(capture, "show_capture_border", false);
+
+        JsonObject videoEncoder = ObjectAt(root, "video_encoder");
+        SetIfMissing(videoEncoder, "backend", "auto");
+        SetIfMissing(videoEncoder, "bitrate_kbps", 20000);
+        SetIfMissing(videoEncoder, "extra_ffmpeg_options", "");
 
         JsonObject hotkeys = ObjectAt(root, "hotkeys");
         SetIfMissing(hotkeys, "save_replay", "Ctrl+Shift+F8");
@@ -160,6 +258,8 @@ public sealed class SettingsService
         JsonObject output = ObjectAt(root, "output");
         JsonObject replay = ObjectAt(root, "replay_buffer");
         JsonObject hotkeys = ObjectAt(root, "hotkeys");
+        JsonObject capture = ObjectAt(root, "capture");
+        JsonObject videoEncoder = ObjectAt(root, "video_encoder");
 
         return new SettingsData
         {
@@ -172,6 +272,14 @@ public sealed class SettingsService
             RecordingStartHotkey = StringAt(hotkeys, "recording_start", "Ctrl+Shift+F9"),
             RecordingStopHotkey = StringAt(hotkeys, "recording_stop", "Ctrl+Shift+F10"),
             PauseResumeHotkey = StringAt(hotkeys, "pause_resume", "Ctrl+Shift+F11"),
+            MonitorDevice = StringAt(capture, "monitor_device"),
+            ResolutionMode = StringAt(capture, "resolution_mode", "source"),
+            ResolutionWidth = IntAt(capture, "resolution_width", 0),
+            ResolutionHeight = IntAt(capture, "resolution_height", 0),
+            ShowCaptureBorder = BoolAt(capture, "show_capture_border"),
+            EncoderBackend = StringAt(videoEncoder, "backend", "auto"),
+            BitrateKbps = IntAt(videoEncoder, "bitrate_kbps", 20000),
+            ExtraFfmpegOptions = StringAt(videoEncoder, "extra_ffmpeg_options"),
         };
     }
 
@@ -185,6 +293,18 @@ public sealed class SettingsService
         JsonObject replay = ObjectAt(root, "replay_buffer");
         replay["duration_seconds"] = ParseInt(settings.ReplayDurationSeconds, 30, 5, 600);
         replay["memory_budget_mb"] = ParseInt(settings.ReplayMemoryBudgetMb, 512, 64, 16384);
+
+        JsonObject capture = ObjectAt(root, "capture");
+        capture["monitor_device"] = settings.MonitorDevice;
+        capture["resolution_mode"] = settings.ResolutionMode;
+        capture["resolution_width"] = settings.ResolutionWidth;
+        capture["resolution_height"] = settings.ResolutionHeight;
+        capture["show_capture_border"] = settings.ShowCaptureBorder;
+
+        JsonObject videoEncoder = ObjectAt(root, "video_encoder");
+        videoEncoder["backend"] = settings.EncoderBackend;
+        videoEncoder["bitrate_kbps"] = Math.Clamp(settings.BitrateKbps, 1000, 100000);
+        videoEncoder["extra_ffmpeg_options"] = settings.ExtraFfmpegOptions;
     }
 
     private void SaveRoot(JsonObject root)
@@ -217,6 +337,19 @@ public sealed class SettingsService
             root[key] = JsonValue.Create(value);
     }
 
+    private static void SetIfMissing(JsonObject root, string key, bool value)
+    {
+        if (root[key] is null)
+            root[key] = JsonValue.Create(value);
+    }
+
+    private static void SetIfEmpty(JsonObject root, string key, string value)
+    {
+        string? current = root[key]?.GetValue<string>();
+        if (string.IsNullOrEmpty(current))
+            root[key] = JsonValue.Create(value);
+    }
+
     private static string StringAt(JsonObject root, string key, string fallback = "")
     {
         return root[key]?.GetValue<string>() ?? fallback;
@@ -224,7 +357,14 @@ public sealed class SettingsService
 
     private static int IntAt(JsonObject root, string key, int fallback)
     {
-        return root[key]?.GetValue<int>() ?? fallback;
+        try { return root[key]?.GetValue<int>() ?? fallback; }
+        catch { return fallback; }
+    }
+
+    private static bool BoolAt(JsonObject root, string key)
+    {
+        try { return root[key]?.GetValue<bool>() ?? false; }
+        catch { return false; }
     }
 
     private static int ParseInt(string text, int fallback, int min, int max)

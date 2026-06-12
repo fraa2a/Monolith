@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "dgSpecHash": "ffbZlhkCPs38wjvi8dvBJC+92VcKWIGdkqZoAjrcJXUbSySQHprSVT6QRpuO4oGpSS09tKKaYGmusiwVYjz93g==",
+  "success": true,
+  "projectFilePath": "C:\\Pattumiera\\Monolith\\app\\desktop-ui\\Monolith.Settings.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.web.webview2\\1.0.2651.64\\microsoft.web.webview2.1.0.2651.64.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.buildtools\\10.0.26100.1742\\microsoft.windows.sdk.buildtools.10.0.26100.1742.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk\\1.6.250108002\\microsoft.windowsappsdk.1.6.250108002.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\8.0.0\\microsoft.netcore.app.runtime.win-x64.8.0.0.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\8.0.0\\microsoft.windowsdesktop.app.runtime.win-x64.8.0.0.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\8.0.0\\microsoft.aspnetcore.app.runtime.win-x64.8.0.0.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.19041.38\\microsoft.windows.sdk.net.ref.10.0.19041.38.nupkg.sha512"
+  ],
+  "logs": []
+}

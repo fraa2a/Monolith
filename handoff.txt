@@ -1,120 +1,1602 @@
-# Codex Handoff - 2026-06-11
+╭─── Claude Code v2.1.174 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back Mario!                │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Added `wheelScrollAcce… │
+│    Fable 5 · Claude Pro · psymariux@proton.me's    │ Fixed the `/model` pic… │
+│    Organization                                    │ Fixed `/model` picker … │
+│               C:\Pattumiera\Monolith               │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
 
-## Current Request
+> /model                                                                        
+  ⎿  Set model to Fable 5 and saved as your default for new sessions
 
-Implement the next user-facing core flow for Monolith after replay hotkey clip saving was manually verified:
+> /caveman wenyan-ultra                                                         
 
-- manual recording start/stop/pause/resume
-- rename legacy user-facing branding to Monolith
-- move default user media output to the Windows Videos folder
-- keep logs/runtime data under AppData/Local/Monolith
-- update status docs
+● 模式定。wenyan-ultra 啟。有何事?
 
-## Current Implementation State
+✻ Churned for 5s
 
-- App/product user-facing branding is now Monolith.
-- App window/tray tooltip/mutex/window class use Monolith naming.
-- Logs now write to `AppData\Local\Monolith\monolith.log`.
-- Replay clips default to `Videos\Monolith\Clips`.
-- Manual recordings default to `Videos\Monolith\Recordings`.
-- Default config sample paths now match those locations.
+> /efficient-fable C:\Pattumiera\Monolith\TASK_1.md do it                       
 
-## Manual Recording Work
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
 
-- Added `libs/recording`, a minimal FFmpeg Matroska live writer.
-- Added `recording::ManualRecorder` with explicit states:
-  - `Idle`
-  - `Recording`
-  - `Paused`
-- `app/recorder/src/main.cpp` now tees encoded H.264/AAC packets to:
-  - replay buffer
-  - manual recorder when active
-- Tray commands now perform real actions:
-  - Start Recording
-  - Stop Recording
-  - Pause Recording
-  - Resume Recording
-- Hotkeys now match tray labels:
-  - `Ctrl+Shift+F8`: save replay
-  - `Ctrl+Shift+F9`: start recording
-  - `Ctrl+Shift+F10`: stop recording
-  - `Ctrl+Shift+F11`: pause/resume recording
-- Invalid repeated transitions are rejected and logged without side effects.
-- Recording starts on a video keyframe.
-- Resume after pause waits for the next video keyframe.
-- Paused time is omitted from output timestamps.
+● 遣四 Explore agents 並行探查:build、recorder、Settings C#、docs。
 
-## Files Changed
+● 4 background agents launched (↓ to manage)
+   ├ Survey build system + CI
+   ├ Survey recorder config/launch code
+   ├ Survey Settings C# project
+   └ Survey docs + project state
 
-- `CMakeLists.txt`
-- `app/recorder/CMakeLists.txt`
-- `app/recorder/src/main.cpp`
-- `libs/recording/CMakeLists.txt`
-- `libs/recording/recording.h`
-- `libs/recording/recording.cpp`
-- `config/default-config.json`
-- `docs/handover/ACTIVE_HANDOVER.md`
-- `docs/ROADMAP.md`
-- `docs/ARCHITECTURE.md`
-- `PROJECT_PLAN.md`
-- `WinUI3_Settings_Prompt.md`
-- `handoff.txt`
+● 待 agents 之際,自查 toolchain。
 
-## Verification Status
+  Read 2 files, ran 2 shell commands (ctrl+o to expand)
 
-Replay MKV hotkey saving was previously manually verified before this change.
+● Agent "Survey docs + project state" completed · 53s
 
-Build was attempted in this workspace, but no existing `build/` directory was present and the earlier handoff CMake path no longer exists here. Current discovered CMake path:
+● Agent "Survey build system + CI" completed · 1m 49s
 
-```powershell
-D:\APPS\Cmake\bin\cmake.exe
-```
+● Agent "Survey Settings C# project" completed · 1m 36s
 
-Also observed:
+● Agent "Survey recorder config/launch code" completed · 2m 1s
 
-- no local `vcpkg/` directory in repo root
-- `cl` not found in current PATH
-- Visual Studio/MSBuild not found by the quick probe
+● 再讀 encoding、capture、settings_window。
 
-Manual recording code still needs build and runtime smoke verification on the Windows dev machine with MSVC + vcpkg available.
+  Searched for 1 pattern, read 8 files (ctrl+o to expand)
 
-## Next Required Verification
+● Update(libs\encoding\encoding.h)
+  ⎿  Added 4 lines
+      38  // successfully with the given frame dimensions, or "" if none 
+          available.
+      39  std::string probe_video_encoder(int width, int height);
+      40  
+      41 +// Probes every candidate encoder and returns all that open suc
+         +cessfully,                                                     
+      42 +// in probe order.  Used to populate the Settings UI encoder li
+         +st.                                                            
+      43 +std::vector<std::string> available_video_encoders(int width, in
+         +t height);                                                     
+      44 +                                                               
+      45  // H.264 encoder.  Not thread-safe — drive from a single thread
+           (or serialise).
+      46  class VideoEncoder {
+      47  public:
 
-1. Configure with the available MSVC/vcpkg environment.
-2. Build Release.
-3. Launch `Monolith.exe`.
-4. Wait for WGC and encoders to initialize.
-5. Press `Ctrl+Shift+F8` and verify replay clip under `Videos\Monolith\Clips`.
-6. Press `Ctrl+Shift+F9`, wait, press `Ctrl+Shift+F10`, and verify recording under `Videos\Monolith\Recordings`.
-7. Test pause/resume with `Ctrl+Shift+F11`.
-8. Check `AppData\Local\Monolith\monolith.log` for accepted/rejected transition logs.
+● Update(libs\encoding\encoding.h)
+  ⎿  Added 17 lines, removed 3 lines
+      51      VideoEncoder& operator=(const VideoEncoder&) = delete;
+      52  
+      53      struct Config {
+      54 -        int     width;                                         
+      55 -        int     height;                                        
+      54 +        int     width;               // output (encoded) width 
+      55 +        int     height;              // output (encoded) height
+      56          int     fps     = 60;
+      57          int64_t bitrate = 20'000'000;
+      58 +        // "" or "auto" → probe NVENC → AMF → QSV → libx264.   
+      59 +        // Otherwise this encoder is tried first, then the prob
+         +e order.                                                       
+      60 +        std::string preferred_encoder;                         
+      61 +        // Extra AVOptions passed to avcodec_open2, "key=value:
+         +key=value"                                                     
+      62 +        // (also accepts ',' or ' ' between pairs).  If the enc
+         +oder rejects                                                   
+      63 +        // them, open() retries without and extra_options_rejec
+         +ted() is set.                                                  
+      64 +        std::string extra_options;                             
+      65      };
+      66  
+      67      // Open codec.  sink receives encoded packets (called synch
+          ronously).
+     ...
+      69  
+      70      // Encode one BGRA frame.  bgra must be valid for the durat
+          ion of the call.
+      71      // stride = bytes per row (>= width*4 after GPU-alignment).
+      65 -    // Frames with dimensions != the configured width/height ar
+         -e silently skipped.                                            
+      72 +    // Frames are scaled to the configured output width/height 
+         +when the                                                       
+      73 +    // source dimensions differ.                               
+      74      void push_bgra(const uint8_t* bgra, int stride, int width, 
+          int height);
+      75  
+      76      void flush();
+     ...
+      79  
+      80      VideoStreamParams stream_params() const;
+      81  
+      82 +    // Name of the encoder actually opened ("" while closed).  
+      83 +    std::string encoder_name() const;                          
+      84 +                                                               
+      85 +    // True when Config::extra_options had to be dropped to ope
+         +n the encoder.                                                 
+      86 +    bool extra_options_rejected() const;                       
+      87 +                                                               
+      88  private:
+      89      struct Impl;
+      90      Impl* impl_;
 
-## Still Not Implemented
+● Now encoding.cpp — rewrite open/push_bgra paths.
 
-- Stream Deck IPC/server/client.
-- Stream Deck plugin.
-- Hotkey rebinding.
-- Encoder/capture/audio device settings UI.
-- Desktop Duplication fallback.
-- GPU-resident encoder path.
-- Microphone mixing into replay/manual recording output.
-- Automated replay/manual recording tests.
+● Update(libs\encoding\encoding.cpp)
+  ⎿  Added 47 lines, removed 25 lines
+      18  
+      19  // ── probe_video_encoder ─────────────────────────────────────
+          ──────────────────
+      20  
+      21 -std::string probe_video_encoder(int width, int height)         
+      21 +static const char* kEncoderCandidates[] = {                    
+      22 +    "h264_nvenc", "h264_amf", "h264_qsv", "libx264", nullptr   
+      23 +};                                                             
+      24 +                                                               
+      25 +static bool try_open_probe(const char* name, int width, int hei
+         +ght)                                                           
+      26  {
+      23 -    static const char* candidates[] = {                        
+      24 -        "h264_nvenc", "h264_amf", "h264_qsv", "libx264", nullpt
+         -r                                                              
+      25 -    };                                                         
+      27 +    const AVCodec* codec = avcodec_find_encoder_by_name(name); 
+      28 +    if (!codec) return false;                                  
+      29  
+      30 +    AVCodecContext* ctx = avcodec_alloc_context3(codec);       
+      31 +    if (!ctx) return false;                                    
+      32 +                                                               
+      33 +    ctx->width      = (width  + 1) & ~1; // NVENC requires even
+         + dimensions                                                    
+      34 +    ctx->height     = (height + 1) & ~1;                       
+      35 +    ctx->time_base  = {1, 60};                                 
+      36 +    ctx->framerate  = {60, 1};                                 
+      37 +    ctx->pix_fmt    = AV_PIX_FMT_YUV420P;                      
+      38 +    ctx->bit_rate   = 4'000'000;                               
+      39 +    ctx->gop_size   = 60;                                      
+      40 +                                                               
+      41 +    AVDictionary* opts = nullptr;                              
+      42 +    if (strcmp(name, "libx264") == 0)                          
+      43 +        av_dict_set(&opts, "preset", "ultrafast", 0);          
+      44 +                                                               
+      45 +    bool ok = (avcodec_open2(ctx, codec, &opts) == 0);         
+      46 +    av_dict_free(&opts);                                       
+      47 +    avcodec_free_context(&ctx);                                
+      48 +    return ok;                                                 
+      49 +}                                                              
+      50 +                                                               
+      51 +std::string probe_video_encoder(int width, int height)         
+      52 +{                                                              
+      53      // Suppress noise during probing.
+      54      const int saved_level = av_log_get_level();
+      55      av_log_set_level(AV_LOG_QUIET);
+      56  
+      57      std::string result;
+      32 -    for (int i = 0; candidates[i]; ++i) {                      
+      33 -        const AVCodec* codec = avcodec_find_encoder_by_name(can
+         -didates[i]);                                                   
+      34 -        if (!codec) continue;                                  
+      58 +    for (int i = 0; kEncoderCandidates[i]; ++i) {              
+      59 +        if (try_open_probe(kEncoderCandidates[i], width, height
+         +)) {                                                           
+      60 +            result = kEncoderCandidates[i];                    
+      61 +            break;                                             
+      62 +        }                                                      
+      63 +    }                                                          
+      64  
+      36 -        AVCodecContext* ctx = avcodec_alloc_context3(codec);   
+      37 -        if (!ctx) continue;                                    
+      65 +    av_log_set_level(saved_level);                             
+      66 +    return result;                                             
+      67 +}                                                              
+      68  
+      39 -        ctx->width      = (width  + 1) & ~1; // NVENC requires 
+         -even dimensions                                                
+      40 -        ctx->height     = (height + 1) & ~1;                   
+      41 -        ctx->time_base  = {1, 60};                             
+      42 -        ctx->framerate  = {60, 1};                             
+      43 -        ctx->pix_fmt    = AV_PIX_FMT_YUV420P;                  
+      44 -        ctx->bit_rate   = 4'000'000;                           
+      45 -        ctx->gop_size   = 60;                                  
+      69 +std::vector<std::string> available_video_encoders(int width, in
+         +t height)                                                      
+      70 +{                                                              
+      71 +    const int saved_level = av_log_get_level();                
+      72 +    av_log_set_level(AV_LOG_QUIET);                            
+      73  
+      47 -        AVDictionary* opts = nullptr;                          
+      48 -        if (strcmp(candidates[i], "libx264") == 0)             
+      49 -            av_dict_set(&opts, "preset", "ultrafast", 0);      
+      50 -                                                               
+      51 -        bool ok = (avcodec_open2(ctx, codec, &opts) == 0);     
+      52 -        av_dict_free(&opts);                                   
+      53 -        avcodec_free_context(&ctx);                            
+      54 -                                                               
+      55 -        if (ok) { result = candidates[i]; break; }             
+      74 +    std::vector<std::string> result;                           
+      75 +    for (int i = 0; kEncoderCandidates[i]; ++i) {              
+      76 +        if (try_open_probe(kEncoderCandidates[i], width, height
+         +))                                                             
+      77 +            result.push_back(kEncoderCandidates[i]);           
+      78      }
+      79  
+      80      av_log_set_level(saved_level);
+● Update(libs\encoding\encoding.cpp)
+  ⎿  Added 5 lines, removed 1 line
+       90      SwsContext*     sws      = nullptr;
+       91      PacketSink      sink;
+       92      int64_t         next_pts = 0;
+       93 -    int             cfg_w    = 0;                             
+       93 +    int             cfg_w    = 0;   // output (encoded) dimens
+          +ions                                                          
+       94      int             cfg_h    = 0;
+       95 +    int             src_w    = 0;   // source dimensions the s
+          +ws ctx was built for                                          
+       96 +    int             src_h    = 0;                             
+       97 +    std::string     enc_name;                                 
+       98 +    bool            extra_rejected = false;                   
+       99      VideoStreamParams vsp;
+      100  };
+      101  
 
-## Settings Foundation Update
+● Update(libs\encoding\encoding.cpp)
+  ⎿  Added 68 lines, removed 31 lines
+      114      return impl_->vsp;
+      115  }
+      116  
+      117 +std::string VideoEncoder::encoder_name() const                
+      118 +{                                                             
+      119 +    std::lock_guard lk(impl_->mutex);                         
+      120 +    return impl_->enc_name;                                   
+      121 +}                                                             
+      122 +                                                              
+      123 +bool VideoEncoder::extra_options_rejected() const             
+      124 +{                                                             
+      125 +    std::lock_guard lk(impl_->mutex);                         
+      126 +    return impl_->extra_rejected;                             
+      127 +}                                                             
+      128 +                                                              
+      129  bool VideoEncoder::open(Config const& cfg, PacketSink sink)
+      130  {
+      131      if (cfg.width <= 0 || cfg.height <= 0 || cfg.fps <= 0 || c
+           fg.bitrate <= 0)
+     ...
+      140          impl_->next_pts = 0;
+      141          impl_->cfg_w    = 0;
+      142          impl_->cfg_h    = 0;
+      143 +        impl_->src_w    = 0;                                  
+      144 +        impl_->src_h    = 0;                                  
+      145 +        impl_->enc_name.clear();                              
+      146          impl_->vsp      = {};
+      147          impl_->sink     = nullptr;
+      148      };
+     ...
+      150      impl_->sink  = std::move(sink);
+      151      impl_->cfg_w = cfg.width;
+      152      impl_->cfg_h = cfg.height;
+      153 +    impl_->extra_rejected = false;                            
+      154  
+      139 -    std::string enc_name = probe_video_encoder(cfg.width, cfg.
+          -height);                                                      
+      140 -    if (enc_name.empty()) return false;                       
+      155 +    // Candidate order: preferred encoder first (when set), th
+          +en probe order.                                               
+      156 +    std::vector<std::string> order;                           
+      157 +    if (!cfg.preferred_encoder.empty() && cfg.preferred_encode
+          +r != "auto")                                                  
+      158 +        order.push_back(cfg.preferred_encoder);               
+      159 +    for (int i = 0; kEncoderCandidates[i]; ++i) {             
+      160 +        if (order.empty() || order[0] != kEncoderCandidates[i]
+          +)                                                             
+      161 +            order.push_back(kEncoderCandidates[i]);           
+      162 +    }                                                         
+      163  
+      142 -    const AVCodec* codec = avcodec_find_encoder_by_name(enc_na
+          -me.c_str());                                                  
+      143 -    if (!codec) return false;                                 
+      164 +    auto try_open = [&](const std::string& name, bool use_extr
+          +as) -> bool {                                                 
+      165 +        const AVCodec* codec = avcodec_find_encoder_by_name(na
+          +me.c_str());                                                  
+      166 +        if (!codec) return false;                             
+      167  
+      145 -    impl_->ctx = avcodec_alloc_context3(codec);               
+      146 -    if (!impl_->ctx) return false;                            
+      147 -    AVCodecContext* ctx = impl_->ctx;                         
+      168 +        impl_->ctx = avcodec_alloc_context3(codec);           
+      169 +        if (!impl_->ctx) return false;                        
+      170 +        AVCodecContext* ctx = impl_->ctx;                     
+      171  
+      149 -    ctx->width     = cfg.width;                               
+      150 -    ctx->height    = cfg.height;                              
+      151 -    ctx->time_base = {1, cfg.fps};                            
+      152 -    ctx->framerate = {cfg.fps, 1};                            
+      153 -    ctx->gop_size  = cfg.fps * 2;  // keyframe every 2 s      
+      154 -    ctx->bit_rate  = cfg.bitrate;                             
+      155 -    ctx->pix_fmt   = AV_PIX_FMT_YUV420P;                      
+      156 -    ctx->flags    |= AV_CODEC_FLAG_GLOBAL_HEADER; // SPS/PPS i
+          -n extradata                                                   
+      172 +        ctx->width     = cfg.width;                           
+      173 +        ctx->height    = cfg.height;                          
+      174 +        ctx->time_base = {1, cfg.fps};                        
+      175 +        ctx->framerate = {cfg.fps, 1};                        
+      176 +        ctx->gop_size  = cfg.fps * 2;  // keyframe every 2 s  
+      177 +        ctx->bit_rate  = cfg.bitrate;                         
+      178 +        ctx->pix_fmt   = AV_PIX_FMT_YUV420P;                  
+      179 +        ctx->flags    |= AV_CODEC_FLAG_GLOBAL_HEADER; // SPS/P
+          +PS in extradata                                               
+      180  
+      158 -    AVDictionary* opts = nullptr;                             
+      159 -    if (enc_name == "libx264") {                              
+      160 -        av_dict_set(&opts, "preset", "fast", 0);              
+      161 -        av_dict_set(&opts, "tune",   "zerolatency", 0);       
+      162 -    } else if (enc_name == "h264_nvenc") {                    
+      163 -        av_dict_set(&opts, "preset", "p4", 0);                
+      164 -    }                                                         
+      181 +        AVDictionary* opts = nullptr;                         
+      182 +        if (name == "libx264") {                              
+      183 +            av_dict_set(&opts, "preset", "fast", 0);          
+      184 +            av_dict_set(&opts, "tune",   "zerolatency", 0);   
+      185 +        } else if (name == "h264_nvenc") {                    
+      186 +            av_dict_set(&opts, "preset", "p4", 0);            
+      187 +        }                                                     
+      188 +        if (use_extras && !cfg.extra_options.empty()) {       
+      189 +            // User-supplied AVOptions override the built-in d
+          +efaults above.                                                
+      190 +            av_dict_parse_string(&opts, cfg.extra_options.c_st
+          +r(), "=", ":, ", 0);                                          
+      191 +        }                                                     
+      192  
+      166 -    if (avcodec_open2(ctx, codec, &opts) < 0) {               
+      193 +        bool ok = (avcodec_open2(ctx, codec, &opts) == 0);    
+      194          av_dict_free(&opts);
+      168 -        cleanup();                                            
+      169 -        return false;                                         
+      195 +        if (!ok) avcodec_free_context(&impl_->ctx);           
+      196 +        return ok;                                            
+      197 +    };                                                        
+      198 +                                                              
+      199 +    std::string opened;                                       
+      200 +    for (const auto& name : order) {                          
+      201 +        if (try_open(name, true)) { opened = name; break; }   
+      202 +        if (!cfg.extra_options.empty() && try_open(name, false
+          +)) {                                                          
+      203 +            impl_->extra_rejected = true;                     
+      204 +            opened = name;                                    
+      205 +            break;                                            
+      206 +        }                                                     
+      207      }
+      171 -    av_dict_free(&opts);                                      
+      208 +    if (opened.empty()) { cleanup(); return false; }          
+      209 +    impl_->enc_name = opened;                                 
+      210 +    AVCodecContext* ctx = impl_->ctx;                         
+      211  
+      212      impl_->frame = av_frame_alloc();
+      213      if (!impl_->frame) { cleanup(); return false; }
+     ...
+      216      impl_->frame->height = cfg.height;
+      217      if (av_frame_get_buffer(impl_->frame, 0) < 0) { cleanup();
+            return false; }
+      218  
+      180 -    impl_->sws = sws_getContext(                              
+      181 -        cfg.width, cfg.height, AV_PIX_FMT_BGRA,               
+      182 -        cfg.width, cfg.height, ctx->pix_fmt,                  
+      183 -        SWS_BILINEAR, nullptr, nullptr, nullptr);             
+      184 -    if (!impl_->sws) { cleanup(); return false; }             
+      219 +    // sws ctx is (re-)created lazily in push_bgra for the act
+          +ual source size.                                              
+      220 +    impl_->src_w = 0;                                         
+      221 +    impl_->src_h = 0;                                         
+      222  
+      223      // Store stream params for replay buffer.
+      224      impl_->vsp.width   = cfg.width;
 
-- Added first-pass persistent settings under `AppData\Local\Monolith\config.json`.
-- Defaults load from `config/default-config.json`, then user overrides are merged.
-- Invalid user config logs a warning and falls back to defaults.
-- Tray Settings opens the WinUI 3 `Monolith.Settings.exe` sidecar.
-- Live-applied settings:
-  - replay clip output folder
-  - manual recording output folder
-  - replay duration
-  - replay memory budget
-- Display-only settings:
-  - current hotkeys (`Ctrl+Shift+F8/F9/F10/F11`)
-- Not exposed:
-  - fake encoder/audio/capture controls
-  - Stream Deck settings
-  - hotkey rebinding
-- Local build was blocked by vcpkg host-tool/dependency download state; GitHub Actions should verify the commit.
+● Update(libs\encoding\encoding.cpp)
+  ⎿  Added 15 lines, removed 2 lines
+      257  {
+      258      std::lock_guard lk(impl_->mutex);
+      259      if (!impl_->ctx || !bgra) return;
+      260 -    if (width != impl_->cfg_w || height != impl_->cfg_h) retur
+          -n; // skip size mismatch                                      
+      260 +    if (width <= 0 || height <= 0) return;                    
+      261  
+      262 +    // (Re-)create the scaler when the source size changes (di
+          +splay mode                                                    
+      263 +    // switches, or output resolution differs from capture res
+          +olution).                                                     
+      264 +    if (!impl_->sws || width != impl_->src_w || height != impl
+          +_->src_h) {                                                   
+      265 +        if (impl_->sws) sws_freeContext(impl_->sws);          
+      266 +        impl_->sws = sws_getContext(                          
+      267 +            width, height, AV_PIX_FMT_BGRA,                   
+      268 +            impl_->cfg_w, impl_->cfg_h, impl_->ctx->pix_fmt,  
+      269 +            SWS_BILINEAR, nullptr, nullptr, nullptr);         
+      270 +        if (!impl_->sws) return;                              
+      271 +        impl_->src_w = width;                                 
+      272 +        impl_->src_h = height;                                
+      273 +    }                                                         
+      274 +                                                              
+      275      av_frame_make_writable(impl_->frame);
+      276  
+      277      const uint8_t* src_slices[1] = { bgra };
+      278      int            src_stride[1] = { stride };
+      279      sws_scale(impl_->sws,
+      267 -        src_slices, src_stride, 0, impl_->cfg_h,              
+      280 +        src_slices, src_stride, 0, height,                    
+      281          impl_->frame->data, impl_->frame->linesize);
+      282  
+      283      impl_->frame->pts = impl_->next_pts++;
+
+● Update(libs\encoding\encoding.cpp)
+  ⎿  Added 3 lines
+      304      if (impl_->frame) { av_frame_free(&impl_->frame);         
+                 }
+      305      if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);    
+                  }
+      306      impl_->next_pts = 0;
+      307 +    impl_->src_w    = 0;                                      
+      308 +    impl_->src_h    = 0;                                      
+      309 +    impl_->enc_name.clear();                                  
+      310      impl_->vsp      = {};
+      311  }
+      312  
+
+● Update(libs\capture\capture.h)
+  ⎿  Added 6 lines, removed 1 line
+      42      DisplayCapture& operator=(const DisplayCapture&) = delete;
+      43  
+      44      // cb is invoked from the WGC thread pool — must be thread-
+          safe.
+      45 -    bool start(HMONITOR hmon, FrameCallback cb);               
+      45 +    // show_border = false requests yellow-border suppression v
+         +ia                                                             
+      46 +    // GraphicsCaptureSession::IsBorderRequired(false); the OS 
+         +may deny it.                                                   
+      47 +    bool start(HMONITOR hmon, FrameCallback cb, bool show_borde
+         +r = false);                                                    
+      48      void stop();
+      49      bool running() const;
+      50  
+      51 +    // True when border suppression was requested and the OS ac
+         +cepted it.                                                     
+      52 +    bool border_suppressed() const;                            
+      53 +                                                               
+      54  private:
+      55      struct Impl;
+      56      Impl* impl_;
+
+● Update(libs\capture\capture.cpp)
+  ⎿  Added 1 line
+      39      winrt::Windows::Graphics::SizeInt32   last_size{};
+      40  
+      41      std::atomic<bool>     active{ false };
+      42 +    std::atomic<bool>     border_suppressed{ false };          
+      43      std::atomic<uint32_t> seq{ 0 };
+      44      FrameCallback         cb;
+      45  };
+
+● Update(libs\capture\capture.cpp)
+  ⎿  Added 2 lines, removed 1 line
+      91  DisplayCapture::DisplayCapture() : impl_(new Impl()) {}
+      92  DisplayCapture::~DisplayCapture() { stop(); delete impl_; }
+      93  bool DisplayCapture::running() const { return impl_->active.loa
+          d(std::memory_order_relaxed); }
+      94 +bool DisplayCapture::border_suppressed() const { return impl_->
+         +border_suppressed.load(std::memory_order_relaxed); }           
+      95  
+      95 -bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)    
+      96 +bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, boo
+         +l show_border)                                                 
+      97  {
+      98      if (impl_->active) return false;
+      99      if (!is_supported()) return false;
+
+● Update(libs\capture\capture.cpp)
+  ⎿  Added 8 lines, removed 4 lines
+      203              });
+      204  
+      205          impl_->session = impl_->pool.CreateCaptureSession(item
+           );
+      206 -        try {                                                 
+      207 -            impl_->session.IsBorderRequired(false);           
+      208 -        } catch (...) {                                       
+      209 -            // Capture must continue even when the OS denies b
+          -order suppression.                                            
+      206 +        impl_->border_suppressed = false;                     
+      207 +        if (!show_border) {                                   
+      208 +            try {                                             
+      209 +                impl_->session.IsBorderRequired(false);       
+      210 +                impl_->border_suppressed = true;              
+      211 +            } catch (...) {                                   
+      212 +                // Capture must continue even when the OS deni
+          +es border suppression.                                        
+      213 +            }                                                 
+      214          }
+      215          impl_->session.StartCapture();
+      216      }
+
+● Update(libs\capture\capture.cpp)
+  ⎿  Added 1 line
+      248      impl_->cb           = nullptr;
+      249      impl_->staging_w    = 0;
+      250      impl_->staging_h    = 0;
+      251 +    impl_->border_suppressed.store(false, std::memory_order_re
+          +laxed);                                                       
+      252      impl_->seq.store(0, std::memory_order_relaxed);
+      253  }
+      254  
+
+● Update(app\recorder\src\settings_config.h)
+  ⎿  Added 13 lines
+      13      std::wstring temp_directory;
+      14      int replay_duration_seconds = 30;
+      15      int64_t replay_memory_budget_mb = 512;
+      16 +                                                               
+      17 +    // Capture (restart-required).                             
+      18 +    std::wstring monitor_device;          // e.g. L"\\\\.\\DISP
+         +LAY1"; empty = primary                                         
+      19 +    std::string resolution_mode = "source"; // "source" | "cust
+         +om"                                                            
+      20 +    int output_width = 0;                 // used when resoluti
+         +on_mode == "custom"                                            
+      21 +    int output_height = 0;                                     
+      22 +    bool show_capture_border = false;                          
+      23 +                                                               
+      24 +    // Encoder (restart-required).                             
+      25 +    std::string encoder_backend = "auto"; // auto | h264_nvenc 
+         +| h264_amf | h264_qsv | libx264                                
+      26 +    int video_bitrate_kbps = 20000;       // clamped 1000–10000
+         +0                                                              
+      27 +    std::string extra_ffmpeg_options;     // "key=value:key=val
+         +ue" AVOptions                                                  
+      28 +                                                               
+      29      std::string merged_json;
+      30  };
+      31  
+
+● Update(app\recorder\src\settings_config.cpp)
+  ⎿  Added 16 lines, removed 20 lines
+      21  
+      22  constexpr const char* kFallbackDefaultConfig = R"json(
+      23  {
+      24 -  "schema_version": 1,                                         
+      25 -  "app": {                                                     
+      26 -    "start_minimized": true,                                   
+      27 -    "minimize_to_tray": true,                                  
+      28 -    "language": "en-US",                                       
+      29 -    "log_level": "info",                                       
+      30 -    "diagnostics_retention_days": 14                           
+      24 +  "schema_version": 2,                                         
+      25 +  "capture": {                                                 
+      26 +    "monitor_device": "",                                      
+      27 +    "resolution_mode": "source",                               
+      28 +    "resolution_width": 0,                                     
+      29 +    "resolution_height": 0,                                    
+      30 +    "show_capture_border": false                               
+      31    },
+      32    "replay_buffer": {
+      33 -    "enabled": true,                                           
+      33      "duration_seconds": 30,
+      34      "memory_budget_mb": 512,
+      36 -    "save_container": "mkv",                                   
+      37 -    "auto_remux_to_mp4": false,                                
+      38 -    "clip_naming_pattern": "{date}_{time}_{game}_{duration}s_cl
+         -ip"                                                            
+      35 +    "save_container": "mkv"                                    
+      36    },
+      37    "recording": {
+      41 -    "default_container": "mkv",                                
+      42 -    "auto_remux_to_mp4": true,                                 
+      43 -    "split_files": false,                                      
+      44 -    "max_file_size_mb": 0,                                     
+      45 -    "pause_behavior": "timestamp_gap",                         
+      46 -    "recording_naming_pattern": "{date}_{time}_{game}_recording
+         -"                                                              
+      38 +    "container": "mkv",                                        
+      39 +    "pause_behavior": "timestamp_gap"                          
+      40    },
+      41 +  "video_encoder": {                                           
+      42 +    "backend": "auto",                                         
+      43 +    "bitrate_kbps": 20000,                                     
+      44 +    "extra_ffmpeg_options": ""                                 
+      45 +  },                                                           
+      46    "output": {
+      47      "clips_directory": "",
+      48      "recordings_directory": "",
+      51 -    "temp_directory": "",                                      
+      52 -    "storage_cap_gb": 200,                                     
+      53 -    "auto_cleanup": true                                       
+      49 +    "temp_directory": ""                                       
+      50    },
+      51    "hotkeys": {
+      52      "save_replay": "Ctrl+Shift+F8",
+
+● Update(app\recorder\src\settings_config.cpp)
+  ⎿  Added 20 lines
+      222      return value_it->get<int64_t>();
+      223  }
+      224  
+      225 +bool bool_at(const json& doc, const char* section, const char*
+          + key, bool fallback)                                          
+      226 +{                                                             
+      227 +    auto section_it = doc.find(section);                      
+      228 +    if (section_it == doc.end() || !section_it->is_object()) r
+          +eturn fallback;                                               
+      229 +    auto value_it = section_it->find(key);                    
+      230 +    if (value_it == section_it->end() || !value_it->is_boolean
+          +()) return fallback;                                          
+      231 +                                                              
+      232 +    return value_it->get<bool>();                             
+      233 +}                                                             
+      234 +                                                              
+      235 +std::string utf8_at(const json& doc, const char* section, cons
+          +t char* key, const std::string& fallback)                     
+      236 +{                                                             
+      237 +    auto section_it = doc.find(section);                      
+      238 +    if (section_it == doc.end() || !section_it->is_object()) r
+          +eturn fallback;                                               
+      239 +    auto value_it = section_it->find(key);                    
+      240 +    if (value_it == section_it->end() || !value_it->is_string(
+          +)) return fallback;                                           
+      241 +                                                              
+      242 +    return value_it->get<std::string>();                      
+      243 +}                                                             
+      244 +                                                              
+      245  void write_runtime_fields(json& doc, const Config& config)
+      246  {
+      247      doc["output"]["clips_directory"] = wide_to_utf8(config.cli
+           ps_directory);
+
+● Update(app\recorder\src\settings_config.cpp)
+  ⎿  Added 35 lines
+      276      if (config.replay_memory_budget_mb < 64 || config.replay_m
+           emory_budget_mb > 16384)
+      277          config.replay_memory_budget_mb = 512;
+      278  
+      279 +    config.monitor_device = utf8_to_wide(                     
+      280 +        utf8_at(doc, "capture", "monitor_device", ""));       
+      281 +    config.resolution_mode = utf8_at(doc, "capture", "resoluti
+          +on_mode", "source");                                          
+      282 +    config.output_width  = int_at(doc, "capture", "resolution_
+          +width", 0);                                                   
+      283 +    config.output_height = int_at(doc, "capture", "resolution_
+          +height", 0);                                                  
+      284 +    config.show_capture_border = bool_at(doc, "capture", "show
+          +_capture_border", false);                                     
+      285 +                                                              
+      286 +    if (config.resolution_mode != "source" && config.resolutio
+          +n_mode != "custom")                                           
+      287 +        config.resolution_mode = "source";                    
+      288 +    if (config.resolution_mode == "custom") {                 
+      289 +        // Even-align; reject sizes outside a sane encode rang
+          +e.                                                            
+      290 +        config.output_width  &= ~1;                           
+      291 +        config.output_height &= ~1;                           
+      292 +        if (config.output_width  < 128 || config.output_width 
+          + > 7680 ||                                                    
+      293 +            config.output_height < 128 || config.output_height
+          + > 4320) {                                                    
+      294 +            config.resolution_mode = "source";                
+      295 +            config.output_width   = 0;                        
+      296 +            config.output_height  = 0;                        
+      297 +        }                                                     
+      298 +    }                                                         
+      299 +                                                              
+      300 +    config.encoder_backend = utf8_at(doc, "video_encoder", "ba
+          +ckend", "auto");                                              
+      301 +    if (config.encoder_backend != "auto" &&                   
+      302 +        config.encoder_backend != "h264_nvenc" &&             
+      303 +        config.encoder_backend != "h264_amf" &&               
+      304 +        config.encoder_backend != "h264_qsv" &&               
+      305 +        config.encoder_backend != "libx264")                  
+      306 +        config.encoder_backend = "auto";                      
+      307 +                                                              
+      308 +    config.video_bitrate_kbps = int_at(doc, "video_encoder", "
+          +bitrate_kbps", 20000);                                        
+      309 +    if (config.video_bitrate_kbps < 1000 || config.video_bitra
+          +te_kbps > 100000)                                             
+      310 +        config.video_bitrate_kbps = 20000;                    
+      311 +                                                              
+      312 +    config.extra_ffmpeg_options = utf8_at(doc, "video_encoder"
+          +, "extra_ffmpeg_options", "");                                
+      313 +                                                              
+      314      json sanitized = doc;
+      315      write_runtime_fields(sanitized, config);
+      316      config.merged_json = sanitized.dump(2);
+
+● 加 runtime-status writer 於 settings_config(json 已在彼)。
+
+● Update(app\recorder\src\settings_config.h)
+  ⎿  Added 25 lines
+      42  
+      43  bool save(Config& config, std::string* error);
+      44  
+      45 +// Snapshot of runtime capabilities written to AppData\Local\Mo
+         +nolith\                                                        
+      46 +// runtime-status.json so the Settings UI can offer only real c
+         +hoices                                                         
+      47 +// (available encoders, attached monitors, border-suppression s
+         +upport).                                                       
+      48 +struct RuntimeMonitor {                                        
+      49 +    std::wstring device;   // e.g. L"\\\\.\\DISPLAY1"          
+      50 +    int width = 0;                                             
+      51 +    int height = 0;                                            
+      52 +    bool primary = false;                                      
+      53 +};                                                             
+      54 +                                                               
+      55 +struct RuntimeStatus {                                         
+      56 +    std::vector<RuntimeMonitor> monitors;                      
+      57 +    std::vector<std::string> available_encoders;               
+      58 +    std::string active_encoder;        // "" until the encoder 
+         +opens                                                          
+      59 +    std::wstring active_monitor_device;                        
+      60 +    bool border_suppressed = false;                            
+      61 +    int encode_width = 0;                                      
+      62 +    int encode_height = 0;                                     
+      63 +};                                                             
+      64 +                                                               
+      65 +bool write_runtime_status(                                     
+      66 +    const std::wstring& app_data_dir,                          
+      67 +    const RuntimeStatus& status,                               
+      68 +    std::string* error);                                       
+      69 +                                                               
+      70  } // namespace settings
+
+● Update(app\recorder\src\settings_config.cpp)
+  ⎿  Added 30 lines
+      384      return write_text(config.user_config_path, config.merged_j
+           son, error);
+      385  }
+      386  
+      387 +bool write_runtime_status(                                    
+      388 +    const std::wstring& app_data_dir,                         
+      389 +    const RuntimeStatus& status,                              
+      390 +    std::string* error)                                       
+      391 +{                                                             
+      392 +    if (app_data_dir.empty()) {                               
+      393 +        if (error) *error = "AppData path not available";     
+      394 +        return false;                                         
+      395 +    }                                                         
+      396 +                                                              
+      397 +    json doc;                                                 
+      398 +    doc["monitors"] = json::array();                          
+      399 +    for (const auto& mon : status.monitors) {                 
+      400 +        doc["monitors"].push_back({                           
+      401 +            {"device",  wide_to_utf8(mon.device)},            
+      402 +            {"width",   mon.width},                           
+      403 +            {"height",  mon.height},                          
+      404 +            {"primary", mon.primary},                         
+      405 +        });                                                   
+      406 +    }                                                         
+      407 +    doc["available_encoders"] = status.available_encoders;    
+      408 +    doc["active_encoder"] = status.active_encoder;            
+      409 +    doc["active_monitor_device"] = wide_to_utf8(status.active_
+          +monitor_device);                                              
+      410 +    doc["border_suppressed"] = status.border_suppressed;      
+      411 +    doc["encode_width"]  = status.encode_width;               
+      412 +    doc["encode_height"] = status.encode_height;              
+      413 +                                                              
+      414 +    return write_text(app_data_dir + L"\\runtime-status.json",
+          + doc.dump(2), error);                                         
+      415 +}                                                             
+      416 +                                                              
+      417  } // namespace settings
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 75 lines
+      164  static std::wstring g_recordings_dir;
+      165  static settings::Config g_settings;
+      166  
+      167 +static std::mutex g_status_mutex;                             
+      168 +static settings::RuntimeStatus g_runtime_status;              
+      169 +                                                              
+      170 +// Re-writes AppData\Local\Monolith\runtime-status.json from g
+          +_runtime_status.                                              
+      171 +// Callable from the WGC callback thread (encoder opens on fir
+          +st frame).                                                    
+      172 +static void publish_runtime_status()                          
+      173 +{                                                             
+      174 +    settings::RuntimeStatus snapshot;                         
+      175 +    {                                                         
+      176 +        std::lock_guard<std::mutex> lk(g_status_mutex);       
+      177 +        snapshot = g_runtime_status;                          
+      178 +    }                                                         
+      179 +    std::string error;                                        
+      180 +    if (!settings::write_runtime_status(app_data_dir(), snapsh
+          +ot, &error))                                                  
+      181 +        log_msg("settings", ("runtime-status write failed: " +
+          + error).c_str());                                             
+      182 +}                                                             
+      183 +                                                              
+      184 +// ── Monitor enumeration / selection ────────────────────────
+          +──────────────────                                            
+      185 +                                                              
+      186 +struct MonitorEntry {                                         
+      187 +    HMONITOR hmon = nullptr;                                  
+      188 +    settings::RuntimeMonitor info;                            
+      189 +};                                                            
+      190 +                                                              
+      191 +static BOOL CALLBACK monitor_enum_proc(HMONITOR hmon, HDC, LPR
+          +ECT, LPARAM lp)                                               
+      192 +{                                                             
+      193 +    auto* list = reinterpret_cast<std::vector<MonitorEntry>*>(
+          +lp);                                                          
+      194 +    MONITORINFOEXW mi{};                                      
+      195 +    mi.cbSize = sizeof(mi);                                   
+      196 +    if (GetMonitorInfoW(hmon, &mi)) {                         
+      197 +        MonitorEntry entry;                                   
+      198 +        entry.hmon         = hmon;                            
+      199 +        entry.info.device  = mi.szDevice;                     
+      200 +        entry.info.width   = mi.rcMonitor.right - mi.rcMonitor
+          +.left;                                                        
+      201 +        entry.info.height  = mi.rcMonitor.bottom - mi.rcMonito
+          +r.top;                                                        
+      202 +        entry.info.primary = (mi.dwFlags & MONITORINFOF_PRIMAR
+          +Y) != 0;                                                      
+      203 +        list->push_back(std::move(entry));                    
+      204 +    }                                                         
+      205 +    return TRUE;                                              
+      206 +}                                                             
+      207 +                                                              
+      208 +static std::vector<MonitorEntry> enumerate_monitors()         
+      209 +{                                                             
+      210 +    std::vector<MonitorEntry> list;                           
+      211 +    EnumDisplayMonitors(nullptr, nullptr, monitor_enum_proc,  
+      212 +                        reinterpret_cast<LPARAM>(&list));     
+      213 +    return list;                                              
+      214 +}                                                             
+      215 +                                                              
+      216 +// Picks the configured capture monitor by device name; falls 
+          +back to primary.                                              
+      217 +static HMONITOR monitor_from_settings(const std::vector<Monito
+          +rEntry>& monitors,                                            
+      218 +                                      std::wstring* used_devic
+          +e)                                                            
+      219 +{                                                             
+      220 +    HMONITOR primary = nullptr;                               
+      221 +    std::wstring primary_device;                              
+      222 +    for (const auto& entry : monitors) {                      
+      223 +        if (entry.info.primary) {                             
+      224 +            primary = entry.hmon;                             
+      225 +            primary_device = entry.info.device;               
+      226 +        }                                                     
+      227 +        if (!g_settings.monitor_device.empty() &&             
+      228 +            entry.info.device == g_settings.monitor_device) { 
+      229 +            if (used_device) *used_device = entry.info.device;
+      230 +            return entry.hmon;                                
+      231 +        }                                                     
+      232 +    }                                                         
+      233 +    if (!g_settings.monitor_device.empty())                   
+      234 +        log_path("capture", "configured monitor not found, usi
+          +ng primary: ",                                                
+      235 +                 g_settings.monitor_device);                  
+      236 +    if (used_device) *used_device = primary_device;           
+      237 +    if (primary) return primary;                              
+      238 +    const POINT origin{ 0, 0 };                               
+      239 +    return MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+      240 +}                                                             
+      241 +                                                              
+      242  static void apply_runtime_settings()
+      243  {
+      244      ensure_directory(g_settings.clips_directory);
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 1 line
+      25  #include <cstdio>
+      26  #include <mutex>
+      27  #include <string>
+      28 +#include <vector>                                              
+      29  
+      30  // ── Constants ───────────────────────────────────────────────
+          ──────────────────
+      31  
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 19 lines, removed 2 lines
+      296  
+      297  static void media_start(HWND hwnd)
+      298  {
+      299 -    HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOP
+          -RIMARY);                                                      
+      299 +    (void)hwnd;                                               
+      300  
+      301 -    // ── Determine monitor resolution ───────────────────────
+          -──────────────────                                            
+      301 +    // ── Capture monitor from config (restart-required settin
+          +g) ───────────────                                            
+      302 +    std::vector<MonitorEntry> monitors = enumerate_monitors();
+      303 +    std::wstring used_device;                                 
+      304 +    HMONITOR hmon = monitor_from_settings(monitors, &used_devi
+          +ce);                                                          
+      305 +    log_path("capture", "capture monitor: ",                  
+      306 +             used_device.empty() ? L"(primary)" : used_device)
+          +;                                                             
+      307 +                                                              
+      308 +    {                                                         
+      309 +        std::lock_guard<std::mutex> lk(g_status_mutex);       
+      310 +        g_runtime_status.monitors.clear();                    
+      311 +        for (const auto& entry : monitors)                    
+      312 +            g_runtime_status.monitors.push_back(entry.info);  
+      313 +        g_runtime_status.active_monitor_device = used_device; 
+      314 +        // Probe with a representative size; availability does
+          + not depend on it.                                            
+      315 +        g_runtime_status.available_encoders =                 
+      316 +            encoding::available_video_encoders(1920, 1080);   
+      317 +    }                                                         
+      318 +                                                              
+      319      g_video_enc_open_attempted.store(false, std::memory_order_
+           release);
+      320      g_enc_w = 0;
+      321      g_enc_h = 0;
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 39 lines, removed 10 lines
+      372                      return;
+      373                  }
+      374  
+      375 -                g_enc_w = static_cast<int>(f.width & ~1u);    
+      376 -                g_enc_h = static_cast<int>(f.height & ~1u);   
+      375 +                // Output resolution: capture-native unless co
+          +nfig requests custom.                                         
+      376 +                if (g_settings.resolution_mode == "custom" && 
+      377 +                    g_settings.output_width > 0 && g_settings.
+          +output_height > 0) {                                          
+      378 +                    g_enc_w = g_settings.output_width;        
+      379 +                    g_enc_h = g_settings.output_height;       
+      380 +                } else {                                      
+      381 +                    g_enc_w = static_cast<int>(f.width & ~1u);
+      382 +                    g_enc_h = static_cast<int>(f.height & ~1u)
+          +;                                                             
+      383 +                }                                             
+      384  
+      385                  encoding::VideoEncoder::Config vcfg;
+      379 -                vcfg.width   = g_enc_w;                       
+      380 -                vcfg.height  = g_enc_h;                       
+      381 -                vcfg.fps     = 30;                            
+      382 -                vcfg.bitrate = 20'000'000;                    
+      386 +                vcfg.width             = g_enc_w;             
+      387 +                vcfg.height            = g_enc_h;             
+      388 +                vcfg.fps               = 30;                  
+      389 +                vcfg.bitrate           = static_cast<int64_t>(
+          +g_settings.video_bitrate_kbps) * 1000;                        
+      390 +                vcfg.preferred_encoder = g_settings.encoder_ba
+          +ckend;                                                        
+      391 +                vcfg.extra_options     = g_settings.extra_ffmp
+          +eg_options;                                                   
+      392  
+      393                  bool enc_ok = g_video_enc.open(vcfg, [](encodi
+           ng::EncodedPacket pkt) {
+      394                      auto replay_pkt = pkt;
+     ...
+      396                      g_recording.push(std::move(pkt));
+      397                  });
+      398  
+      390 -                char enc_msg[128];                            
+      391 -                snprintf(enc_msg, sizeof(enc_msg),            
+      392 -                    "%dx%d @30fps bitrate=20Mbps", g_enc_w, g_
+          -enc_h);                                                       
+      393 -                log_msg("encoding", enc_ok ? enc_msg : "WARNIN
+          -G: no H.264 encoder - replay disabled");                      
+      399 +                if (enc_ok) {                                 
+      400 +                    char enc_msg[256];                        
+      401 +                    snprintf(enc_msg, sizeof(enc_msg),        
+      402 +                        "%s %dx%d @30fps bitrate=%dkbps%s%s", 
+      403 +                        g_video_enc.encoder_name().c_str(), g_
+          +enc_w, g_enc_h,                                               
+      404 +                        g_settings.video_bitrate_kbps,        
+      405 +                        g_settings.extra_ffmpeg_options.empty(
+          +) ? "" :                                                      
+      406 +                            (g_video_enc.extra_options_rejecte
+          +d()                                                           
+      407 +                                ? "  extra_options=REJECTED (o
+          +pened without them)"                                          
+      408 +                                : "  extra_options="),        
+      409 +                        (!g_settings.extra_ffmpeg_options.empt
+          +y() &&                                                        
+      410 +                         !g_video_enc.extra_options_rejected()
+          +)                                                             
+      411 +                            ? g_settings.extra_ffmpeg_options.
+          +c_str() : "");                                                
+      412 +                    log_msg("encoding", enc_msg);             
+      413 +                } else {                                      
+      414 +                    log_msg("encoding", "WARNING: no H.264 enc
+          +oder - replay disabled");                                     
+      415 +                }                                             
+      416  
+      417                  if (enc_ok) {
+      418                      auto params = g_video_enc.stream_params();
+      419                      g_replay.set_video_params(params);
+      420                      g_recording.set_video_params(params);
+      421 +                    {                                         
+      422 +                        std::lock_guard<std::mutex> lk(g_statu
+          +s_mutex);                                                     
+      423 +                        g_runtime_status.active_encoder = g_vi
+          +deo_enc.encoder_name();                                       
+      424 +                        g_runtime_status.encode_width   = g_en
+          +c_w;                                                          
+      425 +                        g_runtime_status.encode_height  = g_en
+          +c_h;                                                          
+      426 +                    }                                         
+      427 +                    publish_runtime_status();                 
+      428                  } else {
+      429                      return;
+      430                  }
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 2 lines, removed 1 line
+      352  
+      353      // ── WGC display capture ────────────────────────────────
+           ───────────────────
+      354      if (capture::is_supported()) {
+      355 -        bool ok = g_video.start(hmon, [](capture::FrameInfo co
+          -nst& f) {                                                     
+      355 +        bool ok = g_video.start(hmon, g_settings.show_capture_
+          +border,                                                       
+      356 +                                [](capture::FrameInfo const& f
+          +) {                                                           
+      357              // Log buffer stats every 300 frames (~5s at 60fps
+           ).
+      358              if (f.seq % 300 == 0) {
+      359                  char buf[160];
+
+● 誤置參數序 — signature 為 (hmon, cb, show_border)。改正:
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 1 line, removed 2 lines
+      352  
+      353      // ── WGC display capture ────────────────────────────────
+           ───────────────────
+      354      if (capture::is_supported()) {
+      355 -        bool ok = g_video.start(hmon, g_settings.show_capture_
+          -border,                                                       
+      356 -                                [](capture::FrameInfo const& f
+          -) {                                                           
+      355 +        bool ok = g_video.start(hmon, [](capture::FrameInfo co
+          +nst& f) {                                                     
+      356              // Log buffer stats every 300 frames (~5s at 60fps
+           ).
+      357              if (f.seq % 300 == 0) {
+      358                  char buf[160];
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 12 lines, removed 1 line
+      434                  static_cast<int>(f.bgra_stride),
+      435                  static_cast<int>(f.width),
+      436                  static_cast<int>(f.height));
+      437 -        });                                                   
+      437 +        }, g_settings.show_capture_border);                   
+      438          log_msg("capture", ok ? "WGC display capture started"
+      439                                 : "WARNING: WGC display capture
+            failed");
+      440 +        if (ok) {                                             
+      441 +            log_msg("capture", g_settings.show_capture_border 
+      442 +                ? "capture border: enabled by config"         
+      443 +                : (g_video.border_suppressed()                
+      444 +                    ? "capture border: suppressed (IsBorderReq
+          +uired=false)"                                                 
+      445 +                    : "capture border: suppression DENIED by O
+          +S (border visible)"));                                        
+      446 +        }                                                     
+      447 +        {                                                     
+      448 +            std::lock_guard<std::mutex> lk(g_status_mutex);   
+      449 +            g_runtime_status.border_suppressed = g_video.borde
+          +r_suppressed();                                               
+      450 +        }                                                     
+      451      } else {
+      452          log_msg("capture", "WARNING: Windows.Graphics.Capture 
+           not supported");
+      453      }
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 1 line
+      665          tray_add(hwnd);
+      666          hotkeys_register(hwnd);
+      667          media_start(hwnd);
+      668 +        publish_runtime_status();                             
+      669          log_msg("app", "app shell ready");
+      670          return 0;
+      671  
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 14 lines
+      287  
+      288  static void reload_settings_from_disk()
+      289  {
+      290 +    settings::Config previous = g_settings;                   
+      291      load_app_settings();
+      292      apply_runtime_settings();
+      293      log_msg("settings", "settings reloaded from WinUI app");
+      294 +                                                              
+      295 +    // Capture/encoder settings are read once at media_start; 
+          +flag the                                                      
+      296 +    // difference instead of pretending they were applied live
+          +.                                                             
+      297 +    if (previous.monitor_device       != g_settings.monitor_de
+          +vice ||                                                       
+      298 +        previous.resolution_mode      != g_settings.resolution
+          +_mode ||                                                      
+      299 +        previous.output_width         != g_settings.output_wid
+          +th ||                                                         
+      300 +        previous.output_height        != g_settings.output_hei
+          +ght ||                                                        
+      301 +        previous.show_capture_border  != g_settings.show_captu
+          +re_border ||                                                  
+      302 +        previous.encoder_backend      != g_settings.encoder_ba
+          +ckend ||                                                      
+      303 +        previous.video_bitrate_kbps   != g_settings.video_bitr
+          +ate_kbps ||                                                   
+      304 +        previous.extra_ffmpeg_options != g_settings.extra_ffmp
+          +eg_options) {                                                 
+      305 +        log_msg("settings", "capture/encoder changes saved: re
+          +start Monolith to apply");                                    
+      306 +    }                                                         
+      307  }
+      308  
+      309  // ── Media start / stop ─────────────────────────────────────
+           ───────────────────
+
+● Update(app\recorder\src\settings_window.cpp)
+  ⎿  Added 38 lines
+       3  #include <shellapi.h>
+       4  
+       5  #include <filesystem>
+       6 +#include <string>                                              
+       7  #include <thread>
+       8  
+       9  namespace settings_window {
+      10  namespace {
+      11  
+      12 +// Handle of the last spawned Settings process; owned by the UI
+         + thread                                                        
+      13 +// (show() is only called from the tray window's message loop).
+      14 +HANDLE g_settings_process = nullptr;                           
+      15 +                                                               
+      16 +struct FocusContext {                                          
+      17 +    DWORD pid;                                                 
+      18 +    bool focused;                                              
+      19 +};                                                             
+      20 +                                                               
+      21 +BOOL CALLBACK focus_enum_proc(HWND hwnd, LPARAM lp)            
+      22 +{                                                              
+      23 +    auto* ctx = reinterpret_cast<FocusContext*>(lp);           
+      24 +    DWORD pid = 0;                                             
+      25 +    GetWindowThreadProcessId(hwnd, &pid);                      
+      26 +    if (pid == ctx->pid && IsWindowVisible(hwnd)) {            
+      27 +        SetForegroundWindow(hwnd);                             
+      28 +        ctx->focused = true;                                   
+      29 +        return FALSE;                                          
+      30 +    }                                                          
+      31 +    return TRUE;                                               
+      32 +}                                                              
+      33 +                                                               
+      34 +// Returns true when a previously launched Settings window is s
+         +till running                                                   
+      35 +// (and tries to bring it to the foreground instead of spawning
+         + a duplicate).                                                 
+      36 +bool settings_already_running()                                
+      37 +{                                                              
+      38 +    if (!g_settings_process) return false;                     
+      39 +    if (WaitForSingleObject(g_settings_process, 0) != WAIT_TIME
+         +OUT) {                                                         
+      40 +        CloseHandle(g_settings_process);                       
+      41 +        g_settings_process = nullptr;                          
+      42 +        return false;                                          
+      43 +    }                                                          
+      44 +    FocusContext ctx{ GetProcessId(g_settings_process), false }
+         +;                                                              
+      45 +    EnumWindows(focus_enum_proc, reinterpret_cast<LPARAM>(&ctx)
+         +);                                                             
+      46 +    return true;                                               
+      47 +}                                                              
+      48 +                                                               
+      49  std::filesystem::path module_dir()
+      50  {
+      51      wchar_t path[MAX_PATH] = {};
+
+● Update(app\recorder\src\settings_window.cpp)
+  ⎿  Added 15 lines, removed 6 lines
+      76  
+      77  void show(HWND owner, UINT reload_message)
+      78  {
+      79 +    if (settings_already_running()) return;                    
+      80 +                                                               
+      81      std::filesystem::path exe = settings_exe_path();
+      82  
+      83      SHELLEXECUTEINFOW info{};
+     ...
+       89      info.nShow = SW_SHOWNORMAL;
+       90  
+       91      if (!ShellExecuteExW(&info) || !info.hProcess) {
+       90 -        MessageBoxW(                                          
+       91 -            owner,                                            
+       92 -            L"Monolith.Settings.exe was not found. Build or in
+          -stall the WinUI settings app.",                               
+       93 -            L"Monolith Settings",                             
+       94 -            MB_ICONERROR);                                    
+       92 +        std::wstring message =                                
+       93 +            L"Monolith.Settings.exe was not found or could not
+          + be started.\n\n"                                             
+       94 +            L"Expected location:\n" + exe.wstring() +         
+       95 +            L"\n\nBuild or install the WinUI settings app "   
+       96 +            L"(cmake builds it when the .NET 8 SDK is installe
+          +d).";                                                         
+       97 +        MessageBoxW(owner, message.c_str(), L"Monolith Setting
+          +s", MB_ICONERROR);                                            
+       98          return;
+       99      }
+      100  
+       98 -    HANDLE process = info.hProcess;                           
+      101 +    HANDLE process = nullptr;                                 
+      102 +    DuplicateHandle(GetCurrentProcess(), info.hProcess,       
+      103 +                    GetCurrentProcess(), &process,            
+      104 +                    0, FALSE, DUPLICATE_SAME_ACCESS);         
+      105 +    g_settings_process = info.hProcess;                       
+      106 +                                                              
+      107 +    if (!process) process = info.hProcess; // degraded: skip d
+          +uplicate guard                                                
+      108      std::thread([owner, reload_message, process]() {
+      109          WaitForSingleObject(process, INFINITE);
+      110          CloseHandle(process);
+
+● Update(app\recorder\src\settings_window.cpp)
+  ⎿  Added 6 lines, removed 4 lines
+       98          return;
+       99      }
+      100  
+      101 -    HANDLE process = nullptr;                                 
+      101 +    // The reload-watcher thread owns one handle; the duplicat
+          +e-launch guard                                                
+      102 +    // keeps another.  If duplication fails, skip the guard ra
+          +ther than share.                                              
+      103 +    HANDLE process = info.hProcess;                           
+      104 +    HANDLE guard = nullptr;                                   
+      105      DuplicateHandle(GetCurrentProcess(), info.hProcess,
+      103 -                    GetCurrentProcess(), &process,            
+      106 +                    GetCurrentProcess(), &guard,              
+      107                      0, FALSE, DUPLICATE_SAME_ACCESS);
+      105 -    g_settings_process = info.hProcess;                       
+      108 +    g_settings_process = guard;                               
+      109  
+      107 -    if (!process) process = info.hProcess; // degraded: skip d
+          -uplicate guard                                                
+      110      std::thread([owner, reload_message, process]() {
+      111          WaitForSingleObject(process, INFINITE);
+      112          CloseHandle(process);
+
+● C++ 畢。次 config schema、CMake、CI。
+
+● Write(config\default-config.json)
+  ⎿  Error writing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Write(config\default-config.json)
+  ⎿  Added 14 lines, removed 91 lines
+        1  {
+        2 -  "schema_version": 1,                                        
+        3 -  "app": {                                                    
+        4 -    "start_minimized": true,                                  
+        5 -    "minimize_to_tray": true,                                 
+        6 -    "language": "en-US",                                      
+        7 -    "log_level": "info",                                      
+        8 -    "diagnostics_retention_days": 14                          
+        9 -  },                                                          
+        2 +  "schema_version": 2,                                        
+        3    "capture": {
+       11 -    "mode": "display",                                        
+       12 -    "target_display_id": "\\\\.\\DISPLAY1",                   
+       13 -    "target_window": null,                                    
+       14 -    "capture_api": "windows_graphics_capture",                
+       15 -    "adapter_preference": "high_performance",                 
+       16 -    "resolution": {                                           
+       17 -      "mode": "source"                                        
+       18 -    },                                                        
+       19 -    "frame_rate": 60,                                         
+       20 -    "color_format": "nv12",                                   
+       21 -    "hdr_mode": "off"                                         
+        4 +    "monitor_device": "",                                     
+        5 +    "resolution_mode": "source",                              
+        6 +    "resolution_width": 0,                                    
+        7 +    "resolution_height": 0,                                   
+        8 +    "show_capture_border": false                              
+        9    },
+       10    "replay_buffer": {
+       24 -    "enabled": true,                                          
+       11      "duration_seconds": 30,
+       12      "memory_budget_mb": 512,
+       27 -    "save_container": "mkv",                                  
+       28 -    "auto_remux_to_mp4": false,                               
+       29 -    "clip_naming_pattern": "{date}_{time}_{game}_{duration}s_c
+          -lip"                                                          
+       13 +    "save_container": "mkv"                                   
+       14    },
+       15    "recording": {
+       32 -    "default_container": "mkv",                               
+       33 -    "auto_remux_to_mp4": true,                                
+       34 -    "split_files": false,                                     
+       35 -    "max_file_size_mb": 0,                                    
+       36 -    "pause_behavior": "timestamp_gap",                        
+       37 -    "recording_naming_pattern": "{date}_{time}_{game}_recordin
+          -g"                                                            
+       16 +    "container": "mkv",                                       
+       17 +    "pause_behavior": "timestamp_gap"                         
+       18    },
+       19    "video_encoder": {
+       40 -    "codec": "h264",                                          
+       41 -    "backend": "nvenc",                                       
+       20 +    "backend": "auto",                                        
+       21      "bitrate_kbps": 20000,
+       43 -    "rate_control": "cbr",                                    
+       44 -    "preset": "p5",                                           
+       45 -    "profile": "high",                                        
+       46 -    "gop_seconds": 2,                                         
+       47 -    "b_frames": 2,                                            
+       48 -    "lookahead": false,                                       
+       49 -    "aq": true,                                               
+       22      "extra_ffmpeg_options": ""
+       23    },
+       52 -  "audio": {                                                  
+       53 -    "sample_rate_hz": 48000,                                  
+       54 -    "channel_layout": "stereo",                               
+       55 -    "tracks": [                                               
+       56 -      {                                                       
+       57 -        "id": "system",                                       
+       58 -        "enabled": true,                                      
+       59 -        "source_type": "loopback",                            
+       60 -        "device_id": "system-default-loopback",               
+       61 -        "codec": "aac",                                       
+       62 -        "bitrate_kbps": 192                                   
+       63 -      },                                                      
+       64 -      {                                                       
+       65 -        "id": "microphone",                                   
+       66 -        "enabled": true,                                      
+       67 -        "source_type": "capture",                             
+       68 -        "device_id": "default-microphone",                    
+       69 -        "codec": "aac",                                       
+       70 -        "bitrate_kbps": 160                                   
+       71 -      }                                                       
+       72 -    ]                                                         
+       73 -  },                                                          
+       24    "output": {
+       75 -    "clips_directory": "C:\\Users\\User\\Videos\\Monolith\\Cli
+          -ps",                                                          
+       76 -    "recordings_directory": "C:\\Users\\User\\Videos\\Monolith
+          -\\Recordings",                                                
+       77 -    "temp_directory": "C:\\Users\\User\\AppData\\Local\\Monoli
+          -th\\Temp",                                                    
+       78 -    "storage_cap_gb": 200,                                    
+       79 -    "auto_cleanup": true                                      
+       25 +    "clips_directory": "",                                    
+       26 +    "recordings_directory": "",                               
+       27 +    "temp_directory": ""                                      
+       28    },
+       29    "hotkeys": {
+       30      "save_replay": "Ctrl+Shift+F8",
+       31      "recording_start": "Ctrl+Shift+F9",
+       32      "recording_stop": "Ctrl+Shift+F10",
+       33      "pause_resume": "Ctrl+Shift+F11"
+       86 -  },                                                          
+       87 -  "stream_deck": {                                            
+       88 -    "enabled": true,                                          
+       89 -    "ipc_transport": "websocket",                             
+       90 -    "host": "127.0.0.1",                                      
+       91 -    "port": 45991,                                            
+       92 -    "request_timeout_ms": 1500,                               
+       93 -    "allow_multiple_clients": true                            
+       94 -  },                                                          
+       95 -  "profiles": [                                               
+       96 -    {                                                         
+       97 -      "match_type": "process_name",                           
+       98 -      "match_value": "game.exe",                              
+       99 -      "overrides": {                                          
+      100 -        "capture": {                                          
+      101 -          "frame_rate": 120                                   
+      102 -        },                                                    
+      103 -        "video_encoder": {                                    
+      104 -          "bitrate_kbps": 35000                               
+      105 -        },                                                    
+      106 -        "replay_buffer": {                                    
+      107 -          "duration_seconds": 45                              
+      108 -        }                                                     
+      109 -      }                                                       
+      110 -    }                                                         
+      111 -  ]                                                           
+       34 +  }                                                           
+       35  }
+
+● 次 CMake。讀 root CMakeLists:
+  Read 1 file (ctrl+o to expand)
+
+● Update(CMakeLists.txt)
+  ⎿  Added 1 line
+      20  add_subdirectory(libs/replay-buffer)
+      21  add_subdirectory(libs/recording)
+      22  add_subdirectory(app/recorder)
+      23 +add_subdirectory(app/desktop-ui)                               
+
+● Write(app\desktop-ui\CMakeLists.txt)
+  ⎿  Wrote 25 lines to app\desktop-ui\CMakeLists.txt
+       1 # Monolith.Settings — WinUI 3 (C# / .NET 8) settings sidecar.
+       2 #
+         gs.exe from
+       4 # its own directory, so the published output is dropped next to 
+         Monolith.exe.
+         plus the
+       6 # Windows App SDK 1.6 runtime on the target machine.
+       7 
+       9 
+      10 if(DOTNET_EXECUTABLE)
+     … +21 lines (ctrl+o to expand)
+
+  Read 2 files (ctrl+o to expand)
+
+● CI:CMake 今自 publish → 刪重複步,ci 加 verify。
+
+● Update(.github\workflows\windows-ci.yml)
+  ⎿  Added 12 lines, removed 7 lines
+      42            -A x64
+      43            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\build
+          systems\vcpkg.cmake"
+      44  
+      45 +      # The CMake settings_app target runs `dotnet publish` for
+         + the WinUI                                                     
+      46 +      # settings sidecar into the recorder output directory.   
+      47        - name: Build Release
+      48          shell: pwsh
+      49          run: cmake --build build --config Release --parallel
+      50  
+      49 -      - name: Publish WinUI settings app                       
+      51 +      - name: Verify build output                              
+      52          shell: pwsh
+      51 -        run: >                                                 
+      52 -          dotnet publish app/desktop-ui/Monolith.Settings.cspro
+         -j                                                              
+      53 -          -c Release                                           
+      54 -          -r win-x64                                           
+      55 -          --self-contained false                               
+      56 -          -o build/app/recorder/Release                        
+      53 +        run: |                                                 
+      54 +          if (-not (Test-Path "build/app/recorder/Release/Monol
+         +ith.exe")) {                                                   
+      55 +            Write-Error "Build output not found: build/app/reco
+         +rder/Release/Monolith.exe"                                     
+      56 +            exit 1                                             
+      57 +          }                                                    
+      58 +          if (-not (Test-Path "build/app/recorder/Release/Monol
+         +ith.Settings.exe")) {                                          
+      59 +            Write-Error "Build output not found: build/app/reco
+         +rder/Release/Monolith.Settings.exe"                            
+      60 +            exit 1                                             
+      61 +          }                                                    
+      62  
+      63        - name: Upload release folder
+      64          uses: actions/upload-artifact@v4
+
+● Update(.github\workflows\version-tag.yml)
+  ⎿  Added 2 lines, removed 9 lines
+      42            -A x64
+      43            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\build
+          systems\vcpkg.cmake"
+      44  
+      45 +      # The CMake settings_app target runs `dotnet publish` for
+         + the WinUI                                                     
+      46 +      # settings sidecar into the recorder output directory.   
+      47        - name: Build Release
+      48          shell: pwsh
+      49          run: cmake --build build --config Release --parallel
+      50  
+      49 -      - name: Publish WinUI settings app                       
+      50 -        shell: pwsh                                            
+      51 -        run: >                                                 
+      52 -          dotnet publish app/desktop-ui/Monolith.Settings.cspro
+         -j                                                              
+      53 -          -c Release                                           
+      54 -          -r win-x64                                           
+      55 -          --self-contained false                               
+      56 -          -o build/app/recorder/Release                        
+      57 -                                                               
+      51        - name: Verify release asset
+      52          shell: pwsh
+      53          run: |
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● SDK 裝畢。遣 C# UI agent(sonnet,background),同時自建 C++。
+
+● Agent(Implement WinUI Settings UI)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Configure 成。建 monolith target(避 settings_app,agent 尚編 C#)。
+
+  Ran 2 shell commands, wrote 2 memories (ctrl+o to expand)
+
+● Stale exe 除。今 smoke-test recorder(C++ 變更驗證):
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Log 鎖(fopen 無 share)。Copy 後讀:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(app\recorder\src\main.cpp)
+  ⎿  Added 2 lines, removed 1 line
+      119      std::wstring dir = app_data_dir();
+      120      if (dir.empty()) return;
+      121      std::wstring path = dir + L"\\monolith.log";
+      122 -    _wfopen_s(&g_log, path.c_str(), L"a");                    
+      122 +    // _SH_DENYNO: keep the log readable by Settings/diagnosti
+          +cs while we run.                                              
+      123 +    g_log = _wfsopen(path.c_str(), L"a", _SH_DENYNO);         
+      124  }
+      125  
+      126  static void log_msg(const char* tag, const char* msg)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Replay hotkey 行:23MB MKV 出(NVENC 新 path)。試 manual recording F9→F10:
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Recording 行(pause/resume 含)。停 app、察 log + config:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 察 startup log 行(monitor/encoder/border):
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● ffprobe 無。用 Shell metadata 驗:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 30s 長正確(replay duration 守)。手解 MKV header 驗 PixelWidth/Height:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 試 corrupt config(不可 crash):
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Corrupt config 測過:app 存活、warning 記、defaults 用、壞檔保留。
+
+  C++ 側驗證全畢:
+  - Monolith.exe 建成(stale windows_recorder.exe 除)
+  - Replay Ctrl+Shift+F8 → 30s MKV ✔
+  - Manual F9/F11/F11/F10(pause/resume 含)→ MKV ✔
+  - Monitor 枚舉+選擇、border 抑制、runtime-status.json ✔
+  - Config wiring:libx264 + 1280x720 縮放 + 8Mbps → MKV header 驗 1280x720 ✔
+  - Corrupt config 不 crash ✔
+  - Log 今可讀於運行中(_SH_DENYNO)✔
+
+  C# UI agent 尚行(七頁 WinUI 重構 + 新 keys + corrupt-config backup +
+  single-instance)。待其畢,後:全建(settings_app publish)、Settings
+  啟動驗證、docs 更新、終報。
+
+✻ Crunched for 22m 18s
+
+※ recap: Fixing the missing Monolith.Settings.exe build and completing the WinUI 3 Settings app end-to-end. Recorder-side C++ changes are built and verified locally. Next: wait for the C# UI agent to finish, then run the full build and verify Settings launches. (disable recaps in /config)
+
+● Agent "Implement WinUI Settings UI" completed · 21m 36s
+
+● C# agent 畢(0 errors)。今 vet:全建 + 實啟 Settings exe(Directory.Build.targets
+  之 PRI no-op 恐礙 XAML resources — 必驗)。
+
+  Ran 6 shell commands (ctrl+o to expand)
+● 取 exit code:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+> /model sonnet                                                                 
+  ⎿  Set model to Sonnet 4.6 and saved as your default for new sessions
+
+> should I download 1.6 or the newer version so 2.2.0 is better of this ?       
+  ⎿  Referenced file app\recorder\src\main.cpp
+  ⎿  Read ..\..\Users\Mario\.claude\projects\C--Pattumiera-Monolith\memory\monolith-local-toolchain.md (15 lines)
+  ⎿  Read .github\workflows\version-tag.yml (79 lines)
+  ⎿  Read .github\workflows\windows-ci.yml (69 lines)
+  ⎿  Read app\desktop-ui\CMakeLists.txt (26 lines)
+  ⎿  Skills restored (efficient-fable, caveman)
+  ⎿  You've hit your session limit · resets 8am (Europe/Rome)
+     /upgrade to increase your usage limit.
+
+✻ Churned for 45m 53s

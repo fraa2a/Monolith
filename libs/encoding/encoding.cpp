@@ -18,41 +18,63 @@ namespace encoding {
 
 // ── probe_video_encoder ───────────────────────────────────────────────────────
 
+static const char* kEncoderCandidates[] = {
+    "h264_nvenc", "h264_amf", "h264_qsv", "libx264", nullptr
+};
+
+static bool try_open_probe(const char* name, int width, int height)
+{
+    const AVCodec* codec = avcodec_find_encoder_by_name(name);
+    if (!codec) return false;
+
+    AVCodecContext* ctx = avcodec_alloc_context3(codec);
+    if (!ctx) return false;
+
+    ctx->width      = (width  + 1) & ~1; // NVENC requires even dimensions
+    ctx->height     = (height + 1) & ~1;
+    ctx->time_base  = {1, 60};
+    ctx->framerate  = {60, 1};
+    ctx->pix_fmt    = AV_PIX_FMT_YUV420P;
+    ctx->bit_rate   = 4'000'000;
+    ctx->gop_size   = 60;
+
+    AVDictionary* opts = nullptr;
+    if (strcmp(name, "libx264") == 0)
+        av_dict_set(&opts, "preset", "ultrafast", 0);
+
+    bool ok = (avcodec_open2(ctx, codec, &opts) == 0);
+    av_dict_free(&opts);
+    avcodec_free_context(&ctx);
+    return ok;
+}
+
 std::string probe_video_encoder(int width, int height)
 {
-    static const char* candidates[] = {
-        "h264_nvenc", "h264_amf", "h264_qsv", "libx264", nullptr
-    };
-
     // Suppress noise during probing.
     const int saved_level = av_log_get_level();
     av_log_set_level(AV_LOG_QUIET);
 
     std::string result;
-    for (int i = 0; candidates[i]; ++i) {
-        const AVCodec* codec = avcodec_find_encoder_by_name(candidates[i]);
-        if (!codec) continue;
+    for (int i = 0; kEncoderCandidates[i]; ++i) {
+        if (try_open_probe(kEncoderCandidates[i], width, height)) {
+            result = kEncoderCandidates[i];
+            break;
+        }
+    }
 
-        AVCodecContext* ctx = avcodec_alloc_context3(codec);
-        if (!ctx) continue;
+    av_log_set_level(saved_level);
+    return result;
+}
 
-        ctx->width      = (width  + 1) & ~1; // NVENC requires even dimensions
-        ctx->height     = (height + 1) & ~1;
-        ctx->time_base  = {1, 60};
-        ctx->framerate  = {60, 1};
-        ctx->pix_fmt    = AV_PIX_FMT_YUV420P;
-        ctx->bit_rate   = 4'000'000;
-        ctx->gop_size   = 60;
+std::vector<std::string> available_video_encoders(int width, int height)
+{
+    const int saved_level = av_log_get_level();
+    av_log_set_level(AV_LOG_QUIET);
 
-        AVDictionary* opts = nullptr;
-        if (strcmp(candidates[i], "libx264") == 0)
-            av_dict_set(&opts, "preset", "ultrafast", 0);
-
-        bool ok = (avcodec_open2(ctx, codec, &opts) == 0);
-        av_dict_free(&opts);
-        avcodec_free_context(&ctx);
-
-        if (ok) { result = candidates[i]; break; }
+    std::vector<std::string> result;
+    for (int i = 0; kEncoderCandidates[i]; ++i) {
+        if (try_open_probe(kEncoderCandidates[i], width, height))
+            result.push_back(kEncoderCandidates[i]);
     }
 
     av_log_set_level(saved_level);
@@ -68,8 +90,12 @@ struct VideoEncoder::Impl {
     SwsContext*     sws      = nullptr;
     PacketSink      sink;
     int64_t         next_pts = 0;
-    int             cfg_w    = 0;
+    int             cfg_w    = 0;   // output (encoded) dimensions
     int             cfg_h    = 0;
+    int             src_w    = 0;   // source dimensions the sws ctx was built for
+    int             src_h    = 0;
+    std::string     enc_name;
+    bool            extra_rejected = false;
     VideoStreamParams vsp;
 };
 
@@ -88,6 +114,18 @@ VideoStreamParams VideoEncoder::stream_params() const
     return impl_->vsp;
 }
 
+std::string VideoEncoder::encoder_name() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return impl_->enc_name;
+}
+
+bool VideoEncoder::extra_options_rejected() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return impl_->extra_rejected;
+}
+
 bool VideoEncoder::open(Config const& cfg, PacketSink sink)
 {
     if (cfg.width <= 0 || cfg.height <= 0 || cfg.fps <= 0 || cfg.bitrate <= 0)
@@ -102,6 +140,9 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         impl_->next_pts = 0;
         impl_->cfg_w    = 0;
         impl_->cfg_h    = 0;
+        impl_->src_w    = 0;
+        impl_->src_h    = 0;
+        impl_->enc_name.clear();
         impl_->vsp      = {};
         impl_->sink     = nullptr;
     };
@@ -109,40 +150,64 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     impl_->sink  = std::move(sink);
     impl_->cfg_w = cfg.width;
     impl_->cfg_h = cfg.height;
+    impl_->extra_rejected = false;
 
-    std::string enc_name = probe_video_encoder(cfg.width, cfg.height);
-    if (enc_name.empty()) return false;
-
-    const AVCodec* codec = avcodec_find_encoder_by_name(enc_name.c_str());
-    if (!codec) return false;
-
-    impl_->ctx = avcodec_alloc_context3(codec);
-    if (!impl_->ctx) return false;
-    AVCodecContext* ctx = impl_->ctx;
-
-    ctx->width     = cfg.width;
-    ctx->height    = cfg.height;
-    ctx->time_base = {1, cfg.fps};
-    ctx->framerate = {cfg.fps, 1};
-    ctx->gop_size  = cfg.fps * 2;  // keyframe every 2 s
-    ctx->bit_rate  = cfg.bitrate;
-    ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
-    ctx->flags    |= AV_CODEC_FLAG_GLOBAL_HEADER; // SPS/PPS in extradata
-
-    AVDictionary* opts = nullptr;
-    if (enc_name == "libx264") {
-        av_dict_set(&opts, "preset", "fast", 0);
-        av_dict_set(&opts, "tune",   "zerolatency", 0);
-    } else if (enc_name == "h264_nvenc") {
-        av_dict_set(&opts, "preset", "p4", 0);
+    // Candidate order: preferred encoder first (when set), then probe order.
+    std::vector<std::string> order;
+    if (!cfg.preferred_encoder.empty() && cfg.preferred_encoder != "auto")
+        order.push_back(cfg.preferred_encoder);
+    for (int i = 0; kEncoderCandidates[i]; ++i) {
+        if (order.empty() || order[0] != kEncoderCandidates[i])
+            order.push_back(kEncoderCandidates[i]);
     }
 
-    if (avcodec_open2(ctx, codec, &opts) < 0) {
+    auto try_open = [&](const std::string& name, bool use_extras) -> bool {
+        const AVCodec* codec = avcodec_find_encoder_by_name(name.c_str());
+        if (!codec) return false;
+
+        impl_->ctx = avcodec_alloc_context3(codec);
+        if (!impl_->ctx) return false;
+        AVCodecContext* ctx = impl_->ctx;
+
+        ctx->width     = cfg.width;
+        ctx->height    = cfg.height;
+        ctx->time_base = {1, cfg.fps};
+        ctx->framerate = {cfg.fps, 1};
+        ctx->gop_size  = cfg.fps * 2;  // keyframe every 2 s
+        ctx->bit_rate  = cfg.bitrate;
+        ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
+        ctx->flags    |= AV_CODEC_FLAG_GLOBAL_HEADER; // SPS/PPS in extradata
+
+        AVDictionary* opts = nullptr;
+        if (name == "libx264") {
+            av_dict_set(&opts, "preset", "fast", 0);
+            av_dict_set(&opts, "tune",   "zerolatency", 0);
+        } else if (name == "h264_nvenc") {
+            av_dict_set(&opts, "preset", "p4", 0);
+        }
+        if (use_extras && !cfg.extra_options.empty()) {
+            // User-supplied AVOptions override the built-in defaults above.
+            av_dict_parse_string(&opts, cfg.extra_options.c_str(), "=", ":, ", 0);
+        }
+
+        bool ok = (avcodec_open2(ctx, codec, &opts) == 0);
         av_dict_free(&opts);
-        cleanup();
-        return false;
+        if (!ok) avcodec_free_context(&impl_->ctx);
+        return ok;
+    };
+
+    std::string opened;
+    for (const auto& name : order) {
+        if (try_open(name, true)) { opened = name; break; }
+        if (!cfg.extra_options.empty() && try_open(name, false)) {
+            impl_->extra_rejected = true;
+            opened = name;
+            break;
+        }
     }
-    av_dict_free(&opts);
+    if (opened.empty()) { cleanup(); return false; }
+    impl_->enc_name = opened;
+    AVCodecContext* ctx = impl_->ctx;
 
     impl_->frame = av_frame_alloc();
     if (!impl_->frame) { cleanup(); return false; }
@@ -151,11 +216,9 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     impl_->frame->height = cfg.height;
     if (av_frame_get_buffer(impl_->frame, 0) < 0) { cleanup(); return false; }
 
-    impl_->sws = sws_getContext(
-        cfg.width, cfg.height, AV_PIX_FMT_BGRA,
-        cfg.width, cfg.height, ctx->pix_fmt,
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
-    if (!impl_->sws) { cleanup(); return false; }
+    // sws ctx is (re-)created lazily in push_bgra for the actual source size.
+    impl_->src_w = 0;
+    impl_->src_h = 0;
 
     // Store stream params for replay buffer.
     impl_->vsp.width   = cfg.width;
@@ -194,14 +257,27 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
 {
     std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx || !bgra) return;
-    if (width != impl_->cfg_w || height != impl_->cfg_h) return; // skip size mismatch
+    if (width <= 0 || height <= 0) return;
+
+    // (Re-)create the scaler when the source size changes (display mode
+    // switches, or output resolution differs from capture resolution).
+    if (!impl_->sws || width != impl_->src_w || height != impl_->src_h) {
+        if (impl_->sws) sws_freeContext(impl_->sws);
+        impl_->sws = sws_getContext(
+            width, height, AV_PIX_FMT_BGRA,
+            impl_->cfg_w, impl_->cfg_h, impl_->ctx->pix_fmt,
+            SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!impl_->sws) return;
+        impl_->src_w = width;
+        impl_->src_h = height;
+    }
 
     av_frame_make_writable(impl_->frame);
 
     const uint8_t* src_slices[1] = { bgra };
     int            src_stride[1] = { stride };
     sws_scale(impl_->sws,
-        src_slices, src_stride, 0, impl_->cfg_h,
+        src_slices, src_stride, 0, height,
         impl_->frame->data, impl_->frame->linesize);
 
     impl_->frame->pts = impl_->next_pts++;
@@ -228,6 +304,9 @@ void VideoEncoder::close()
     if (impl_->frame) { av_frame_free(&impl_->frame);               }
     if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);           }
     impl_->next_pts = 0;
+    impl_->src_w    = 0;
+    impl_->src_h    = 0;
+    impl_->enc_name.clear();
     impl_->vsp      = {};
 }
 
