@@ -33,7 +33,7 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 - `libs/recording`: live MKV writer for manual recordings, fed by the same encoded packet stream as replay.
 - App wiring: WGC frames and WASAPI system audio feed encoders; encoded packets feed replay buffer and, when armed, the manual recorder.
 - User media output defaults to `Videos\Monolith\Clips` and `Videos\Monolith\Recordings`; logs/runtime data stay under `AppData\Local\Monolith`.
-- Settings foundation: `AppData\Local\Monolith\config.json`, default/user JSON merge through `nlohmann-json`, and a minimal Win32 tray-launched settings window.
+- Settings foundation: `AppData\Local\Monolith\config.json`, default/user JSON merge through `nlohmann-json`, and a WinUI 3 tray-launched settings sidecar.
 
 ## Latest Continuation Notes
 
@@ -89,5 +89,5 @@ Previous native C++ build verification succeeded before the Settings changes. Cu
 - WGC callback and encoder flow need runtime soak testing.
 - A/V sync needs real capture validation, especially around silence and long sessions.
 - Manual recording pause/resume needs runtime validation across longer sessions.
-- Settings is minimal Win32 for now; future WinUI 3 shell remains optional after core behavior stabilizes.
+- Settings UI is now WinUI 3 via `app/desktop-ui`; the native recorder launches `Monolith.Settings.exe` and reloads settings when it exits.
 - WGC border suppression requires `GraphicsCaptureSession::IsBorderRequired` / `IGraphicsCaptureSession3`, introduced in `Windows.Foundation.UniversalApiContract` 12.0. The local SDK exposes it under Windows Kits `10.0.26100.0`.

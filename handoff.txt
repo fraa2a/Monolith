@@ -105,7 +105,7 @@ Manual recording code still needs build and runtime smoke verification on the Wi
 - Added first-pass persistent settings under `AppData\Local\Monolith\config.json`.
 - Defaults load from `config/default-config.json`, then user overrides are merged.
 - Invalid user config logs a warning and falls back to defaults.
-- Tray Settings opens a minimal Win32 window.
+- Tray Settings opens the WinUI 3 `Monolith.Settings.exe` sidecar.
 - Live-applied settings:
   - replay clip output folder
   - manual recording output folder

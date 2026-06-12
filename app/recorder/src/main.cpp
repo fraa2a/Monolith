@@ -32,6 +32,7 @@ static constexpr WCHAR kWindowClass[] = L"MonolithMsgWnd";
 static constexpr WCHAR kAppName[]     = L"Monolith";
 static constexpr WCHAR kMutexName[]   = L"Monolith_SingleInstance";
 static constexpr UINT  WM_TRAYICON   = WM_APP + 1;
+static constexpr UINT  WM_SETTINGS_RELOAD = WM_APP + 2;
 
 enum Cmd : UINT {
     CMD_SAVE_REPLAY     = 1001,
@@ -163,11 +164,6 @@ static std::atomic<bool> g_video_enc_open_attempted{ false };
 static std::wstring g_recordings_dir;
 static settings::Config g_settings;
 
-static std::wstring ascii_to_wide(const std::string& value)
-{
-    return std::wstring(value.begin(), value.end());
-}
-
 static void apply_runtime_settings()
 {
     ensure_directory(g_settings.clips_directory);
@@ -208,48 +204,16 @@ static void load_app_settings()
     log_path("settings", "config path: ", g_settings.user_config_path);
 }
 
-static settings_window::Model settings_model()
-{
-    settings_window::Model model;
-    model.clips_directory = g_settings.clips_directory;
-    model.recordings_directory = g_settings.recordings_directory;
-    model.replay_duration_seconds = g_settings.replay_duration_seconds;
-    model.replay_memory_budget_mb = g_settings.replay_memory_budget_mb;
-    model.save_replay_hotkey = L"Ctrl+Shift+F8";
-    model.recording_start_hotkey = L"Ctrl+Shift+F9";
-    model.recording_stop_hotkey = L"Ctrl+Shift+F10";
-    model.pause_resume_hotkey = L"Ctrl+Shift+F11";
-    return model;
-}
-
-static bool save_settings_from_window(const settings_window::Model& model, std::wstring* error)
-{
-    settings::Config next = g_settings;
-    next.clips_directory = model.clips_directory;
-    next.recordings_directory = model.recordings_directory;
-    next.replay_duration_seconds = model.replay_duration_seconds;
-    next.replay_memory_budget_mb = model.replay_memory_budget_mb;
-
-    ensure_directory(next.clips_directory);
-    ensure_directory(next.recordings_directory);
-    ensure_directory(next.temp_directory);
-
-    std::string save_error;
-    if (!settings::save(next, &save_error)) {
-        if (error) *error = L"Failed to save settings: " + ascii_to_wide(save_error);
-        log_msg("settings", save_error.c_str());
-        return false;
-    }
-
-    g_settings = next;
-    apply_runtime_settings();
-    log_msg("settings", "settings saved");
-    return true;
-}
-
 static void show_settings(HWND hwnd)
 {
-    settings_window::show(hwnd, settings_model(), save_settings_from_window);
+    settings_window::show(hwnd, WM_SETTINGS_RELOAD);
+}
+
+static void reload_settings_from_disk()
+{
+    load_app_settings();
+    apply_runtime_settings();
+    log_msg("settings", "settings reloaded from WinUI app");
 }
 
 // ── Media start / stop ────────────────────────────────────────────────────────
@@ -597,6 +561,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             dispatch(CMD_RECORDING_STOP, hwnd);
         else if (wp == HK_PAUSE_RESUME)
             dispatch(CMD_PAUSE_RESUME, hwnd);
+        return 0;
+
+    case WM_SETTINGS_RELOAD:
+        reload_settings_from_disk();
         return 0;
 
     default:

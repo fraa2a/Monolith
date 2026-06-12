@@ -92,7 +92,7 @@ Status: implemented in code; build/runtime verification pending.
 - Deliverables:
   - `AppData\Local\Monolith\config.json` load/save path
   - default config merge from `config/default-config.json`
-  - minimal Win32 settings window opened from the tray
+  - WinUI 3 settings sidecar opened from the tray
   - editable replay clip folder, manual recording folder, replay duration, and replay memory budget
   - read-only hotkey display
 - Acceptance criteria:
@@ -112,4 +112,3 @@ Status: implemented in code; build/runtime verification pending.
   - hotkey rebinding
   - encoder/capture/audio device settings UI
   - Stream Deck settings
-  - WinUI 3 settings shell
