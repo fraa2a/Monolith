@@ -23,6 +23,7 @@ public sealed class SettingsData
     // replay_buffer
     public string ReplayDurationSeconds { get; set; } = "30";
     public string ReplayMemoryBudgetMb { get; set; } = "512";
+    public string ClipContainer { get; set; } = "mkv";
 
     // hotkeys
     public string SaveReplayHotkey { get; set; } = "Ctrl+Shift+F8";
@@ -30,6 +31,8 @@ public sealed class SettingsData
     public string RecordingStopHotkey { get; set; } = "Ctrl+Shift+F10";
     public string PauseResumeHotkey { get; set; } = "Ctrl+Shift+F11";
     public string RecordingContainer { get; set; } = "mkv";
+    public bool RecordingEnabled { get; set; } = true;
+    public bool ReplayBufferEnabled { get; set; } = true;
 
     // audio
     public string AudioMode { get; set; } = "default";

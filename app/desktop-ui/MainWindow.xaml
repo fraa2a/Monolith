@@ -138,6 +138,27 @@
                                     </StackPanel>
                                 </Border>
 
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Clip Output" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <Grid ColumnSpacing="16" RowSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="180" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Row="0" Text="Format" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                            <ComboBox
+                                                Grid.Column="1"
+                                                x:Name="ClipFormatComboBox"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="OnClipFormatSelectionChanged">
+                                                <ComboBoxItem Content="MKV (Matroska)" Tag="mkv" />
+                                                <ComboBoxItem Content="MP4" Tag="mp4" />
+                                            </ComboBox>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
                             </StackPanel>
 
                             <!-- ══ RECORDING PAGE ════════════════════════════════ -->
@@ -418,6 +439,29 @@
 
                             <!-- â•â• ADVANCED PAGE â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
                             <StackPanel x:Name="AdvancedPage" Spacing="18" Visibility="Collapsed">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Components" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <ToggleSwitch
+                                            x:Name="RecordingEnabledToggle"
+                                            Header="Recording"
+                                            Toggled="OnRecordingEnabledToggled" />
+                                        <ToggleSwitch
+                                            x:Name="ReplayBufferEnabledToggle"
+                                            Header="Replay buffer"
+                                            Toggled="OnReplayBufferEnabledToggled" />
+                                        <TextBlock
+                                            Text="Disable to reduce resource usage on low-end PCs. Disabled features appear greyed out in the tray menu."
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            TextWrapping="Wrap"
+                                            FontSize="12" />
+                                        <InfoBar
+                                            IsOpen="True"
+                                            Severity="Informational"
+                                            Message="Restart Monolith to fully apply component changes." />
+                                    </StackPanel>
+                                </Border>
+
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
                                         <TextBlock Text="Diagnostics" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />

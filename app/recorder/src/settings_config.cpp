@@ -31,13 +31,14 @@ constexpr const char* kFallbackDefaultConfig = R"json(
     "show_capture_border": false
   },
   "replay_buffer": {
+    "enabled": true,
     "duration_seconds": 30,
     "memory_budget_mb": 512,
     "save_container": "mkv"
   },
   "recording": {
-    "container": "mkv",
-    "pause_behavior": "timestamp_gap"
+    "enabled": true,
+    "container": "mkv"
   },
   "audio": {
     "mode": "default",
@@ -344,9 +345,15 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["output"]["clips_directory"] = wide_to_utf8(config.clips_directory);
     doc["output"]["recordings_directory"] = wide_to_utf8(config.recordings_directory);
     doc["output"]["temp_directory"] = wide_to_utf8(config.temp_directory);
+    doc["replay_buffer"]["enabled"] = config.replay_buffer_enabled;
     doc["replay_buffer"]["duration_seconds"] = config.replay_duration_seconds;
     doc["replay_buffer"]["memory_budget_mb"] = config.replay_memory_budget_mb;
+    doc["replay_buffer"]["save_container"] = config.replay_clip_container;
+    doc["recording"]["enabled"] = config.recording_enabled;
     doc["recording"]["container"] = config.recording_container;
+    // Dead key removed from the schema; scrub it from older configs.
+    if (doc.contains("recording") && doc["recording"].is_object())
+        doc["recording"].erase("pause_behavior");
     doc["video_encoder"]["backend"] = config.encoder_backend;
     doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
@@ -386,9 +393,15 @@ Config config_from_json(
     if (config.replay_memory_budget_mb < 64 || config.replay_memory_budget_mb > 16384)
         config.replay_memory_budget_mb = 512;
 
+    config.replay_clip_container = utf8_at(doc, "replay_buffer", "save_container", "mkv");
+    if (config.replay_clip_container != "mkv" && config.replay_clip_container != "mp4")
+        config.replay_clip_container = "mkv";
+    config.replay_buffer_enabled = bool_at(doc, "replay_buffer", "enabled", true);
+
     config.recording_container = utf8_at(doc, "recording", "container", "mkv");
     if (config.recording_container != "mkv" && config.recording_container != "mp4")
         config.recording_container = "mkv";
+    config.recording_enabled = bool_at(doc, "recording", "enabled", true);
 
     config.audio_mode = utf8_at(doc, "audio", "mode", "default");
     if (config.audio_mode != "default" && config.audio_mode != "custom")

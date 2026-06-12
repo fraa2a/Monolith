@@ -18,6 +18,7 @@
 #include <replay-buffer/replay_buffer.h>
 #include <recording/recording.h>
 
+#include "resource.h"
 #include "settings_config.h"
 #include "settings_window.h"
 
@@ -247,7 +248,17 @@ static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
 static std::wstring g_recordings_dir;
 static std::string g_recording_container = "mkv";
+static std::atomic<bool> g_replay_enabled{ true };
+static std::atomic<bool> g_recording_enabled{ true };
 static settings::Config g_settings;
+
+// Active-game audio source: re-acquired by a UI-thread timer so a game
+// launched after Monolith (or after the previous game exited) is picked up.
+static constexpr UINT_PTR kActiveGameTimerId  = 1;
+static constexpr UINT     kActiveGamePollMs   = 5000;
+static std::vector<int> g_active_game_tracks;
+static uint32_t g_active_game_pid = 0;
+static audio::WasapiCapture* g_active_game_capture = nullptr;
 
 static std::mutex g_status_mutex;
 static settings::RuntimeStatus g_runtime_status;
@@ -334,16 +345,23 @@ static void apply_runtime_settings()
     rbcfg.duration_sec  = g_settings.replay_duration_seconds;
     rbcfg.memory_cap_mb = g_settings.replay_memory_budget_mb;
     rbcfg.output_dir    = g_settings.clips_directory;
+    rbcfg.container     = g_settings.replay_clip_container;
     g_replay.configure(rbcfg);
 
     g_recordings_dir = g_settings.recordings_directory;
     g_recording_container = g_settings.recording_container;
+    g_replay_enabled.store(g_settings.replay_buffer_enabled, std::memory_order_relaxed);
+    g_recording_enabled.store(g_settings.recording_enabled, std::memory_order_relaxed);
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "settings applied: replay=%ds / %lldMB recording=%s",
+    char msg[192];
+    snprintf(msg, sizeof(msg),
+             "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s",
              g_settings.replay_duration_seconds,
              static_cast<long long>(g_settings.replay_memory_budget_mb),
-             g_recording_container.c_str());
+             g_settings.replay_clip_container.c_str(),
+             g_settings.replay_buffer_enabled ? "" : " (DISABLED)",
+             g_recording_container.c_str(),
+             g_settings.recording_enabled ? "" : " (DISABLED)");
     log_msg("settings", msg);
     log_path("replay", "clips dir: ", g_settings.clips_directory);
     log_path("recording", "recordings dir: ", g_recordings_dir);
@@ -406,6 +424,13 @@ static void reload_settings_from_disk(HWND hwnd)
         previous.audio_sources.size() != g_settings.audio_sources.size()) {
         log_msg("settings", "capture/encoder/audio changes saved: restart Monolith to apply");
     }
+
+    // Component toggles gate commands/menu immediately, but the media pipeline
+    // shape (capture/encoders started or skipped) is decided at media_start.
+    if (previous.replay_buffer_enabled != g_settings.replay_buffer_enabled ||
+        previous.recording_enabled     != g_settings.recording_enabled) {
+        log_msg("settings", "component toggles saved: restart Monolith to fully apply");
+    }
 }
 
 // ── Audio routing ─────────────────────────────────────────────────────────────
@@ -434,7 +459,7 @@ static void refresh_audio_runtime_status()
 {
     auto devices = audio::enumerate_input_devices();
     auto sessions = audio::enumerate_render_sessions();
-    auto active = audio::active_foreground_process();
+    auto active = audio::detect_active_game();
 
     std::lock_guard<std::mutex> lk(g_status_mutex);
     g_runtime_status.input_devices.clear();
@@ -472,8 +497,10 @@ static bool open_audio_track(int track)
     acfg.stream_index = track;
 
     bool ok = encoder.open(acfg, [](encoding::EncodedPacket pkt) {
-        auto replay_pkt = pkt;
-        g_replay.push(std::move(replay_pkt));
+        if (g_replay_enabled.load(std::memory_order_relaxed)) {
+            auto replay_pkt = pkt;
+            g_replay.push(std::move(replay_pkt));
+        }
         g_recording.push(std::move(pkt));
     });
 
@@ -623,6 +650,9 @@ static void stop_audio_system()
     g_audio_captures.clear();
     for (auto& encoder : g_audio_encoders)
         encoder.close();
+    g_active_game_tracks.clear();
+    g_active_game_pid = 0;
+    g_active_game_capture = nullptr;
 }
 
 static void start_default_audio_system()
@@ -688,10 +718,14 @@ static void start_custom_audio_system()
                 log_msg("audio.app", "configured process not running or not capturable");
             }
         } else if (source.type == "active_game") {
-            auto active = audio::active_foreground_process();
-            if (!start_process_source(active.process_id, tracks, "audio.game",
-                                      "active game audio started")) {
-                log_msg("audio.game", "no active game/process captured");
+            g_active_game_tracks = tracks;
+            auto active = audio::detect_active_game();
+            if (start_process_source(active.process_id, tracks, "audio.game",
+                                     "active game audio started")) {
+                g_active_game_pid = active.process_id;
+                g_active_game_capture = g_audio_captures.back().get();
+            } else {
+                log_msg("audio.game", "no active game detected yet; watching for one");
             }
         }
     }
@@ -710,12 +744,57 @@ static void start_audio_system()
     publish_audio_params();
 }
 
+// True when the custom audio config contains an enabled active_game source.
+static bool active_game_source_configured()
+{
+    if (g_settings.audio_mode != "custom") return false;
+    for (const auto& source : g_settings.audio_sources) {
+        if (source.enabled && source.type == "active_game") return true;
+    }
+    return false;
+}
+
+// Timer-driven (UI thread, every kActiveGamePollMs): acquires the active-game
+// capture when none exists yet, and re-acquires after the captured game exits.
+// A live capture is never switched just because focus moved — alt-tabbing must
+// not cut game audio mid-session.
+static void poll_active_game()
+{
+    if (g_active_game_tracks.empty()) return;
+
+    if (g_active_game_pid != 0) {
+        if (audio::process_alive(g_active_game_pid)) return;
+        for (auto it = g_audio_captures.begin(); it != g_audio_captures.end(); ++it) {
+            if (it->get() == g_active_game_capture) {
+                (*it)->stop();
+                g_audio_captures.erase(it);
+                break;
+            }
+        }
+        g_active_game_capture = nullptr;
+        g_active_game_pid = 0;
+        log_msg("audio.game", "active game exited; watching for a new one");
+    }
+
+    auto active = audio::detect_active_game();
+    if (active.process_id == 0) return;
+    if (start_process_source(active.process_id, g_active_game_tracks, "audio.game",
+                             "active game audio started")) {
+        g_active_game_pid = active.process_id;
+        g_active_game_capture = g_audio_captures.back().get();
+        publish_audio_params();
+        {
+            std::lock_guard<std::mutex> lk(g_status_mutex);
+            g_runtime_status.active_game = runtime_audio_session(active);
+        }
+        publish_runtime_status();
+    }
+}
+
 // ── Media start / stop ────────────────────────────────────────────────────────
 
 static void media_start(HWND hwnd)
 {
-    (void)hwnd;
-
     // ── Capture monitor from config (restart-required setting) ───────────────
     std::vector<MonitorEntry> monitors = enumerate_monitors();
     std::wstring used_device;
@@ -746,8 +825,16 @@ static void media_start(HWND hwnd)
         apply_runtime_settings();
     }
 
+    // Both components off: skip the whole media pipeline (low-end mode).
+    if (!g_settings.replay_buffer_enabled && !g_settings.recording_enabled) {
+        log_msg("app", "recording + replay buffer disabled: media pipeline not started");
+        return;
+    }
+
     // ── Audio capture/routing ──────────────────────────────────────────────────
     start_audio_system();
+    if (active_game_source_configured())
+        SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
 
     // ── WGC display capture ───────────────────────────────────────────────────
     if (capture::is_supported()) {
@@ -764,6 +851,11 @@ static void media_start(HWND hwnd)
             }
             // Encode every 2nd frame → 30fps effective for software encoder.
             if (f.seq % 2 != 0 || f.bgra_data == nullptr) return;
+            // Replay buffer disabled: encode only while a manual recording
+            // is running, so an idle tray app costs no encoder CPU.
+            if (!g_replay_enabled.load(std::memory_order_relaxed) &&
+                g_recording.state() == recording::RecordingState::Idle)
+                return;
             if (!g_video_enc.is_open()) {
                 bool expected = false;
                 if (!g_video_enc_open_attempted.compare_exchange_strong(
@@ -790,8 +882,10 @@ static void media_start(HWND hwnd)
                 vcfg.extra_options     = g_settings.extra_ffmpeg_options;
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
-                    auto replay_pkt = pkt;
-                    g_replay.push(std::move(replay_pkt));
+                    if (g_replay_enabled.load(std::memory_order_relaxed)) {
+                        auto replay_pkt = pkt;
+                        g_replay.push(std::move(replay_pkt));
+                    }
                     g_recording.push(std::move(pkt));
                 });
 
@@ -879,7 +973,10 @@ static void tray_add(HWND hwnd)
     g_nid.uID              = 1;
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon            = LoadIconW(nullptr, IDI_APPLICATION);
+    g_nid.hIcon            = LoadIconW(GetModuleHandleW(nullptr),
+                                       MAKEINTRESOURCEW(IDI_MONOLITH));
+    if (!g_nid.hIcon)
+        g_nid.hIcon        = LoadIconW(nullptr, IDI_APPLICATION);
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), kAppName);
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid))
         log_msg("tray", "WARNING: Shell_NotifyIconW NIM_ADD failed");
@@ -893,7 +990,11 @@ static void tray_show_menu(HWND hwnd)
 {
     HMENU menu = CreatePopupMenu();
     recording::RecordingState state = g_recording.state();
-    UINT start_flags = (state == recording::RecordingState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
+    const bool replay_on    = g_replay_enabled.load(std::memory_order_relaxed);
+    const bool recording_on = g_recording_enabled.load(std::memory_order_relaxed);
+    // Save Replay needs the component enabled and the encoder feeding the ring.
+    UINT save_flags  = (replay_on && g_video_enc.is_open()) ? MF_STRING : (MF_STRING | MF_GRAYED);
+    UINT start_flags = (recording_on && state == recording::RecordingState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
     UINT stop_flags  = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
     UINT pause_flags = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
     std::wstring save_text = L"Save Replay\t" + utf8_to_wide(
@@ -908,7 +1009,7 @@ static void tray_show_menu(HWND hwnd)
         (state == recording::RecordingState::Paused)
             ? (L"Resume Recording\t" + pause_hotkey)
             : (L"Pause Recording\t" + pause_hotkey);
-    AppendMenuW(menu, MF_STRING,             CMD_SAVE_REPLAY,     save_text.c_str());
+    AppendMenuW(menu, save_flags,            CMD_SAVE_REPLAY,     save_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, start_flags,            CMD_RECORDING_START, start_text.c_str());
     AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  stop_text.c_str());
@@ -1185,6 +1286,10 @@ static void dispatch(Cmd cmd, HWND hwnd)
 {
     switch (cmd) {
     case CMD_SAVE_REPLAY: {
+        if (!g_replay_enabled.load(std::memory_order_relaxed)) {
+            log_msg("replay", "save_replay ignored: replay buffer disabled in settings");
+            break;
+        }
         char stats[256];
         snprintf(stats, sizeof(stats),
             "save_replay — buffer: %zu pkt / %.1f MB",
@@ -1201,6 +1306,10 @@ static void dispatch(Cmd cmd, HWND hwnd)
         break;
     }
     case CMD_RECORDING_START:
+        if (!g_recording_enabled.load(std::memory_order_relaxed)) {
+            log_msg("recording", "recording_start ignored: recording disabled in settings");
+            break;
+        }
         if (g_recording.start(g_recordings_dir, g_recording_container)) {
             log_path("recording", "recording started: ", g_recording.current_path());
         } else {
@@ -1256,8 +1365,16 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         log_msg("app", "app shell ready");
         return 0;
 
+    case WM_TIMER:
+        if (wp == kActiveGameTimerId) {
+            poll_active_game();
+            return 0;
+        }
+        return DefWindowProcW(hwnd, msg, wp, lp);
+
     case WM_DESTROY:
         settings_window::close_running();
+        KillTimer(hwnd, kActiveGameTimerId);
         media_stop();
         hotkeys_unregister(hwnd);
         tray_remove();

@@ -12,6 +12,7 @@ add_executable(monolith WIN32
     src/main.cpp
     src/settings_config.cpp
     src/settings_window.cpp
+    monolith.rc
 )
 
 set_target_properties(monolith PROPERTIES

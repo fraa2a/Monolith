@@ -10,11 +10,12 @@
   "replay_buffer": {
     "duration_seconds": 30,
     "memory_budget_mb": 512,
-    "save_container": "mkv"
+    "save_container": "mkv",
+    "enabled": true
   },
   "recording": {
     "container": "mkv",
-    "pause_behavior": "timestamp_gap"
+    "enabled": true
   },
   "audio": {
     "mode": "default",

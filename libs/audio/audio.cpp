@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cwctype>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -306,6 +307,131 @@ ProcessInfo active_foreground_process()
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     return process_info(pid);
+}
+
+bool process_alive(uint32_t process_id)
+{
+    if (process_id == 0) return false;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+    if (!process) return false;
+    DWORD exit_code = 0;
+    bool alive = GetExitCodeProcess(process, &exit_code) && exit_code == STILL_ACTIVE;
+    CloseHandle(process);
+    return alive;
+}
+
+// ── Active-game detection ─────────────────────────────────────────────────────
+
+static bool is_shell_process(const std::wstring& process_name)
+{
+    static const wchar_t* kShellNames[] = {
+        L"explorer.exe", L"searchhost.exe", L"startmenuexperiencehost.exe",
+        L"shellexperiencehost.exe", L"textinputhost.exe", L"taskmgr.exe",
+        L"systemsettings.exe", L"lockapp.exe", L"dwm.exe",
+        L"monolith.exe", L"monolith.settings.exe",
+    };
+    std::wstring lower = process_name;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+    for (const wchar_t* name : kShellNames) {
+        if (lower == name) return true;
+    }
+    return false;
+}
+
+// Visible, unowned, non-tool top-level window of plausible app size.
+static bool window_is_app_candidate(HWND hwnd)
+{
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
+    if (GetWindow(hwnd, GW_OWNER) != nullptr) return false;
+    LONG ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    if (ex_style & WS_EX_TOOLWINDOW) return false;
+    RECT rc{};
+    if (!GetWindowRect(hwnd, &rc)) return false;
+    return (rc.right - rc.left) >= 320 && (rc.bottom - rc.top) >= 240;
+}
+
+// Window covers its entire monitor (borderless/exclusive fullscreen pattern).
+static bool window_fills_monitor(HWND hwnd)
+{
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, &mi)) return false;
+    RECT rc{};
+    if (!GetWindowRect(hwnd, &rc)) return false;
+    return rc.left   <= mi.rcMonitor.left  &&
+           rc.top    <= mi.rcMonitor.top   &&
+           rc.right  >= mi.rcMonitor.right &&
+           rc.bottom >= mi.rcMonitor.bottom;
+}
+
+struct GameCandidate {
+    uint32_t pid   = 0;
+    int      score = 0;
+    int64_t  area  = 0;
+};
+
+static BOOL CALLBACK game_window_enum_proc(HWND hwnd, LPARAM lp)
+{
+    auto* candidates = reinterpret_cast<std::vector<GameCandidate>*>(lp);
+    if (!window_is_app_candidate(hwnd)) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0 || pid == GetCurrentProcessId()) return TRUE;
+
+    RECT rc{};
+    GetWindowRect(hwnd, &rc);
+    GameCandidate cand;
+    cand.pid   = pid;
+    cand.area  = static_cast<int64_t>(rc.right - rc.left) * (rc.bottom - rc.top);
+    cand.score = window_fills_monitor(hwnd) ? 2 : 0;
+    candidates->push_back(cand);
+    return TRUE;
+}
+
+ProcessInfo detect_active_game()
+{
+    auto sessions = enumerate_render_sessions();
+    auto has_session = [&sessions](uint32_t pid) {
+        for (const auto& session : sessions) {
+            if (session.process_id == pid) return true;
+        }
+        return false;
+    };
+
+    HWND fg = GetForegroundWindow();
+    DWORD fg_pid = 0;
+    if (fg) GetWindowThreadProcessId(fg, &fg_pid);
+
+    // Score every plausible top-level window:
+    //   +2 fullscreen-sized, +2 foreground, +1 owns a render audio session.
+    // Shell/system processes are excluded entirely.
+    std::vector<GameCandidate> candidates;
+    EnumWindows(game_window_enum_proc, reinterpret_cast<LPARAM>(&candidates));
+
+    GameCandidate best;
+    ProcessInfo best_info;
+    for (auto& cand : candidates) {
+        ProcessInfo info = process_info(cand.pid);
+        if (info.process_name.empty() || is_shell_process(info.process_name))
+            continue;
+        if (cand.pid == fg_pid) cand.score += 2;
+        if (has_session(cand.pid)) cand.score += 1;
+        if (cand.score > best.score ||
+            (cand.score == best.score && cand.area > best.area)) {
+            best = cand;
+            best_info = std::move(info);
+        }
+    }
+    if (best.pid != 0 && best.score > 0) return best_info;
+
+    // Legacy fallback: bare foreground process, unless it is a shell process.
+    if (fg_pid != 0 && fg_pid != GetCurrentProcessId()) {
+        ProcessInfo info = process_info(fg_pid);
+        if (!is_shell_process(info.process_name)) return info;
+    }
+    return {};
 }
 
 // ── WasapiCapture ─────────────────────────────────────────────────────────────
