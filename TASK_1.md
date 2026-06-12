@@ -1,3 +1,7 @@
+Status note — 2026-06-12:
+
+This file is historical. The missing `Monolith.Settings.exe` problem has been fixed, and the Settings app has been manually tested by the user. Settings opens, saves configuration, persists across restarts, and implemented settings behave correctly. Audio V2 foundation has since been added; remaining audio work is mixer/runtime validation.
+
 Current state:
 Monolith was updated to use WinUI 3 for Settings, and the Settings work is partially implemented. The main recorder app builds and runs, but when opening Settings it fails because Monolith.Settings.exe is missing from the build/output folder.
 

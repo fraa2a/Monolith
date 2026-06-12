@@ -1,3 +1,6 @@
+> Status note — 2026-06-12:
+> This is a historical implementation prompt, not current status. The WinUI 3 Settings sidecar now exists as `app/desktop-ui/Monolith.Settings.csproj`, is built into `Monolith.Settings.exe`, opens from the recorder, saves config, and persists across restarts. Current work has moved to audio routing/multi-track support.
+
 # WinUI 3 Settings UI - Comprehensive Implementation Guide
 
 ## Overview

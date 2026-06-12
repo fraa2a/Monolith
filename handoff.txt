@@ -1600,3 +1600,12 @@
      /upgrade to increase your usage limit.
 
 ✻ Churned for 45m 53s
+CURRENT STATUS OVERRIDE — 2026-06-12
+
+- Settings is no longer missing or partially implemented.
+- `Monolith.Settings.exe` is built next to `Monolith.exe` by the CMake `settings_app` target.
+- The user manually verified Settings: it opens, saves configuration, persists across restarts, and implemented settings behave correctly.
+- Manual recording commands are no longer log-only stubs; start/stop/pause/resume are wired through tray and hotkeys.
+- Audio V2 foundation is now implemented: Default mode records desktop audio to track 1 and selected microphone to track 2; Custom mode saves add/configure/disable/remove source routing for desktop, input devices, process sessions, and Active Game; muxers can write up to six audio tracks.
+- Remaining audio limitations: no PCM mixer for multiple sources sharing one track yet; process loopback and Active Game are best-effort; long-session A/V sync still needs runtime validation.
+- Treat the transcript below as historical build/debug context, not current project status.

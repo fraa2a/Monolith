@@ -66,13 +66,13 @@ Status: complete.
 
 ## Milestone 4: Runtime Hardening and Manual Recording Foundation
 
-Status: in progress.
+Status: complete for MVP; longer soak testing remains open.
 
 - Goal:
   - Convert the replay-buffer proof into a safer recorder core and prepare manual recording.
 - Deliverables:
   - recording state machine skeleton (implemented in the current app shell)
-  - manual recording start/stop/pause/resume from tray and hotkeys (implemented; needs runtime verification)
+  - manual recording start/stop/pause/resume from tray and hotkeys
   - graceful shutdown path for capture, encoders, and pending clip saves
   - clearer encoder/capture failure states in logs
   - basic replay-buffer test harness
@@ -81,11 +81,11 @@ Status: in progress.
   - app exits cleanly through tray without killing worker threads
   - recording commands have explicit accepted/rejected states (implemented)
 - Next action:
-  - verify the Settings foundation via CI build and runtime smoke test
+  - continue runtime hardening and Audio V2 mixer/runtime validation
 
 ## Milestone 5: Settings Foundation
 
-Status: implemented in code; build/runtime verification pending.
+Status: complete.
 
 - Goal:
   - Add the first persistent per-user settings path without redesigning replay or recording.
@@ -96,19 +96,42 @@ Status: implemented in code; build/runtime verification pending.
   - editable replay clip folder, manual recording folder, replay duration, and replay memory budget
   - read-only hotkey display
 - Acceptance criteria:
-  - settings opens from the tray
+  - settings opens from the tray (manually tested)
+  - settings save and persist across restarts (manually tested)
   - missing or invalid user config does not crash startup
   - output folder changes are saved and used for replay/manual recording
   - replay duration and memory budget are saved and applied to the replay buffer
-  - unsupported hotkey rebinding is not presented as working
+  - visible settings are wired, read-only, or honestly marked restart-required/unsupported
 - Live-applied settings:
   - replay clip output folder
   - manual recording output folder
   - replay duration
   - replay memory budget
 - Restart-required settings:
-  - none exposed in this pass
+  - capture monitor
+  - output resolution
+  - capture border
+  - encoder backend
+  - video bitrate
+  - advanced FFmpeg options
 - Not implemented:
-  - hotkey rebinding
-  - encoder/capture/audio device settings UI
   - Stream Deck settings
+
+## Milestone 6: Audio V2
+
+Status: foundation implemented; mixer/runtime validation remains.
+
+- Goal:
+  - Add reliable default system+microphone output and a custom audio-routing model for up to six tracks.
+- Deliverables:
+  - Default mode: system audio on track 1, selected primary microphone on track 2. Implemented.
+  - Custom mode: add/configure/disable/remove sources and assign each source to tracks 1-6. Implemented in Settings/config.
+  - Multiple microphone/input devices as independent configurable sources. Implemented.
+  - Per-process/application session listing with readable names and saved routing assignments. Implemented with Windows process-loopback best effort.
+  - Best-effort Active Game source that never breaks recording if no game is detected. Implemented as foreground-process best effort.
+  - Encoder/muxer support for the required audio tracks, with resampling/mixing as needed. Implemented for independent tracks; same-track multi-source mixing remains pending.
+- Acceptance criteria:
+  - replay save, manual recording, Settings launch, and output paths still work. Build verified; runtime audio tests still needed.
+  - missing devices/processes do not crash recording or corrupt config. Implemented by fail-closed source startup and saved-source availability display.
+  - assignments outside tracks 1-6 are rejected or sanitized. Implemented.
+  - current limitations of per-app capture, active-game detection, multi-track muxing, and A/V sync are documented. Implemented in handover/architecture.

@@ -313,27 +313,71 @@
 
                             <!-- ══ AUDIO PAGE ════════════════════════════════════ -->
                             <StackPanel x:Name="AudioPage" Spacing="18" Visibility="Collapsed">
+                                <InfoBar
+                                    IsOpen="True"
+                                    Severity="Informational"
+                                    Message="Audio routing changes take effect after Monolith restarts. Shared-track mixing and process loopback are best-effort in this build." />
+
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Audio Capture" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                                        <StackPanel Spacing="8">
-                                            <Grid ColumnSpacing="12">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="160" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="System audio" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                                <TextBlock Grid.Column="1" Text="Captured and recorded (AAC 192 kbps)" Foreground="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
-                                            </Grid>
-                                            <Grid ColumnSpacing="12">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="160" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="Microphone" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                                <TextBlock Grid.Column="1" Text="Captured but not yet mixed into recordings — planned work." Foreground="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" TextWrapping="Wrap" />
-                                            </Grid>
-                                        </StackPanel>
+                                        <TextBlock Text="Mode" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <ComboBox
+                                            x:Name="AudioModeComboBox"
+                                            Header="Audio mode"
+                                            HorizontalAlignment="Stretch"
+                                            SelectionChanged="OnAudioModeSelectionChanged">
+                                            <ComboBoxItem Content="Default: desktop track 1, microphone track 2" Tag="default" />
+                                            <ComboBoxItem Content="Custom: route sources to tracks 1-6" Tag="custom" />
+                                        </ComboBox>
+                                        <ComboBox
+                                            x:Name="PrimaryMicComboBox"
+                                            Header="Primary microphone for Default mode"
+                                            HorizontalAlignment="Stretch"
+                                            SelectionChanged="OnPrimaryMicSelectionChanged" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Custom Sources" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <Grid ColumnSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <ComboBox
+                                                x:Name="AddAudioSourceComboBox"
+                                                Header="Add source"
+                                                HorizontalAlignment="Stretch" />
+                                            <Button Grid.Column="1" Content="Add" VerticalAlignment="Bottom" Click="OnAddAudioSource" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="18">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="280" />
+                                            </Grid.ColumnDefinitions>
+                                            <ListView
+                                                x:Name="AudioSourcesList"
+                                                MinHeight="180"
+                                                SelectionChanged="OnAudioSourceSelectionChanged" />
+                                            <StackPanel Grid.Column="1" Spacing="10">
+                                                <TextBlock x:Name="SelectedAudioSourceName" Text="Select a source" FontWeight="SemiBold" />
+                                                <ToggleSwitch
+                                                    x:Name="AudioSourceEnabledToggle"
+                                                    Header="Enabled"
+                                                    Toggled="OnAudioSourceEnabledToggled" />
+                                                <TextBlock Text="Tracks" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <CheckBox x:Name="AudioTrack1Box" Content="1" Tag="1" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack2Box" Content="2" Tag="2" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack3Box" Content="3" Tag="3" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack4Box" Content="4" Tag="4" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack5Box" Content="5" Tag="5" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack6Box" Content="6" Tag="6" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                </StackPanel>
+                                                <Button Content="Remove source" Click="OnRemoveAudioSource" />
+                                            </StackPanel>
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

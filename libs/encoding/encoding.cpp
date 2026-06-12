@@ -334,6 +334,7 @@ struct AudioEncoder::Impl {
     int             swr_src_rate = 0;
     int             swr_src_ch   = 0;
     AVSampleFormat  swr_src_fmt  = AV_SAMPLE_FMT_NONE;
+    int             stream_index = 1;
     AudioStreamParams asp;
 };
 
@@ -356,6 +357,8 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
 {
     if (cfg.sample_rate <= 0 || cfg.channels <= 0 || cfg.bitrate <= 0)
         return false;
+    if (cfg.stream_index < 1 || cfg.stream_index > 6)
+        return false;
 
     close();
     std::lock_guard lk(impl_->mutex);
@@ -368,11 +371,13 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
         impl_->swr_src_rate  = 0;
         impl_->swr_src_ch    = 0;
         impl_->swr_src_fmt   = AV_SAMPLE_FMT_NONE;
+        impl_->stream_index  = 1;
         impl_->asp           = {};
         impl_->sink          = nullptr;
     };
 
     impl_->sink = std::move(sink);
+    impl_->stream_index = cfg.stream_index;
 
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (!codec) return false;
@@ -403,6 +408,7 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
                                       ctx->frame_size * 4);
     if (!impl_->fifo) { cleanup(); return false; }
 
+    impl_->asp.stream_index = cfg.stream_index;
     impl_->asp.sample_rate = cfg.sample_rate;
     impl_->asp.channels    = cfg.channels;
     impl_->asp.tb_num      = ctx->time_base.num;
@@ -423,7 +429,7 @@ static void drain_audio(ImplT* impl)
         ep.data.assign(pkt->data, pkt->data + pkt->size);
         ep.pts          = pkt->pts;
         ep.dts          = pkt->dts;
-        ep.stream_index = 1;
+        ep.stream_index = impl->stream_index;
         ep.is_keyframe  = true; // AAC frames are all independently decodable
         ep.tb_num       = impl->ctx->time_base.num;
         ep.tb_den       = impl->ctx->time_base.den;
@@ -570,6 +576,7 @@ void AudioEncoder::close()
     impl_->swr_src_rate  = 0;
     impl_->swr_src_ch    = 0;
     impl_->swr_src_fmt   = AV_SAMPLE_FMT_NONE;
+    impl_->stream_index  = 1;
     impl_->asp           = {};
 }
 

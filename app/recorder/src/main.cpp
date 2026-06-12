@@ -23,11 +23,14 @@
 
 #include <atomic>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -161,6 +164,20 @@ static std::wstring utf8_to_wide(const std::string& value)
     return result;
 }
 
+static std::string wide_to_utf8(const std::wstring& value)
+{
+    if (value.empty()) return {};
+    int count = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        nullptr, 0, nullptr, nullptr);
+    if (count <= 0) return {};
+    std::string result(static_cast<size_t>(count), '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        result.data(), count, nullptr, nullptr);
+    return result;
+}
+
 // ── Globals ───────────────────────────────────────────────────────────────────
 
 static bool apps_use_light_theme()
@@ -219,10 +236,9 @@ static void apply_native_window_theme(HWND hwnd)
 }
 
 static capture::DisplayCapture      g_video;
-static audio::WasapiCapture         g_audio_system;
-static audio::WasapiCapture         g_audio_mic;
 static encoding::VideoEncoder       g_video_enc;
-static encoding::AudioEncoder       g_audio_enc;
+static std::array<encoding::AudioEncoder, 6> g_audio_encoders;
+static std::vector<std::unique_ptr<audio::WasapiCapture>> g_audio_captures;
 static replay_buffer::ReplayBuffer  g_replay;
 static recording::ManualRecorder    g_recording;
 
@@ -384,9 +400,314 @@ static void reload_settings_from_disk(HWND hwnd)
         previous.show_capture_border  != g_settings.show_capture_border ||
         previous.encoder_backend      != g_settings.encoder_backend ||
         previous.video_bitrate_kbps   != g_settings.video_bitrate_kbps ||
-        previous.extra_ffmpeg_options != g_settings.extra_ffmpeg_options) {
-        log_msg("settings", "capture/encoder changes saved: restart Monolith to apply");
+        previous.extra_ffmpeg_options != g_settings.extra_ffmpeg_options ||
+        previous.audio_mode           != g_settings.audio_mode ||
+        previous.primary_microphone_device_id != g_settings.primary_microphone_device_id ||
+        previous.audio_sources.size() != g_settings.audio_sources.size()) {
+        log_msg("settings", "capture/encoder/audio changes saved: restart Monolith to apply");
     }
+}
+
+// ── Audio routing ─────────────────────────────────────────────────────────────
+
+static settings::RuntimeAudioDevice runtime_audio_device(const audio::DeviceInfo& dev)
+{
+    settings::RuntimeAudioDevice out;
+    out.id = dev.id;
+    out.name = dev.name;
+    out.default_device = dev.default_device;
+    out.available = dev.available;
+    return out;
+}
+
+static settings::RuntimeAudioSession runtime_audio_session(const audio::ProcessInfo& proc)
+{
+    settings::RuntimeAudioSession out;
+    out.process_id = proc.process_id;
+    out.process_name = proc.process_name;
+    out.display_name = proc.display_name;
+    out.executable_path = proc.executable_path;
+    return out;
+}
+
+static void refresh_audio_runtime_status()
+{
+    auto devices = audio::enumerate_input_devices();
+    auto sessions = audio::enumerate_render_sessions();
+    auto active = audio::active_foreground_process();
+
+    std::lock_guard<std::mutex> lk(g_status_mutex);
+    g_runtime_status.input_devices.clear();
+    for (const auto& dev : devices)
+        g_runtime_status.input_devices.push_back(runtime_audio_device(dev));
+
+    g_runtime_status.audio_sessions.clear();
+    for (const auto& session : sessions)
+        g_runtime_status.audio_sessions.push_back(runtime_audio_session(session));
+
+    g_runtime_status.active_game = runtime_audio_session(active);
+}
+
+static std::vector<int> valid_tracks(const std::vector<int>& tracks)
+{
+    std::vector<int> result;
+    for (int track : tracks) {
+        if (track < 1 || track > 6) continue;
+        if (std::find(result.begin(), result.end(), track) == result.end())
+            result.push_back(track);
+    }
+    return result;
+}
+
+static bool open_audio_track(int track)
+{
+    if (track < 1 || track > 6) return false;
+    encoding::AudioEncoder& encoder = g_audio_encoders[track - 1];
+    if (encoder.is_open()) return true;
+
+    encoding::AudioEncoder::Config acfg;
+    acfg.sample_rate = 48000;
+    acfg.channels = 2;
+    acfg.bitrate = 192'000;
+    acfg.stream_index = track;
+
+    bool ok = encoder.open(acfg, [](encoding::EncodedPacket pkt) {
+        auto replay_pkt = pkt;
+        g_replay.push(std::move(replay_pkt));
+        g_recording.push(std::move(pkt));
+    });
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), ok ? "AAC encoder opened for audio track %d"
+                                  : "WARNING: AAC encoder failed for audio track %d",
+             track);
+    log_msg("encoding", msg);
+    return ok;
+}
+
+static void close_audio_track(int track)
+{
+    if (track < 1 || track > 6) return;
+    g_audio_encoders[track - 1].close();
+}
+
+static void publish_audio_params()
+{
+    std::vector<encoding::AudioStreamParams> params;
+    for (auto& encoder : g_audio_encoders) {
+        if (encoder.is_open())
+            params.push_back(encoder.stream_params());
+    }
+    g_replay.set_audio_params(params);
+    g_recording.set_audio_params(params);
+}
+
+static void push_audio_to_tracks(const std::vector<int>& tracks,
+                                 const audio::PacketInfo& p,
+                                 const char* log_tag)
+{
+    if (p.seq % 500 == 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+            "seq=%-6u  frames=%-4u  sr=%u  ch=%u tracks=%zu%s",
+            p.seq, p.frame_count, p.sample_rate, p.channels,
+            tracks.size(), p.silent ? "  [silent]" : "");
+        log_msg(log_tag, buf);
+    }
+
+    if (p.data_bytes == 0) return;
+    for (int track : tracks) {
+        if (track < 1 || track > 6) continue;
+        g_audio_encoders[track - 1].push_pcm(
+            p.data, static_cast<int>(p.data_bytes),
+            static_cast<int>(p.sample_rate),
+            static_cast<int>(p.channels),
+            static_cast<int>(p.bit_depth), p.is_float);
+    }
+}
+
+static bool start_endpoint_source(audio::WasapiCapture::Mode mode,
+                                  const std::wstring& device_id,
+                                  std::vector<int> tracks,
+                                  const char* log_tag,
+                                  const char* label)
+{
+    tracks = valid_tracks(tracks);
+    if (tracks.empty()) return false;
+    for (int track : tracks) {
+        if (!open_audio_track(track)) {
+            for (int opened : tracks) {
+                if (opened == track) break;
+                close_audio_track(opened);
+            }
+            return false;
+        }
+    }
+
+    auto capture = std::make_unique<audio::WasapiCapture>();
+    bool ok = capture->start_device(mode, device_id,
+        [tracks = std::move(tracks), log_tag](audio::PacketInfo const& p) {
+            push_audio_to_tracks(tracks, p, log_tag);
+        });
+
+    if (ok) {
+        g_audio_captures.push_back(std::move(capture));
+        log_msg(log_tag, label);
+        return true;
+    }
+
+    log_msg(log_tag, "WARNING: source failed to start");
+    for (int track : tracks)
+        close_audio_track(track);
+    return false;
+}
+
+static bool start_process_source(uint32_t pid,
+                                 std::vector<int> tracks,
+                                 const char* log_tag,
+                                 const char* label)
+{
+    tracks = valid_tracks(tracks);
+    if (pid == 0 || tracks.empty()) return false;
+    for (int track : tracks) {
+        if (!open_audio_track(track)) {
+            for (int opened : tracks) {
+                if (opened == track) break;
+                close_audio_track(opened);
+            }
+            return false;
+        }
+    }
+
+    auto capture = std::make_unique<audio::WasapiCapture>();
+    bool ok = capture->start_process_loopback(pid,
+        [tracks = std::move(tracks), log_tag](audio::PacketInfo const& p) {
+            push_audio_to_tracks(tracks, p, log_tag);
+        });
+
+    if (ok) {
+        g_audio_captures.push_back(std::move(capture));
+        log_msg(log_tag, label);
+        return true;
+    }
+
+    log_msg(log_tag, "WARNING: process loopback failed");
+    for (int track : tracks)
+        close_audio_track(track);
+    return false;
+}
+
+static uint32_t resolve_configured_process(const settings::AudioSourceConfig& source)
+{
+    if (source.process_id != 0)
+        return source.process_id;
+
+    std::wstring wanted_path = source.executable_path;
+    std::string wanted_name = source.process_name;
+    auto sessions = audio::enumerate_render_sessions();
+    for (const auto& session : sessions) {
+        if (!wanted_path.empty() && session.executable_path == wanted_path)
+            return session.process_id;
+        if (!wanted_name.empty() &&
+            _stricmp(wide_to_utf8(session.process_name).c_str(), wanted_name.c_str()) == 0)
+            return session.process_id;
+    }
+    return 0;
+}
+
+static void stop_audio_system()
+{
+    for (auto& capture : g_audio_captures) {
+        if (capture) capture->stop();
+    }
+    g_audio_captures.clear();
+    for (auto& encoder : g_audio_encoders)
+        encoder.close();
+}
+
+static void start_default_audio_system()
+{
+    std::vector<int> desktop_tracks{1};
+    bool desktop_ok = start_endpoint_source(
+        audio::WasapiCapture::Mode::Loopback,
+        L"",
+        desktop_tracks,
+        "audio.sys",
+        "WASAPI loopback started -> audio track 1");
+    if (!desktop_ok) close_audio_track(1);
+
+    std::vector<int> mic_tracks{2};
+    bool mic_ok = start_endpoint_source(
+        audio::WasapiCapture::Mode::Microphone,
+        g_settings.primary_microphone_device_id,
+        mic_tracks,
+        "audio.mic",
+        "WASAPI microphone started -> audio track 2");
+    if (!mic_ok) close_audio_track(2);
+}
+
+static void start_custom_audio_system()
+{
+    std::array<std::string, 7> track_owner{};
+    auto claim_tracks = [&](const settings::AudioSourceConfig& source) {
+        std::vector<int> tracks;
+        for (int track : valid_tracks(source.tracks)) {
+            if (track_owner[track].empty()) {
+                track_owner[track] = source.id.empty() ? source.name : source.id;
+                tracks.push_back(track);
+                continue;
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                "track %d already owned by %s; skipping source %s until mixer is implemented",
+                track, track_owner[track].c_str(),
+                source.name.empty() ? source.id.c_str() : source.name.c_str());
+            log_msg("audio.route", msg);
+        }
+        return tracks;
+    };
+
+    for (const auto& source : g_settings.audio_sources) {
+        if (!source.enabled) continue;
+        std::vector<int> tracks = claim_tracks(source);
+        if (tracks.empty()) continue;
+
+        if (source.type == "desktop") {
+            start_endpoint_source(audio::WasapiCapture::Mode::Loopback, L"",
+                                  tracks, "audio.sys",
+                                  "custom desktop audio started");
+        } else if (source.type == "input") {
+            start_endpoint_source(audio::WasapiCapture::Mode::Microphone,
+                                  source.device_id,
+                                  tracks, "audio.in",
+                                  "custom input device started");
+        } else if (source.type == "process") {
+            uint32_t pid = resolve_configured_process(source);
+            if (!start_process_source(pid, tracks, "audio.app",
+                                      "custom process audio started")) {
+                log_msg("audio.app", "configured process not running or not capturable");
+            }
+        } else if (source.type == "active_game") {
+            auto active = audio::active_foreground_process();
+            if (!start_process_source(active.process_id, tracks, "audio.game",
+                                      "active game audio started")) {
+                log_msg("audio.game", "no active game/process captured");
+            }
+        }
+    }
+}
+
+static void start_audio_system()
+{
+    stop_audio_system();
+    refresh_audio_runtime_status();
+
+    if (g_settings.audio_mode == "custom")
+        start_custom_audio_system();
+    else
+        start_default_audio_system();
+
+    publish_audio_params();
 }
 
 // ── Media start / stop ────────────────────────────────────────────────────────
@@ -420,32 +741,13 @@ static void media_start(HWND hwnd)
     // ── Video encoder ─────────────────────────────────────────────────────────
     log_msg("encoding", "video encoder deferred until first WGC frame");
 
-    // ── Audio encoder ─────────────────────────────────────────────────────────
-    {
-        encoding::AudioEncoder::Config acfg;
-        acfg.sample_rate = 48000;
-        acfg.channels    = 2;
-        acfg.bitrate     = 192'000;
-
-        bool ok = g_audio_enc.open(acfg, [](encoding::EncodedPacket pkt) {
-            auto replay_pkt = pkt;
-            g_replay.push(std::move(replay_pkt));
-            g_recording.push(std::move(pkt));
-        });
-        log_msg("encoding", ok ? "AAC encoder opened (48kHz stereo 192kbps)"
-                               : "WARNING: AAC encoder failed");
-
-        if (ok) {
-            auto params = g_audio_enc.stream_params();
-            g_replay.set_audio_params(params);
-            g_recording.set_audio_params(params);
-        }
-    }
-
     // ── Replay buffer config ───────────────────────────────────────────────────
     {
         apply_runtime_settings();
     }
+
+    // ── Audio capture/routing ──────────────────────────────────────────────────
+    start_audio_system();
 
     // ── WGC display capture ───────────────────────────────────────────────────
     if (capture::is_supported()) {
@@ -549,53 +851,13 @@ static void media_start(HWND hwnd)
         log_msg("capture", "WARNING: Windows.Graphics.Capture not supported");
     }
 
-    // ── WASAPI loopback (system audio → encoder + replay buffer) ─────────────
-    bool ok_sys = g_audio_system.start(
-        audio::WasapiCapture::Mode::Loopback,
-        [](audio::PacketInfo const& p) {
-            if (p.seq % 500 == 0) {
-                char buf[128];
-                snprintf(buf, sizeof(buf),
-                    "seq=%-6u  frames=%-4u  sr=%u  ch=%u%s",
-                    p.seq, p.frame_count, p.sample_rate, p.channels,
-                    p.silent ? "  [silent]" : "");
-                log_msg("audio.sys", buf);
-            }
-            if (p.data_bytes > 0) {
-                g_audio_enc.push_pcm(
-                    p.data, static_cast<int>(p.data_bytes),
-                    static_cast<int>(p.sample_rate),
-                    static_cast<int>(p.channels),
-                    static_cast<int>(p.bit_depth), p.is_float);
-            }
-        });
-    log_msg("audio.sys", ok_sys ? "WASAPI loopback started"
-                                 : "WARNING: WASAPI loopback failed");
-
-    // ── WASAPI microphone (monitor only, not fed to replay buffer for MVP) ───
-    bool ok_mic = g_audio_mic.start(
-        audio::WasapiCapture::Mode::Microphone,
-        [](audio::PacketInfo const& p) {
-            if (p.seq % 500 == 0) {
-                char buf[128];
-                snprintf(buf, sizeof(buf),
-                    "seq=%-6u  frames=%-4u  sr=%u  ch=%u%s",
-                    p.seq, p.frame_count, p.sample_rate, p.channels,
-                    p.silent ? "  [silent]" : "");
-                log_msg("audio.mic", buf);
-            }
-        });
-    log_msg("audio.mic", ok_mic ? "WASAPI mic started"
-                                 : "WARNING: WASAPI mic failed (no mic?)");
 }
 
 static void media_stop()
 {
     g_video.stop();
-    g_audio_system.stop();
-    g_audio_mic.stop();
+    stop_audio_system();
     g_video_enc.close(); // flushes + frees encoder
-    g_audio_enc.close();
     if (g_recording.state() != recording::RecordingState::Idle) {
         std::wstring path;
         g_recording.stop(&path);

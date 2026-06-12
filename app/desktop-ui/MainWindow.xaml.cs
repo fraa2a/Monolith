@@ -32,6 +32,7 @@ public sealed partial class MainWindow : Window
 
     // Suppress programmatic ComboBox changes from triggering ViewModel updates.
     private bool suppressComboBoxEvents;
+    private bool suppressAudioEvents;
     private LowLevelKeyboardProc? hotkeyCaptureProc;
     private nint hotkeyCaptureHook;
     private string? hotkeyCaptureTarget;
@@ -73,6 +74,8 @@ public sealed partial class MainWindow : Window
         ConfigureWindow();
         PopulateCaptureCombos();
         SelectRecordingFormat();
+        PopulateAudioControls();
+        RefreshAudioSourcesList();
         UpdateCaptureBorderWarning();
         UpdateCorruptConfigBar();
     }
@@ -260,6 +263,144 @@ public sealed partial class MainWindow : Window
         suppressComboBoxEvents = false;
     }
 
+    private void PopulateAudioControls()
+    {
+        suppressAudioEvents = true;
+        SelectComboBoxByTag(AudioModeComboBox, viewModel.AudioMode);
+        PopulatePrimaryMicCombo();
+        PopulateAddAudioSourceCombo();
+        suppressAudioEvents = false;
+    }
+
+    private void PopulatePrimaryMicCombo()
+    {
+        PrimaryMicComboBox.Items.Clear();
+        PrimaryMicComboBox.Items.Add(new ComboBoxItem { Content = "Default microphone", Tag = "" });
+
+        RuntimeStatus? status = viewModel.RuntimeStatus;
+        bool found = string.IsNullOrEmpty(viewModel.PrimaryMicrophoneDeviceId);
+        if (status is not null)
+        {
+            foreach (AudioDeviceInfo device in status.InputDevices)
+            {
+                string label = device.Name;
+                if (device.DefaultDevice)
+                    label += " (Default)";
+                PrimaryMicComboBox.Items.Add(new ComboBoxItem { Content = label, Tag = device.Id });
+                if (device.Id == viewModel.PrimaryMicrophoneDeviceId)
+                    found = true;
+            }
+        }
+
+        if (!found)
+        {
+            PrimaryMicComboBox.Items.Add(new ComboBoxItem
+            {
+                Content = $"{viewModel.PrimaryMicrophoneDeviceId} — unavailable",
+                Tag = viewModel.PrimaryMicrophoneDeviceId,
+            });
+        }
+
+        SelectComboBoxByTag(PrimaryMicComboBox, viewModel.PrimaryMicrophoneDeviceId);
+    }
+
+    private void PopulateAddAudioSourceCombo()
+    {
+        AddAudioSourceComboBox.Items.Clear();
+        AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "All desktop audio", Tag = "desktop" });
+        AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "Active Game", Tag = "active_game" });
+
+        RuntimeStatus? status = viewModel.RuntimeStatus;
+        if (status is not null)
+        {
+            foreach (AudioDeviceInfo device in status.InputDevices)
+                AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = $"Input: {device.Name}", Tag = device });
+
+            foreach (AudioSessionInfo session in status.AudioSessions)
+            {
+                string label = string.IsNullOrWhiteSpace(session.DisplayName)
+                    ? session.ProcessName
+                    : session.DisplayName;
+                if (string.IsNullOrWhiteSpace(label))
+                    label = $"PID {session.ProcessId}";
+                AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = $"App: {label}", Tag = session });
+            }
+        }
+
+        if (AddAudioSourceComboBox.Items.Count > 0)
+            AddAudioSourceComboBox.SelectedIndex = 0;
+    }
+
+    private void RefreshAudioSourcesList()
+    {
+        AudioSourcesList.Items.Clear();
+        foreach (AudioSourceData source in viewModel.AudioSources)
+        {
+            AudioSourcesList.Items.Add(new ListViewItem
+            {
+                Content = AudioSourceLabel(source),
+                Tag = source,
+            });
+        }
+
+        if (AudioSourcesList.Items.Count > 0 && AudioSourcesList.SelectedIndex < 0)
+            AudioSourcesList.SelectedIndex = 0;
+        RefreshSelectedAudioSourceEditor();
+    }
+
+    private string AudioSourceLabel(AudioSourceData source)
+    {
+        string label = string.IsNullOrWhiteSpace(source.Name) ? source.Id : source.Name;
+        string tracks = source.Tracks.Count == 0 ? "no tracks" : $"tracks {string.Join(",", source.Tracks.OrderBy(t => t))}";
+        string availability = IsAudioSourceAvailable(source) ? "" : " — unavailable";
+        string disabled = source.Enabled ? "" : " — disabled";
+        return $"{label} ({source.Type}, {tracks}){availability}{disabled}";
+    }
+
+    private bool IsAudioSourceAvailable(AudioSourceData source)
+    {
+        RuntimeStatus? status = viewModel.RuntimeStatus;
+        if (source.Type is "desktop" or "active_game")
+            return true;
+        if (status is null)
+            return false;
+        if (source.Type == "input")
+            return status.InputDevices.Any(d => d.Id == source.DeviceId);
+        if (source.Type == "process")
+            return status.AudioSessions.Any(s =>
+                (source.ProcessId != 0 && s.ProcessId == source.ProcessId) ||
+                (!string.IsNullOrWhiteSpace(source.ExecutablePath) && s.ExecutablePath == source.ExecutablePath) ||
+                (!string.IsNullOrWhiteSpace(source.ProcessName) && s.ProcessName == source.ProcessName));
+        return false;
+    }
+
+    private AudioSourceData? SelectedAudioSource()
+    {
+        return (AudioSourcesList.SelectedItem as ListViewItem)?.Tag as AudioSourceData;
+    }
+
+    private void RefreshSelectedAudioSourceEditor()
+    {
+        suppressAudioEvents = true;
+        AudioSourceData? source = SelectedAudioSource();
+        bool hasSource = source is not null;
+        SelectedAudioSourceName.Text = hasSource ? AudioSourceLabel(source!) : "Select a source";
+        AudioSourceEnabledToggle.IsEnabled = hasSource;
+        AudioSourceEnabledToggle.IsOn = source?.Enabled ?? false;
+
+        CheckBox[] boxes =
+        {
+            AudioTrack1Box, AudioTrack2Box, AudioTrack3Box,
+            AudioTrack4Box, AudioTrack5Box, AudioTrack6Box,
+        };
+        for (int i = 0; i < boxes.Length; i++)
+        {
+            boxes[i].IsEnabled = hasSource;
+            boxes[i].IsChecked = source?.Tracks.Contains(i + 1) ?? false;
+        }
+        suppressAudioEvents = false;
+    }
+
     // ── Navigation ────────────────────────────────────────────────────────────
 
     private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -397,6 +538,89 @@ public sealed partial class MainWindow : Window
 
         if (RecordingFormatComboBox.SelectedItem is ComboBoxItem item && item.Tag is string container)
             viewModel.RecordingContainer = container;
+    }
+
+    private void OnAudioModeSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressAudioEvents)
+            return;
+
+        if (AudioModeComboBox.SelectedItem is ComboBoxItem item && item.Tag is string mode)
+            viewModel.AudioMode = mode;
+    }
+
+    private void OnPrimaryMicSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressAudioEvents)
+            return;
+
+        if (PrimaryMicComboBox.SelectedItem is ComboBoxItem item && item.Tag is string deviceId)
+            viewModel.PrimaryMicrophoneDeviceId = deviceId;
+    }
+
+    private void OnAddAudioSource(object sender, RoutedEventArgs e)
+    {
+        if (AddAudioSourceComboBox.SelectedItem is not ComboBoxItem item)
+            return;
+
+        switch (item.Tag)
+        {
+            case string tag when tag == "desktop":
+                viewModel.AddDesktopAudioSource();
+                break;
+            case string tag when tag == "active_game":
+                viewModel.AddActiveGameSource();
+                break;
+            case AudioDeviceInfo device:
+                viewModel.AddInputDeviceSource(device);
+                break;
+            case AudioSessionInfo session:
+                viewModel.AddProcessSource(session);
+                break;
+        }
+
+        RefreshAudioSourcesList();
+    }
+
+    private void OnRemoveAudioSource(object sender, RoutedEventArgs e)
+    {
+        AudioSourceData? source = SelectedAudioSource();
+        if (source is null)
+            return;
+        viewModel.RemoveAudioSource(source);
+        RefreshAudioSourcesList();
+    }
+
+    private void OnAudioSourceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        RefreshSelectedAudioSourceEditor();
+    }
+
+    private void OnAudioSourceEnabledToggled(object sender, RoutedEventArgs e)
+    {
+        if (suppressAudioEvents)
+            return;
+
+        AudioSourceData? source = SelectedAudioSource();
+        if (source is null)
+            return;
+        viewModel.SetAudioSourceEnabled(source, AudioSourceEnabledToggle.IsOn);
+        RefreshAudioSourcesList();
+    }
+
+    private void OnAudioTrackChecked(object sender, RoutedEventArgs e)
+    {
+        if (suppressAudioEvents || sender is not CheckBox box || box.Tag is not string tagText)
+            return;
+
+        if (!int.TryParse(tagText, out int track))
+            return;
+
+        AudioSourceData? source = SelectedAudioSource();
+        if (source is null)
+            return;
+        viewModel.SetAudioSourceTrack(source, track, box.IsChecked == true);
+        RefreshAudioSourcesList();
     }
 
     // Hotkey capture

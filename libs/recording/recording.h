@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace recording {
 
@@ -23,6 +24,7 @@ public:
 
     void set_video_params(encoding::VideoStreamParams const& p);
     void set_audio_params(encoding::AudioStreamParams const& p);
+    void set_audio_params(std::vector<encoding::AudioStreamParams> const& p);
 
     bool start(std::wstring output_dir, std::string container);
     bool pause();

@@ -1,5 +1,9 @@
 # Roadmap per un'applicazione di clipping/recording leggera per Windows 11
 
+Status note - 2026-06-12:
+
+This file is an original planning roadmap, not the current implementation status. Current status is maintained in `docs/handover/ACTIVE_HANDOVER.md`, `docs/ROADMAP.md`, and `docs/ARCHITECTURE.md`. Settings is implemented and manually verified. Audio V2 foundation is implemented; remaining audio work is mixer/runtime validation.
+
 ## Introduzione e obiettivi
 
 L'obiettivo è creare un'app per Windows 11 che consenta di registrare lo schermo e salvare **clip** degli ultimi secondi di gioco o di qualsiasi altra applicazione. A differenza di soluzioni come **Insights.gg** o **Medal**, che utilizzano tecnologie webview/electron pesanti, l'app deve essere leggera, **scritta in linguaggi nativi (C/C++ o Rust)** e con un'architettura modulare che permetta di gestire **hotkey globali**, buffering in memoria e codifica efficiente.

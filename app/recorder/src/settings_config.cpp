@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -37,6 +38,19 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   "recording": {
     "container": "mkv",
     "pause_behavior": "timestamp_gap"
+  },
+  "audio": {
+    "mode": "default",
+    "primary_microphone_device_id": "",
+    "sources": [
+      {
+        "id": "desktop",
+        "type": "desktop",
+        "name": "All desktop audio",
+        "enabled": true,
+        "tracks": [1]
+      }
+    ]
   },
   "video_encoder": {
     "backend": "auto",
@@ -242,6 +256,89 @@ std::string utf8_at(const json& doc, const char* section, const char* key, const
     return value_it->get<std::string>();
 }
 
+std::vector<int> sanitize_tracks(const json& value)
+{
+    std::vector<int> tracks;
+    if (!value.is_array()) return tracks;
+    for (const auto& item : value) {
+        if (!item.is_number_integer()) continue;
+        int track = item.get<int>();
+        if (track < 1 || track > 6) continue;
+        if (std::find(tracks.begin(), tracks.end(), track) == tracks.end())
+            tracks.push_back(track);
+    }
+    return tracks;
+}
+
+AudioSourceConfig audio_source_from_json(const json& item)
+{
+    AudioSourceConfig source;
+    if (!item.is_object()) return source;
+    source.id = item.value("id", "");
+    source.type = item.value("type", "");
+    source.name = item.value("name", "");
+    source.device_id = utf8_to_wide(item.value("device_id", ""));
+    source.process_id = item.value("process_id", 0u);
+    source.process_name = item.value("process_name", "");
+    source.executable_path = utf8_to_wide(item.value("executable_path", ""));
+    source.enabled = item.value("enabled", true);
+    auto tracks_it = item.find("tracks");
+    if (tracks_it != item.end())
+        source.tracks = sanitize_tracks(*tracks_it);
+
+    if (source.type != "desktop" && source.type != "input" &&
+        source.type != "process" && source.type != "active_game") {
+        source.type.clear();
+    }
+    if (source.id.empty()) {
+        if (source.type == "desktop")
+            source.id = "desktop";
+        else if (source.type == "active_game")
+            source.id = "active_game";
+        else if (source.type == "input" && !source.device_id.empty())
+            source.id = "input:" + wide_to_utf8(source.device_id);
+        else if (source.type == "process" && source.process_id != 0)
+            source.id = "process:" + std::to_string(source.process_id);
+    }
+    if (source.name.empty()) source.name = source.id;
+    return source;
+}
+
+std::vector<AudioSourceConfig> parse_audio_sources(const json& doc)
+{
+    std::vector<AudioSourceConfig> sources;
+    auto audio_it = doc.find("audio");
+    if (audio_it == doc.end() || !audio_it->is_object()) return sources;
+    auto sources_it = audio_it->find("sources");
+    if (sources_it == audio_it->end() || !sources_it->is_array()) return sources;
+
+    for (const auto& item : *sources_it) {
+        AudioSourceConfig source = audio_source_from_json(item);
+        if (source.type.empty() || source.tracks.empty()) continue;
+        sources.push_back(std::move(source));
+    }
+    return sources;
+}
+
+json audio_source_to_json(const AudioSourceConfig& source)
+{
+    json item;
+    item["id"] = source.id;
+    item["type"] = source.type;
+    item["name"] = source.name;
+    item["enabled"] = source.enabled;
+    item["tracks"] = source.tracks;
+    if (!source.device_id.empty())
+        item["device_id"] = wide_to_utf8(source.device_id);
+    if (source.process_id != 0)
+        item["process_id"] = source.process_id;
+    if (!source.process_name.empty())
+        item["process_name"] = source.process_name;
+    if (!source.executable_path.empty())
+        item["executable_path"] = wide_to_utf8(source.executable_path);
+    return item;
+}
+
 void write_runtime_fields(json& doc, const Config& config)
 {
     doc["output"]["clips_directory"] = wide_to_utf8(config.clips_directory);
@@ -253,6 +350,11 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["video_encoder"]["backend"] = config.encoder_backend;
     doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
+    doc["audio"]["mode"] = config.audio_mode;
+    doc["audio"]["primary_microphone_device_id"] = wide_to_utf8(config.primary_microphone_device_id);
+    doc["audio"]["sources"] = json::array();
+    for (const auto& source : config.audio_sources)
+        doc["audio"]["sources"].push_back(audio_source_to_json(source));
     doc["hotkeys"]["save_replay"] = config.hotkey_save_replay;
     doc["hotkeys"]["recording_start"] = config.hotkey_recording_start;
     doc["hotkeys"]["recording_stop"] = config.hotkey_recording_stop;
@@ -287,6 +389,22 @@ Config config_from_json(
     config.recording_container = utf8_at(doc, "recording", "container", "mkv");
     if (config.recording_container != "mkv" && config.recording_container != "mp4")
         config.recording_container = "mkv";
+
+    config.audio_mode = utf8_at(doc, "audio", "mode", "default");
+    if (config.audio_mode != "default" && config.audio_mode != "custom")
+        config.audio_mode = "default";
+    config.primary_microphone_device_id = utf8_to_wide(
+        utf8_at(doc, "audio", "primary_microphone_device_id", ""));
+    config.audio_sources = parse_audio_sources(doc);
+    if (config.audio_sources.empty()) {
+        AudioSourceConfig desktop;
+        desktop.id = "desktop";
+        desktop.type = "desktop";
+        desktop.name = "All desktop audio";
+        desktop.enabled = true;
+        desktop.tracks = {1};
+        config.audio_sources.push_back(std::move(desktop));
+    }
 
     config.monitor_device = utf8_to_wide(
         utf8_at(doc, "capture", "monitor_device", ""));
@@ -425,6 +543,30 @@ bool write_runtime_status(
             {"primary", mon.primary},
         });
     }
+    doc["input_devices"] = json::array();
+    for (const auto& dev : status.input_devices) {
+        doc["input_devices"].push_back({
+            {"id", wide_to_utf8(dev.id)},
+            {"name", wide_to_utf8(dev.name)},
+            {"default_device", dev.default_device},
+            {"available", dev.available},
+        });
+    }
+    doc["audio_sessions"] = json::array();
+    for (const auto& session : status.audio_sessions) {
+        doc["audio_sessions"].push_back({
+            {"process_id", session.process_id},
+            {"process_name", wide_to_utf8(session.process_name)},
+            {"display_name", wide_to_utf8(session.display_name)},
+            {"executable_path", wide_to_utf8(session.executable_path)},
+        });
+    }
+    doc["active_game"] = {
+        {"process_id", status.active_game.process_id},
+        {"process_name", wide_to_utf8(status.active_game.process_name)},
+        {"display_name", wide_to_utf8(status.active_game.display_name)},
+        {"executable_path", wide_to_utf8(status.active_game.executable_path)},
+    };
     doc["available_encoders"] = status.available_encoders;
     doc["active_encoder"] = status.active_encoder;
     doc["active_monitor_device"] = wide_to_utf8(status.active_monitor_device);

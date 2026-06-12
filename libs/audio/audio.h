@@ -8,6 +8,8 @@
 #include <windows.h>
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <vector>
 
 namespace audio {
 
@@ -29,6 +31,26 @@ struct PacketInfo {
 
 using PacketCallback = std::function<void(const PacketInfo&)>;
 
+struct DeviceInfo {
+    std::wstring id;
+    std::wstring name;
+    bool default_device = false;
+    bool available = true;
+};
+
+struct ProcessInfo {
+    uint32_t process_id = 0;
+    std::wstring process_name;
+    std::wstring display_name;
+    std::wstring executable_path;
+};
+
+using ProcessAudioSessionInfo = ProcessInfo;
+
+std::vector<DeviceInfo> enumerate_input_devices();
+std::vector<ProcessAudioSessionInfo> enumerate_render_sessions();
+ProcessInfo active_foreground_process();
+
 // WASAPI capture for one endpoint: loopback (system audio) or microphone.
 // Runs a dedicated capture thread internally.
 class WasapiCapture {
@@ -44,6 +66,8 @@ public:
     // COM must be initialized on the calling thread before start().
     // cb is invoked from the internal capture thread — must be thread-safe.
     bool start(Mode mode, PacketCallback cb);
+    bool start_device(Mode mode, const std::wstring& device_id, PacketCallback cb);
+    bool start_process_loopback(uint32_t process_id, PacketCallback cb);
     void stop();
     bool running() const;
 
