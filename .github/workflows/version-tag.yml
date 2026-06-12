@@ -42,18 +42,11 @@ jobs:
           -A x64
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
 
+      # The CMake settings_app target runs `dotnet publish` for the WinUI
+      # settings sidecar into the recorder output directory.
       - name: Build Release
         shell: pwsh
         run: cmake --build build --config Release --parallel
-
-      - name: Publish WinUI settings app
-        shell: pwsh
-        run: >
-          dotnet publish app/desktop-ui/Monolith.Settings.csproj
-          -c Release
-          -r win-x64
-          --self-contained false
-          -o build/app/recorder/Release
 
       - name: Verify release asset
         shell: pwsh

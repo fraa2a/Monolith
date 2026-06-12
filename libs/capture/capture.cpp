@@ -39,6 +39,7 @@ struct DisplayCapture::Impl {
     winrt::Windows::Graphics::SizeInt32   last_size{};
 
     std::atomic<bool>     active{ false };
+    std::atomic<bool>     border_suppressed{ false };
     std::atomic<uint32_t> seq{ 0 };
     FrameCallback         cb;
 };
@@ -90,8 +91,9 @@ static wgc::GraphicsCaptureItem item_from_monitor(HMONITOR hmon)
 DisplayCapture::DisplayCapture() : impl_(new Impl()) {}
 DisplayCapture::~DisplayCapture() { stop(); delete impl_; }
 bool DisplayCapture::running() const { return impl_->active.load(std::memory_order_relaxed); }
+bool DisplayCapture::border_suppressed() const { return impl_->border_suppressed.load(std::memory_order_relaxed); }
 
-bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
+bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, bool show_border)
 {
     if (impl_->active) return false;
     if (!is_supported()) return false;
@@ -201,10 +203,14 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb)
             });
 
         impl_->session = impl_->pool.CreateCaptureSession(item);
-        try {
-            impl_->session.IsBorderRequired(false);
-        } catch (...) {
-            // Capture must continue even when the OS denies border suppression.
+        impl_->border_suppressed = false;
+        if (!show_border) {
+            try {
+                impl_->session.IsBorderRequired(false);
+                impl_->border_suppressed = true;
+            } catch (...) {
+                // Capture must continue even when the OS denies border suppression.
+            }
         }
         impl_->session.StartCapture();
     }
@@ -242,6 +248,7 @@ void DisplayCapture::stop()
     impl_->cb           = nullptr;
     impl_->staging_w    = 0;
     impl_->staging_h    = 0;
+    impl_->border_suppressed.store(false, std::memory_order_relaxed);
     impl_->seq.store(0, std::memory_order_relaxed);
 }
 

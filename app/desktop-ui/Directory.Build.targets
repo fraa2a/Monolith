@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Workaround for standalone dotnet SDK (8.0.100) builds on machines where
+  the VS "Windows application development" workload is not installed.
+
+  Microsoft.Build.Packaging.Pri.Tasks.dll and Microsoft.Build.AppxPackage.dll
+  are VS-workload-only components. The targets in MrtCore.PriGen.targets call
+  them for output-group and PRI tasks that are only required for packaged (MSIX)
+  deployment. Since Monolith.Settings is unpackaged (WindowsPackageType=None),
+  we override the offending targets with no-ops.
+
+  This file is picked up automatically by MSBuild after all other imports.
+  It should be removed once the VS "Windows application development" workload
+  is installed on this machine (then the real targets will work correctly).
+-->
+<Project>
+  <!--
+    Override the entire PRI generation gate target as a no-op.
+    The real target (in MrtCore.PriGen.targets) depends on a chain of
+    sub-targets that all require Microsoft.Build.Packaging.Pri.Tasks.dll
+    and Microsoft.Build.AppxPackage.dll, which are absent without the
+    VS Windows App SDK workload. Unpackaged (WindowsPackageType=None)
+    desktop apps do not need PRI generation for the binary to run.
+  -->
+  <Target Name="_GenerateProjectPriFile"
+          Condition="'$(AppxGeneratePriEnabled)' == 'true'">
+  </Target>
+
+  <!--
+    Override AddPriPayloadFilesToCopyToOutputDirectoryItems with no-op.
+    The real target calls ExpandPriContent from Microsoft.Build.Packaging.Pri.Tasks.dll.
+  -->
+  <Target Name="AddPriPayloadFilesToCopyToOutputDirectoryItems"
+          DependsOnTargets="">
+  </Target>
+
+  <!--
+    Override CopyLocalFilesOutputGroup with a minimal replacement that avoids
+    RemovePayloadDuplicates from Microsoft.Build.AppxPackage.dll.
+  -->
+  <Target Name="CopyLocalFilesOutputGroup"
+          Returns="@(CopyLocalFilesOutputGroupOutput)">
+    <ItemGroup>
+      <CopyLocalFilesOutputGroupOutput Include="@(ReferenceCopyLocalPaths)">
+        <TargetPath>%(ReferenceCopyLocalPaths.DestinationSubDirectory)%(ReferenceCopyLocalPaths.Filename)%(ReferenceCopyLocalPaths.Extension)</TargetPath>
+      </CopyLocalFilesOutputGroupOutput>
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Override GetMrtPackagingOutputs with no-op.
+    The real target calls ExpandPayloadDirectories from Microsoft.Build.AppxPackage.dll.
+  -->
+  <Target Name="GetMrtPackagingOutputs"
+          Returns="@(PackagingOutputs)">
+  </Target>
+
+  <!--
+    Override _GetDefaultResourceLanguage with no-op.
+    The real target calls GetDefaultResourceLanguage from Microsoft.Build.AppxPackage.dll.
+    For unpackaged desktop apps the default resource language defaults to "en-US" in props.
+  -->
+  <Target Name="_GetDefaultResourceLanguage">
+    <PropertyGroup>
+      <DefaultResourceLanguage Condition="'$(DefaultResourceLanguage)' == ''">en-US</DefaultResourceLanguage>
+    </PropertyGroup>
+  </Target>
+</Project>

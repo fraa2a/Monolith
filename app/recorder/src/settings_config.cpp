@@ -21,36 +21,32 @@ using json = nlohmann::json;
 
 constexpr const char* kFallbackDefaultConfig = R"json(
 {
-  "schema_version": 1,
-  "app": {
-    "start_minimized": true,
-    "minimize_to_tray": true,
-    "language": "en-US",
-    "log_level": "info",
-    "diagnostics_retention_days": 14
+  "schema_version": 2,
+  "capture": {
+    "monitor_device": "",
+    "resolution_mode": "source",
+    "resolution_width": 0,
+    "resolution_height": 0,
+    "show_capture_border": false
   },
   "replay_buffer": {
-    "enabled": true,
     "duration_seconds": 30,
     "memory_budget_mb": 512,
-    "save_container": "mkv",
-    "auto_remux_to_mp4": false,
-    "clip_naming_pattern": "{date}_{time}_{game}_{duration}s_clip"
+    "save_container": "mkv"
   },
   "recording": {
-    "default_container": "mkv",
-    "auto_remux_to_mp4": true,
-    "split_files": false,
-    "max_file_size_mb": 0,
-    "pause_behavior": "timestamp_gap",
-    "recording_naming_pattern": "{date}_{time}_{game}_recording"
+    "container": "mkv",
+    "pause_behavior": "timestamp_gap"
+  },
+  "video_encoder": {
+    "backend": "auto",
+    "bitrate_kbps": 20000,
+    "extra_ffmpeg_options": ""
   },
   "output": {
     "clips_directory": "",
     "recordings_directory": "",
-    "temp_directory": "",
-    "storage_cap_gb": 200,
-    "auto_cleanup": true
+    "temp_directory": ""
   },
   "hotkeys": {
     "save_replay": "Ctrl+Shift+F8",
@@ -226,6 +222,26 @@ int64_t int64_at(const json& doc, const char* section, const char* key, int64_t 
     return value_it->get<int64_t>();
 }
 
+bool bool_at(const json& doc, const char* section, const char* key, bool fallback)
+{
+    auto section_it = doc.find(section);
+    if (section_it == doc.end() || !section_it->is_object()) return fallback;
+    auto value_it = section_it->find(key);
+    if (value_it == section_it->end() || !value_it->is_boolean()) return fallback;
+
+    return value_it->get<bool>();
+}
+
+std::string utf8_at(const json& doc, const char* section, const char* key, const std::string& fallback)
+{
+    auto section_it = doc.find(section);
+    if (section_it == doc.end() || !section_it->is_object()) return fallback;
+    auto value_it = section_it->find(key);
+    if (value_it == section_it->end() || !value_it->is_string()) return fallback;
+
+    return value_it->get<std::string>();
+}
+
 void write_runtime_fields(json& doc, const Config& config)
 {
     doc["output"]["clips_directory"] = wide_to_utf8(config.clips_directory);
@@ -259,6 +275,41 @@ Config config_from_json(
         config.replay_duration_seconds = 30;
     if (config.replay_memory_budget_mb < 64 || config.replay_memory_budget_mb > 16384)
         config.replay_memory_budget_mb = 512;
+
+    config.monitor_device = utf8_to_wide(
+        utf8_at(doc, "capture", "monitor_device", ""));
+    config.resolution_mode = utf8_at(doc, "capture", "resolution_mode", "source");
+    config.output_width  = int_at(doc, "capture", "resolution_width", 0);
+    config.output_height = int_at(doc, "capture", "resolution_height", 0);
+    config.show_capture_border = bool_at(doc, "capture", "show_capture_border", false);
+
+    if (config.resolution_mode != "source" && config.resolution_mode != "custom")
+        config.resolution_mode = "source";
+    if (config.resolution_mode == "custom") {
+        // Even-align; reject sizes outside a sane encode range.
+        config.output_width  &= ~1;
+        config.output_height &= ~1;
+        if (config.output_width  < 128 || config.output_width  > 7680 ||
+            config.output_height < 128 || config.output_height > 4320) {
+            config.resolution_mode = "source";
+            config.output_width   = 0;
+            config.output_height  = 0;
+        }
+    }
+
+    config.encoder_backend = utf8_at(doc, "video_encoder", "backend", "auto");
+    if (config.encoder_backend != "auto" &&
+        config.encoder_backend != "h264_nvenc" &&
+        config.encoder_backend != "h264_amf" &&
+        config.encoder_backend != "h264_qsv" &&
+        config.encoder_backend != "libx264")
+        config.encoder_backend = "auto";
+
+    config.video_bitrate_kbps = int_at(doc, "video_encoder", "bitrate_kbps", 20000);
+    if (config.video_bitrate_kbps < 1000 || config.video_bitrate_kbps > 100000)
+        config.video_bitrate_kbps = 20000;
+
+    config.extra_ffmpeg_options = utf8_at(doc, "video_encoder", "extra_ffmpeg_options", "");
 
     json sanitized = doc;
     write_runtime_fields(sanitized, config);
@@ -331,6 +382,36 @@ bool save(Config& config, std::string* error)
     write_runtime_fields(doc, config);
     config.merged_json = doc.dump(2);
     return write_text(config.user_config_path, config.merged_json, error);
+}
+
+bool write_runtime_status(
+    const std::wstring& app_data_dir,
+    const RuntimeStatus& status,
+    std::string* error)
+{
+    if (app_data_dir.empty()) {
+        if (error) *error = "AppData path not available";
+        return false;
+    }
+
+    json doc;
+    doc["monitors"] = json::array();
+    for (const auto& mon : status.monitors) {
+        doc["monitors"].push_back({
+            {"device",  wide_to_utf8(mon.device)},
+            {"width",   mon.width},
+            {"height",  mon.height},
+            {"primary", mon.primary},
+        });
+    }
+    doc["available_encoders"] = status.available_encoders;
+    doc["active_encoder"] = status.active_encoder;
+    doc["active_monitor_device"] = wide_to_utf8(status.active_monitor_device);
+    doc["border_suppressed"] = status.border_suppressed;
+    doc["encode_width"]  = status.encode_width;
+    doc["encode_height"] = status.encode_height;
+
+    return write_text(app_data_dir + L"\\runtime-status.json", doc.dump(2), error);
 }
 
 } // namespace settings

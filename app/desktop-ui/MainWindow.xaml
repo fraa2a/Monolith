@@ -13,17 +13,17 @@
             PaneDisplayMode="Left"
             IsBackButtonVisible="Collapsed"
             IsSettingsVisible="False"
-            OpenPaneLength="250"
+            OpenPaneLength="220"
             CompactPaneLength="56"
             SelectionChanged="OnNavSelectionChanged">
             <NavigationView.MenuItems>
-                <NavigationViewItem x:Name="NavBasic" Content="Basic Settings" Tag="Basic" IsSelected="True" />
-                <NavigationViewItem x:Name="NavOutput" Content="Output Settings" Tag="Output" />
-                <NavigationViewItem x:Name="NavHotkeys" Content="Hotkeys" Tag="Hotkeys" />
-                <NavigationViewItem Content="Capture" Tag="Capture" IsEnabled="False" />
-                <NavigationViewItem Content="Audio" Tag="Audio" IsEnabled="False" />
-                <NavigationViewItem Content="Encoding" Tag="Encoding" IsEnabled="False" />
-                <NavigationViewItem Content="Advanced" Tag="Advanced" IsEnabled="False" />
+                <NavigationViewItem x:Name="NavGeneral"    Content="General"   Tag="General"   IsSelected="True" />
+                <NavigationViewItem x:Name="NavOutput"     Content="Output"    Tag="Output" />
+                <NavigationViewItem x:Name="NavClip"       Content="Clip"      Tag="Clip" />
+                <NavigationViewItem x:Name="NavRecording"  Content="Recording" Tag="Recording" />
+                <NavigationViewItem x:Name="NavCapture"    Content="Capture"   Tag="Capture" />
+                <NavigationViewItem x:Name="NavAudio"      Content="Audio"     Tag="Audio" />
+                <NavigationViewItem x:Name="NavHotkeys"    Content="Hotkeys"   Tag="Hotkeys" />
             </NavigationView.MenuItems>
 
             <Border Padding="32,24,32,24">
@@ -34,126 +34,402 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                <StackPanel Grid.Row="0" Spacing="4">
-                    <TextBlock Text="{Binding PageTitle}" FontSize="28" FontWeight="SemiBold" Foreground="#F6F6F6" />
-                    <TextBlock Text="{Binding PageSubtitle}" FontSize="14" Foreground="#BDBDBD" />
-                    <InfoBar
-                        Margin="0,14,0,0"
-                        IsOpen="{Binding HasStatusMessage}"
-                        Severity="{Binding StatusSeverity}"
-                        Message="{Binding StatusMessage}" />
-                </StackPanel>
+                    <!-- Page header -->
+                    <StackPanel Grid.Row="0" Spacing="4">
+                        <TextBlock Text="{Binding PageTitle}" FontSize="28" FontWeight="SemiBold" Foreground="#F6F6F6" />
+                        <TextBlock Text="{Binding PageSubtitle}" FontSize="14" Foreground="#BDBDBD" />
+                        <InfoBar
+                            x:Name="GlobalStatusBar"
+                            Margin="0,14,0,0"
+                            IsOpen="{Binding HasStatusMessage}"
+                            Severity="{Binding StatusSeverity}"
+                            Message="{Binding StatusMessage}" />
+                    </StackPanel>
 
-                <ScrollViewer Grid.Row="1">
-                    <Grid>
-                        <StackPanel x:Name="BasicPage" Spacing="18">
-                            <Border Background="#242424" CornerRadius="12" Padding="22">
-                                <StackPanel Spacing="16">
-                                    <TextBlock Text="Replay Buffer" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                    <Grid ColumnSpacing="18">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="180" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel>
-                                            <TextBlock Text="Duration seconds" Foreground="#FFFFFF" />
-                                            <TextBlock Text="Saved clips use this replay window. Applies live after save." Foreground="#BDBDBD" TextWrapping="Wrap" />
+                    <!-- Page content -->
+                    <ScrollViewer Grid.Row="1">
+                        <Grid>
+
+                            <!-- ══ GENERAL PAGE ══════════════════════════════════ -->
+                            <StackPanel x:Name="GeneralPage" Spacing="18">
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Monolith" FontSize="22" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Text="Config file" FontSize="13" Foreground="#BDBDBD" />
+                                            <TextBox
+                                                x:Name="ConfigPathBox"
+                                                IsReadOnly="True"
+                                                FontFamily="Cascadia Mono, Consolas, monospace"
+                                                FontSize="12"
+                                                Text="{Binding ConfigPath}" />
                                         </StackPanel>
-                                        <TextBox Grid.Column="1" Text="{Binding ReplayDurationSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                    </Grid>
-                                    <Grid ColumnSpacing="18">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="180" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel>
-                                            <TextBlock Text="Memory budget MB" Foreground="#FFFFFF" />
-                                            <TextBlock Text="Ring-buffer cap for encoded packets. Applies live after save." Foreground="#BDBDBD" TextWrapping="Wrap" />
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Text="Log file" FontSize="13" Foreground="#BDBDBD" />
+                                            <TextBox
+                                                IsReadOnly="True"
+                                                FontFamily="Cascadia Mono, Consolas, monospace"
+                                                FontSize="12"
+                                                Text="{Binding LogFilePath}" />
                                         </StackPanel>
-                                        <TextBox Grid.Column="1" Text="{Binding ReplayMemoryBudgetMb, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
+                                    </StackPanel>
+                                </Border>
 
-                            <Border Background="#242424" CornerRadius="12" Padding="22">
-                                <StackPanel Spacing="8">
-                                    <TextBlock Text="App Behavior" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                    <TextBlock Text="Startup, tray behavior, language, and logging controls are reserved for a later pass." Foreground="#BDBDBD" TextWrapping="Wrap" />
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
+                                <!-- Corrupt config warning — only shown when LoadWarning != null -->
+                                <InfoBar
+                                    x:Name="CorruptConfigBar"
+                                    IsOpen="False"
+                                    Severity="Warning"
+                                    Title="Config file was corrupt"
+                                    Message="The bad file has been backed up to config.json.bak. Defaults have been loaded." />
+                            </StackPanel>
 
-                        <StackPanel x:Name="OutputPage" Spacing="18" Visibility="Collapsed">
-                            <Border Background="#242424" CornerRadius="12" Padding="22">
-                                <StackPanel Spacing="16">
-                                    <TextBlock Text="Clip Storage" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                    <Grid ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox Header="Replay clip folder" Text="{Binding ClipsDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        <Button Grid.Column="1" Content="Browse" VerticalAlignment="Bottom" Click="OnBrowseClips" />
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
+                            <!-- ══ OUTPUT PAGE ═══════════════════════════════════ -->
+                            <StackPanel x:Name="OutputPage" Spacing="18" Visibility="Collapsed">
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="16">
+                                        <TextBlock Text="Clip Storage" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox
+                                                Header="Replay clip folder"
+                                                Text="{Binding ClipsDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <Button Grid.Column="1" Content="Browse" VerticalAlignment="Bottom" Click="OnBrowseClips" />
+                                            <Button Grid.Column="2" Content="Reset" VerticalAlignment="Bottom" Click="OnResetClips" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
 
-                            <Border Background="#242424" CornerRadius="12" Padding="22">
-                                <StackPanel Spacing="16">
-                                    <TextBlock Text="Recording Storage" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                    <Grid ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox Header="Manual recording folder" Text="{Binding RecordingsDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        <Button Grid.Column="1" Content="Browse" VerticalAlignment="Bottom" Click="OnBrowseRecordings" />
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="16">
+                                        <TextBlock Text="Recording Storage" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox
+                                                Header="Manual recording folder"
+                                                Text="{Binding RecordingsDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <Button Grid.Column="1" Content="Browse" VerticalAlignment="Bottom" Click="OnBrowseRecordings" />
+                                            <Button Grid.Column="2" Content="Reset" VerticalAlignment="Bottom" Click="OnResetRecordings" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
 
-                        <StackPanel x:Name="HotkeysPage" Spacing="18" Visibility="Collapsed">
-                            <Border Background="#242424" CornerRadius="12" Padding="22">
-                                <StackPanel Spacing="14">
-                                    <TextBlock Text="Global Hotkeys" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                    <Grid ColumnSpacing="16" RowSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="220" />
-                                            <ColumnDefinition Width="220" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0" Text="Save replay" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SaveReplayHotkey}" IsReadOnly="True" />
-                                        <TextBlock Grid.Row="1" Text="Start recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding RecordingStartHotkey}" IsReadOnly="True" />
-                                        <TextBlock Grid.Row="2" Text="Stop recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding RecordingStopHotkey}" IsReadOnly="True" />
-                                        <TextBlock Grid.Row="3" Text="Pause / resume" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                        <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding PauseResumeHotkey}" IsReadOnly="True" />
-                                    </Grid>
-                                    <InfoBar
-                                        IsOpen="True"
-                                        Severity="Informational"
-                                        Message="Hotkey rebinding is intentionally disabled until conflict detection is wired." />
-                                </StackPanel>
-                            </Border>
+                            <!-- ══ CLIP PAGE ═════════════════════════════════════ -->
+                            <StackPanel x:Name="ClipPage" Spacing="18" Visibility="Collapsed">
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="16">
+                                        <TextBlock Text="Replay Buffer" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <Grid ColumnSpacing="18">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="180" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="Duration (seconds)" Foreground="#FFFFFF" />
+                                                <TextBlock Text="Saved clips use this replay window. Applies live after save." Foreground="#BDBDBD" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                            <TextBox Grid.Column="1" Text="{Binding ReplayDurationSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="18">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="180" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="Memory budget (MB)" Foreground="#FFFFFF" />
+                                                <TextBlock Text="Ring-buffer cap for encoded packets. Applies live after save." Foreground="#BDBDBD" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                            <TextBox Grid.Column="1" Text="{Binding ReplayMemoryBudgetMb, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Text="Save Hotkey" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="180" />
+                                                <ColumnDefinition Width="200" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="Save replay" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Column="1" Text="{Binding SaveReplayHotkey}" IsReadOnly="True" />
+                                        </Grid>
+                                        <TextBlock Text="Clips are saved as MKV into the clips folder configured on the Output page." Foreground="#BDBDBD" TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ══ RECORDING PAGE ════════════════════════════════ -->
+                            <StackPanel x:Name="RecordingPage" Spacing="18" Visibility="Collapsed">
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Recording Output" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <Grid ColumnSpacing="16" RowSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="180" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="Output folder" Foreground="#BDBDBD" VerticalAlignment="Center" />
+                                            <TextBox Grid.Row="0" Grid.Column="1"
+                                                Text="{Binding RecordingsDirectory}"
+                                                IsReadOnly="True"
+                                                FontFamily="Cascadia Mono, Consolas, monospace"
+                                                FontSize="12" />
+                                            <TextBlock Grid.Row="1" Text="Format" Foreground="#BDBDBD" VerticalAlignment="Center" />
+                                            <TextBox Grid.Row="1" Grid.Column="1" Text="MKV" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="2" Text="Pause behavior" Foreground="#BDBDBD" VerticalAlignment="Center" />
+                                            <TextBox Grid.Row="2" Grid.Column="1" Text="Continuous output; paused time omitted" IsReadOnly="True" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Recording Hotkeys" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <Grid ColumnSpacing="16" RowSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="180" />
+                                                <ColumnDefinition Width="200" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="Start recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding RecordingStartHotkey}" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="1" Text="Stop recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding RecordingStopHotkey}" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="2" Text="Pause / resume" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PauseResumeHotkey}" IsReadOnly="True" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ══ CAPTURE PAGE ══════════════════════════════════ -->
+                            <StackPanel x:Name="CapturePage" Spacing="18" Visibility="Collapsed">
+                                <InfoBar
+                                    IsOpen="True"
+                                    Severity="Informational"
+                                    Message="Capture &amp; encoder changes take effect after Monolith restarts." />
+
+                                <!-- Monitor selection -->
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Monitor" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <ComboBox
+                                            x:Name="MonitorComboBox"
+                                            Header="Capture monitor"
+                                            HorizontalAlignment="Stretch"
+                                            SelectionChanged="OnMonitorSelectionChanged" />
+                                        <TextBlock
+                                            x:Name="MonitorUnavailableNote"
+                                            Text="Start Monolith once to detect monitors."
+                                            Foreground="#BDBDBD"
+                                            FontSize="12"
+                                            Visibility="Collapsed" />
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Resolution -->
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Resolution" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <ComboBox
+                                            x:Name="ResolutionComboBox"
+                                            Header="Output resolution"
+                                            HorizontalAlignment="Stretch"
+                                            SelectionChanged="OnResolutionSelectionChanged">
+                                            <ComboBoxItem Content="Native (same as capture)" Tag="source" />
+                                            <ComboBoxItem Content="1280 x 720" Tag="1280x720" />
+                                            <ComboBoxItem Content="1920 x 1080" Tag="1920x1080" />
+                                            <ComboBoxItem Content="2560 x 1440" Tag="2560x1440" />
+                                            <ComboBoxItem Content="Custom…" Tag="custom" />
+                                        </ComboBox>
+
+                                        <StackPanel
+                                            x:Name="CustomResolutionPanel"
+                                            Orientation="Horizontal"
+                                            Spacing="12"
+                                            Visibility="Collapsed">
+                                            <NumberBox
+                                                x:Name="WidthBox"
+                                                Header="Width"
+                                                Minimum="128"
+                                                Maximum="7680"
+                                                SpinButtonPlacementMode="Compact"
+                                                SmallChange="2"
+                                                Value="{Binding ResolutionWidth, Mode=TwoWay}"
+                                                ValueChanged="OnResolutionValueChanged"
+                                                Width="160" />
+                                            <NumberBox
+                                                x:Name="HeightBox"
+                                                Header="Height"
+                                                Minimum="128"
+                                                Maximum="4320"
+                                                SpinButtonPlacementMode="Compact"
+                                                SmallChange="2"
+                                                Value="{Binding ResolutionHeight, Mode=TwoWay}"
+                                                ValueChanged="OnResolutionValueChanged"
+                                                Width="160" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Video encoder / bitrate -->
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Video Encoder" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <ComboBox
+                                            x:Name="EncoderComboBox"
+                                            Header="Encoder"
+                                            HorizontalAlignment="Stretch"
+                                            SelectionChanged="OnEncoderSelectionChanged" />
+                                        <StackPanel Spacing="4">
+                                            <NumberBox
+                                                x:Name="BitrateBox"
+                                                Header="Video bitrate (kbps)"
+                                                Minimum="1000"
+                                                Maximum="100000"
+                                                SpinButtonPlacementMode="Compact"
+                                                SmallChange="1000"
+                                                LargeChange="5000"
+                                                Value="{Binding BitrateKbps, Mode=TwoWay}"
+                                                ValueChanged="OnBitrateValueChanged"
+                                                Width="240"
+                                                HorizontalAlignment="Left" />
+                                            <TextBlock
+                                                x:Name="BitrateMbpsLabel"
+                                                Text="{Binding BitrateMbps}"
+                                                Foreground="#BDBDBD"
+                                                FontSize="12" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Capture border -->
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="Capture Border" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <ToggleSwitch
+                                            x:Name="CaptureBorderToggle"
+                                            Header="Show Windows capture border"
+                                            IsOn="{Binding ShowCaptureBorder, Mode=TwoWay}"
+                                            Toggled="OnCaptureBorderToggled" />
+                                        <TextBlock
+                                            x:Name="BorderSuppressedWarning"
+                                            Text="Windows denied border suppression on the last run; the yellow border may still appear."
+                                            Foreground="#FFC107"
+                                            TextWrapping="Wrap"
+                                            FontSize="12"
+                                            Visibility="Collapsed" />
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Advanced FFmpeg options -->
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="Advanced" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBox
+                                            Header="Extra FFmpeg options"
+                                            PlaceholderText="key=value:key=value"
+                                            Text="{Binding ExtraFfmpegOptions, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <InfoBar
+                                            IsOpen="True"
+                                            Severity="Warning"
+                                            Message="Advanced encoder options, format key=value:key=value. Invalid options are dropped at startup and logged; they can make recording fail." />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ══ AUDIO PAGE ════════════════════════════════════ -->
+                            <StackPanel x:Name="AudioPage" Spacing="18" Visibility="Collapsed">
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Audio Capture" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <StackPanel Spacing="8">
+                                            <Grid ColumnSpacing="12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="160" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="System audio" Foreground="#BDBDBD" VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1" Text="Captured and recorded (AAC 192 kbps)" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                            </Grid>
+                                            <Grid ColumnSpacing="12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="160" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Microphone" Foreground="#BDBDBD" VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1" Text="Captured but not yet mixed into recordings — planned work." Foreground="#FFFFFF" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ══ HOTKEYS PAGE ══════════════════════════════════ -->
+                            <StackPanel x:Name="HotkeysPage" Spacing="18" Visibility="Collapsed">
+                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Global Hotkeys" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <Grid ColumnSpacing="16" RowSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="220" />
+                                                <ColumnDefinition Width="220" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="Save replay" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SaveReplayHotkey}" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="1" Text="Start recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding RecordingStartHotkey}" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="2" Text="Stop recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding RecordingStopHotkey}" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="3" Text="Pause / resume" VerticalAlignment="Center" Foreground="#FFFFFF" />
+                                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding PauseResumeHotkey}" IsReadOnly="True" />
+                                        </Grid>
+                                        <InfoBar
+                                            IsOpen="True"
+                                            Severity="Informational"
+                                            Message="Hotkey rebinding is intentionally disabled until conflict detection is wired." />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                        </Grid>
+                    </ScrollViewer>
+
+                    <!-- Bottom action bar -->
+                    <Grid Grid.Row="2">
+                        <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+                            <Button Content="Cancel" Click="OnCancel" />
+                            <Button Content="Save" Style="{StaticResource AccentButtonStyle}" Click="OnSave" />
                         </StackPanel>
                     </Grid>
-                </ScrollViewer>
 
-                <Grid Grid.Row="2">
-                    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
-                        <Button Content="Cancel" Click="OnCancel" />
-                        <Button Content="Save" Style="{StaticResource AccentButtonStyle}" Click="OnSave" />
-                    </StackPanel>
-                </Grid>
                 </Grid>
             </Border>
         </NavigationView>
