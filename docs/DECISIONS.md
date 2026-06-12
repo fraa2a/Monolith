@@ -59,16 +59,17 @@ This file is the architecture decision record index for the project.
 - Notes:
   - Deferred rationale: crash isolation and independent restart remain the long-term goal.
 
-## ADR-0009: First settings UI uses Win32, config uses JSON
+## ADR-0009: Settings UI uses WinUI 3, config uses JSON
 
 - Status: accepted
 - Decision:
   - Use `config/default-config.json` as the default/sample schema.
   - Store the per-user config at `AppData\Local\Monolith\config.json`.
   - Use `nlohmann-json` for parsing, merging defaults with user overrides, and writing user config.
-  - Use a minimal native Win32 settings window for the first pass.
+  - Use a WinUI 3 C# sidecar app (`Monolith.Settings.exe`) for Settings.
 - Notes:
-  - WinUI 3 remains a future UI option, but it is deferred to avoid Windows App SDK churn while the recorder core is still stabilizing.
+  - The native recorder remains the capture/recording process and launches the WinUI sidecar from the tray.
+  - When the sidecar exits, the recorder reloads `config.json` and applies wired settings live.
   - Hotkey rebinding is deferred; current shortcuts are displayed read-only.
 
 ## Open decisions
