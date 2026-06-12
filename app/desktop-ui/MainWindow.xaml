@@ -7,7 +7,7 @@
     mc:Ignorable="d"
     Title="Monolith Settings">
 
-    <Grid Background="#111111">
+    <Grid x:Name="RootLayout" Background="#111111">
         <NavigationView
             x:Name="RootNav"
             PaneDisplayMode="Left"
