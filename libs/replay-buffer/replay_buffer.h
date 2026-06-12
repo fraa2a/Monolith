@@ -9,7 +9,7 @@ namespace replay_buffer {
 
 // Thread-safe rolling ring buffer over EncodedPackets.
 // push() is safe to call concurrently from multiple threads.
-// save_clip() snapshots the buffer and writes an MKV file asynchronously.
+// save_clip() snapshots the buffer and writes a clip file asynchronously.
 class ReplayBuffer {
 public:
      ReplayBuffer();
@@ -21,6 +21,7 @@ public:
         int          duration_sec  = 30;
         int64_t      memory_cap_mb = 512;
         std::wstring output_dir;
+        std::string  container     = "mkv"; // "mkv" | "mp4"
     };
 
     void configure(Config const& cfg);
@@ -31,7 +32,7 @@ public:
     // Thread-safe — call from encoder sink callbacks.
     void push(encoding::EncodedPacket pkt);
 
-    // Snapshot the ring buffer and save an MKV clip asynchronously.
+    // Snapshot the ring buffer and save a clip asynchronously.
     // cb is invoked on the save thread with the output path (empty on failure).
     void save_clip(std::function<void(std::wstring)> cb = nullptr);
 

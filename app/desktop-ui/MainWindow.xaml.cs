@@ -74,9 +74,11 @@ public sealed partial class MainWindow : Window
         ConfigureWindow();
         PopulateCaptureCombos();
         SelectRecordingFormat();
+        SelectClipFormat();
         PopulateAudioControls();
         RefreshAudioSourcesList();
         UpdateCaptureBorderWarning();
+        SyncComponentToggles();
         UpdateCorruptConfigBar();
     }
 
@@ -92,6 +94,13 @@ public sealed partial class MainWindow : Window
         appWindow.Title = "Monolith Settings";
         appWindow.Resize(new Windows.Graphics.SizeInt32(1160, 760));
         appWindow.Closing += OnAppWindowClosing;
+
+        string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Monolith.ico");
+        if (File.Exists(iconPath))
+        {
+            try { appWindow.SetIcon(iconPath); }
+            catch { /* Icon is cosmetic — ignore any failure. */ }
+        }
 
         AppWindowTitleBar titleBar = appWindow.TitleBar;
         titleBar.BackgroundColor = ColorHelper.FromArgb(255, 32, 32, 32);
@@ -215,11 +224,11 @@ public sealed partial class MainWindow : Window
             {
                 if (w == pw && h == ph)
                 {
+                    // Show the matching preset item; the stored mode stays
+                    // "custom" — presets are saved as custom + their size, so
+                    // the two states are identical on disk.
                     tagToSelect = tag;
                     matchedPreset = true;
-                    // Update ViewModel to treat as preset (mode source with preset size)
-                    // Actually spec says: when loading a config whose custom size matches a preset, select the preset
-                    // But the mode is "custom" — we select the preset item but keep viewmodel in sync
                     break;
                 }
             }
@@ -260,6 +269,13 @@ public sealed partial class MainWindow : Window
     {
         suppressComboBoxEvents = true;
         SelectComboBoxByTag(RecordingFormatComboBox, viewModel.RecordingContainer);
+        suppressComboBoxEvents = false;
+    }
+
+    private void SelectClipFormat()
+    {
+        suppressComboBoxEvents = true;
+        SelectComboBoxByTag(ClipFormatComboBox, viewModel.ClipContainer);
         suppressComboBoxEvents = false;
     }
 
@@ -524,6 +540,24 @@ public sealed partial class MainWindow : Window
             viewModel.ShowBorderSuppressedWarning ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    // ── Component enable toggles ──────────────────────────────────────────────
+
+    private void SyncComponentToggles()
+    {
+        RecordingEnabledToggle.IsOn = viewModel.RecordingEnabled;
+        ReplayBufferEnabledToggle.IsOn = viewModel.ReplayBufferEnabled;
+    }
+
+    private void OnRecordingEnabledToggled(object sender, RoutedEventArgs e)
+    {
+        viewModel.RecordingEnabled = RecordingEnabledToggle.IsOn;
+    }
+
+    private void OnReplayBufferEnabledToggled(object sender, RoutedEventArgs e)
+    {
+        viewModel.ReplayBufferEnabled = ReplayBufferEnabledToggle.IsOn;
+    }
+
     // ── Corrupt config InfoBar ────────────────────────────────────────────────
 
     private void UpdateCorruptConfigBar()
@@ -538,6 +572,15 @@ public sealed partial class MainWindow : Window
 
         if (RecordingFormatComboBox.SelectedItem is ComboBoxItem item && item.Tag is string container)
             viewModel.RecordingContainer = container;
+    }
+
+    private void OnClipFormatSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressComboBoxEvents)
+            return;
+
+        if (ClipFormatComboBox.SelectedItem is ComboBoxItem item && item.Tag is string container)
+            viewModel.ClipContainer = container;
     }
 
     private void OnAudioModeSelectionChanged(object sender, SelectionChangedEventArgs e)

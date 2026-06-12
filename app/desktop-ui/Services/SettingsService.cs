@@ -19,11 +19,12 @@ public sealed class SettingsService
       "replay_buffer": {
         "duration_seconds": 30,
         "memory_budget_mb": 512,
-        "save_container": "mkv"
+        "save_container": "mkv",
+        "enabled": true
       },
       "recording": {
         "container": "mkv",
-        "pause_behavior": "timestamp_gap"
+        "enabled": true
       },
       "audio": {
         "mode": "default",
@@ -289,6 +290,7 @@ public sealed class SettingsService
         SetIfMissing(replay, "duration_seconds", 30);
         SetIfMissing(replay, "memory_budget_mb", 512);
         SetIfMissing(replay, "save_container", "mkv");
+        SetIfMissing(replay, "enabled", true);
 
         JsonObject capture = ObjectAt(root, "capture");
         SetIfMissing(capture, "monitor_device", "");
@@ -304,7 +306,7 @@ public sealed class SettingsService
 
         JsonObject recording = ObjectAt(root, "recording");
         SetIfMissing(recording, "container", "mkv");
-        SetIfMissing(recording, "pause_behavior", "timestamp_gap");
+        SetIfMissing(recording, "enabled", true);
 
         JsonObject audio = ObjectAt(root, "audio");
         SetIfMissing(audio, "mode", "default");
@@ -349,11 +351,14 @@ public sealed class SettingsService
             TempDirectory = StringAt(output, "temp_directory"),
             ReplayDurationSeconds = IntAt(replay, "duration_seconds", 30).ToString(),
             ReplayMemoryBudgetMb = IntAt(replay, "memory_budget_mb", 512).ToString(),
+            ClipContainer = StringAt(replay, "save_container", "mkv"),
+            ReplayBufferEnabled = BoolAt(replay, "enabled", true),
             SaveReplayHotkey = StringAt(hotkeys, "save_replay", "Ctrl+Shift+F8"),
             RecordingStartHotkey = StringAt(hotkeys, "recording_start", "Ctrl+Shift+F9"),
             RecordingStopHotkey = StringAt(hotkeys, "recording_stop", "Ctrl+Shift+F10"),
             PauseResumeHotkey = StringAt(hotkeys, "pause_resume", "Ctrl+Shift+F11"),
             RecordingContainer = StringAt(recording, "container", "mkv"),
+            RecordingEnabled = BoolAt(recording, "enabled", true),
             AudioMode = StringAt(audio, "mode", "default"),
             PrimaryMicrophoneDeviceId = StringAt(audio, "primary_microphone_device_id"),
             AudioSources = ReadAudioSources(audio),
@@ -378,6 +383,8 @@ public sealed class SettingsService
         JsonObject replay = ObjectAt(root, "replay_buffer");
         replay["duration_seconds"] = ParseInt(settings.ReplayDurationSeconds, 30, 5, 600);
         replay["memory_budget_mb"] = ParseInt(settings.ReplayMemoryBudgetMb, 512, 64, 16384);
+        replay["save_container"] = settings.ClipContainer == "mp4" ? "mp4" : "mkv";
+        replay["enabled"] = settings.ReplayBufferEnabled;
 
         JsonObject capture = ObjectAt(root, "capture");
         capture["monitor_device"] = settings.MonitorDevice;
@@ -393,6 +400,7 @@ public sealed class SettingsService
 
         JsonObject recording = ObjectAt(root, "recording");
         recording["container"] = settings.RecordingContainer == "mp4" ? "mp4" : "mkv";
+        recording["enabled"] = settings.RecordingEnabled;
 
         JsonObject audio = ObjectAt(root, "audio");
         audio["mode"] = settings.AudioMode == "custom" ? "custom" : "default";

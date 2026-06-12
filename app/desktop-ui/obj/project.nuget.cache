@@ -1,16 +1,28 @@
 {
   "version": 2,
-  "dgSpecHash": "ffbZlhkCPs38wjvi8dvBJC+92VcKWIGdkqZoAjrcJXUbSySQHprSVT6QRpuO4oGpSS09tKKaYGmusiwVYjz93g==",
+  "dgSpecHash": "oOJliikUcSc9ZXpGSM2al6Bdf+aPwmFDGfKCnbcdw1RgC36oUqU81NXVPSu3hRW9wZ4DW3SwccauYpo9GBcWoQ==",
   "success": true,
   "projectFilePath": "C:\\Pattumiera\\Monolith\\app\\desktop-ui\\Monolith.Settings.csproj",
   "expectedPackageFiles": [
-    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.web.webview2\\1.0.2651.64\\microsoft.web.webview2.1.0.2651.64.nupkg.sha512",
-    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.buildtools\\10.0.26100.1742\\microsoft.windows.sdk.buildtools.10.0.26100.1742.nupkg.sha512",
-    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk\\1.6.250108002\\microsoft.windowsappsdk.1.6.250108002.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.web.webview2\\1.0.3719.77\\microsoft.web.webview2.1.0.3719.77.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.ai.machinelearning\\2.1.70\\microsoft.windows.ai.machinelearning.2.1.70.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.buildtools\\10.0.26100.4654\\microsoft.windows.sdk.buildtools.10.0.26100.4654.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.buildtools.msix\\1.7.251221100\\microsoft.windows.sdk.buildtools.msix.1.7.251221100.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk\\2.2.0\\microsoft.windowsappsdk.2.2.0.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.ai\\2.2.3\\microsoft.windowsappsdk.ai.2.2.3.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.base\\2.0.4\\microsoft.windowsappsdk.base.2.0.4.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.dwrite\\2.1.0\\microsoft.windowsappsdk.dwrite.2.1.0.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.foundation\\2.1.0\\microsoft.windowsappsdk.foundation.2.1.0.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.interactiveexperiences\\2.0.15\\microsoft.windowsappsdk.interactiveexperiences.2.0.15.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.ml\\2.1.70\\microsoft.windowsappsdk.ml.2.1.70.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.runtime\\2.2.0\\microsoft.windowsappsdk.runtime.2.2.0.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.widgets\\2.0.5\\microsoft.windowsappsdk.widgets.2.0.5.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsappsdk.winui\\2.2.1\\microsoft.windowsappsdk.winui.2.2.1.nupkg.sha512",
+    "C:\\Users\\Mario\\.nuget\\packages\\system.numerics.tensors\\9.0.0\\system.numerics.tensors.9.0.0.nupkg.sha512",
     "C:\\Users\\Mario\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\8.0.0\\microsoft.netcore.app.runtime.win-x64.8.0.0.nupkg.sha512",
     "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\8.0.0\\microsoft.windowsdesktop.app.runtime.win-x64.8.0.0.nupkg.sha512",
     "C:\\Users\\Mario\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\8.0.0\\microsoft.aspnetcore.app.runtime.win-x64.8.0.0.nupkg.sha512",
-    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.19041.38\\microsoft.windows.sdk.net.ref.10.0.19041.38.nupkg.sha512"
+    "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.26100.56\\microsoft.windows.sdk.net.ref.10.0.26100.56.nupkg.sha512"
   ],
   "logs": []
 }

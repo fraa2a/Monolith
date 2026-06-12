@@ -167,17 +167,20 @@ static std::string wcs_to_utf8(const std::wstring& ws)
     return s;
 }
 
-static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec)
+static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec,
+                                       const std::string& container)
 {
     SYSTEMTIME st;
     GetLocalTime(&st);
+    const wchar_t* ext = (container == "mp4") ? L"mp4" : L"mkv";
     wchar_t path[MAX_PATH];
     swprintf_s(path, MAX_PATH,
-        L"%s\\%04d%02d%02d_%02d%02d%02d_%ds_clip.mkv",
+        L"%s\\%04d%02d%02d_%02d%02d%02d_%ds_clip.%s",
         dir.c_str(),
         st.wYear, st.wMonth, st.wDay,
         st.wHour, st.wMinute, st.wSecond,
-        duration_sec);
+        duration_sec,
+        ext);
     return path;
 }
 
@@ -188,12 +191,13 @@ static AVCodecID video_codec_id(encoding::VideoCodec codec)
         : AV_CODEC_ID_H264;
 }
 
-static std::wstring write_mkv(
+static std::wstring write_clip(
     const std::vector<encoding::EncodedPacket>& pkts,
     const encoding::VideoStreamParams&          vsp,
     const std::vector<encoding::AudioStreamParams>& audio_params,
     const std::wstring&                         out_dir,
-    int                                         duration_sec)
+    int                                         duration_sec,
+    const std::string&                          container)
 {
     if (pkts.empty()) return {};
     if (!vsp.tb_den) return {};
@@ -201,13 +205,15 @@ static std::wstring write_mkv(
     // Ensure the output directory exists.
     CreateDirectoryW(out_dir.c_str(), nullptr);
 
-    std::wstring path     = generate_clip_path(out_dir, duration_sec);
+    const bool   is_mp4   = (container == "mp4");
+    std::wstring path     = generate_clip_path(out_dir, duration_sec, container);
     std::string  path_utf = wcs_to_utf8(path);
     if (path_utf.empty()) return {};
 
-    // ── Open Matroska output context ─────────────────────────────────────────
+    // ── Open output context ──────────────────────────────────────────────────
     AVFormatContext* fmt = nullptr;
-    if (avformat_alloc_output_context2(&fmt, nullptr, "matroska",
+    if (avformat_alloc_output_context2(&fmt, nullptr,
+                                       is_mp4 ? "mp4" : "matroska",
                                        path_utf.c_str()) < 0)
         return {};
 
@@ -257,7 +263,12 @@ static std::wstring write_mkv(
         avformat_free_context(fmt);
         return {};
     }
-    if (avformat_write_header(fmt, nullptr) < 0) {
+    AVDictionary* mux_opts = nullptr;
+    if (is_mp4)
+        av_dict_set(&mux_opts, "movflags", "+faststart", 0);
+    int header_err = avformat_write_header(fmt, &mux_opts);
+    av_dict_free(&mux_opts);
+    if (header_err < 0) {
         avio_closep(&fmt->pb);
         avformat_free_context(fmt);
         return {};
@@ -363,8 +374,9 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
         {
             std::wstring result;
             if (!snapshot.empty() && vsp_set) {
-                result = write_mkv(snapshot, vsp, audio_params,
-                                   cfg.output_dir, cfg.duration_sec);
+                result = write_clip(snapshot, vsp, audio_params,
+                                    cfg.output_dir, cfg.duration_sec,
+                                    cfg.container);
             }
             impl_->saving.store(false);
             if (cb) cb(result);

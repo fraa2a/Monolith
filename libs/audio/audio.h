@@ -51,6 +51,17 @@ std::vector<DeviceInfo> enumerate_input_devices();
 std::vector<ProcessAudioSessionInfo> enumerate_render_sessions();
 ProcessInfo active_foreground_process();
 
+// Best-effort "active game" detection. Scores candidates instead of blindly
+// taking the foreground process: shell/system processes are skipped, and a
+// process with a fullscreen-sized top-level window and a live render audio
+// session wins over a bare foreground window. Falls back to the foreground
+// process when nothing scores higher. Returns a default ProcessInfo
+// (process_id == 0) when no plausible candidate exists.
+ProcessInfo detect_active_game();
+
+// True while the process can be opened and has not exited.
+bool process_alive(uint32_t process_id);
+
 // WASAPI capture for one endpoint: loopback (system audio) or microphone.
 // Runs a dedicated capture thread internally.
 class WasapiCapture {

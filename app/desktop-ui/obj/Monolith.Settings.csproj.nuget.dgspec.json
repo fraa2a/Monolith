@@ -40,11 +40,11 @@
           "dependencies": {
             "Microsoft.Windows.SDK.BuildTools": {
               "target": "Package",
-              "version": "[10.0.26100.1742, )"
+              "version": "[10.0.26100.4654, )"
             },
             "Microsoft.WindowsAppSDK": {
               "target": "Package",
-              "version": "[1.6.250108002, )"
+              "version": "[2.2.0, )"
             }
           },
           "imports": [
@@ -69,7 +69,7 @@
             },
             {
               "name": "Microsoft.Windows.SDK.NET.Ref",
-              "version": "[10.0.19041.38, 10.0.19041.38]"
+              "version": "[10.0.26100.56, 10.0.26100.56]"
             },
             {
               "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",

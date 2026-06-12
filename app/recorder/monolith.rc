@@ -1,0 +1,4 @@
+#include "src/resource.h"
+
+// Lowest-ID icon doubles as the executable's shell icon.
+IDI_MONOLITH ICON "../assets/Monolith.ico"

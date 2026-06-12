@@ -20,7 +20,10 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     // replay_buffer
     private string replayDurationSeconds = "30";
     private string replayMemoryBudgetMb = "512";
+    private string clipContainer = "mkv";
+    private bool replayBufferEnabled = true;
     private string recordingContainer = "mkv";
+    private bool recordingEnabled = true;
     private string audioMode = "default";
     private string primaryMicrophoneDeviceId = "";
     private List<AudioSourceData> audioSources = new();
@@ -95,10 +98,28 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         set => SetField(ref replayMemoryBudgetMb, value);
     }
 
+    public string ClipContainer
+    {
+        get => clipContainer;
+        set => SetField(ref clipContainer, value);
+    }
+
+    public bool ReplayBufferEnabled
+    {
+        get => replayBufferEnabled;
+        set => SetField(ref replayBufferEnabled, value);
+    }
+
     public string RecordingContainer
     {
         get => recordingContainer;
         set => SetField(ref recordingContainer, value);
+    }
+
+    public bool RecordingEnabled
+    {
+        get => recordingEnabled;
+        set => SetField(ref recordingEnabled, value);
     }
 
     public string AudioMode
@@ -288,7 +309,10 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         tempDirectory = data.TempDirectory;
         ReplayDurationSeconds = data.ReplayDurationSeconds;
         ReplayMemoryBudgetMb = data.ReplayMemoryBudgetMb;
+        ClipContainer = data.ClipContainer == "mp4" ? "mp4" : "mkv";
+        replayBufferEnabled = data.ReplayBufferEnabled;
         RecordingContainer = data.RecordingContainer == "mp4" ? "mp4" : "mkv";
+        recordingEnabled = data.RecordingEnabled;
         SaveReplayHotkey = data.SaveReplayHotkey;
         RecordingStartHotkey = data.RecordingStartHotkey;
         RecordingStopHotkey = data.RecordingStopHotkey;
@@ -351,7 +375,10 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             TempDirectory = tempDirectory,
             ReplayDurationSeconds = ReplayDurationSeconds,
             ReplayMemoryBudgetMb = ReplayMemoryBudgetMb,
+            ClipContainer = ClipContainer,
+            ReplayBufferEnabled = ReplayBufferEnabled,
             RecordingContainer = RecordingContainer,
+            RecordingEnabled = RecordingEnabled,
             SaveReplayHotkey = SaveReplayHotkey,
             RecordingStartHotkey = RecordingStartHotkey,
             RecordingStopHotkey = RecordingStopHotkey,
@@ -595,6 +622,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             return false;
         }
 
+        if (ClipContainer != "mkv" && ClipContainer != "mp4")
+        {
+            error = "Clip format must be MKV or MP4.";
+            return false;
+        }
+
         if (RecordingContainer != "mkv" && RecordingContainer != "mp4")
         {
             error = "Recording format must be MKV or MP4.";
@@ -626,6 +659,19 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         {
             error = "Video bitrate must be 1000 to 100000 kbps.";
             return false;
+        }
+
+        if (EncoderBackend != "auto" &&
+            EncoderBackend != "h264_nvenc" &&
+            EncoderBackend != "h264_amf" &&
+            EncoderBackend != "h264_qsv" &&
+            EncoderBackend != "libx264" &&
+            EncoderBackend != "hevc_nvenc" &&
+            EncoderBackend != "hevc_amf" &&
+            EncoderBackend != "hevc_qsv" &&
+            EncoderBackend != "libx265")
+        {
+            EncoderBackend = "auto";
         }
 
         if (resolutionMode == "custom")
@@ -793,13 +839,31 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             "PAGEUP" => "PageUp",
             "PGDN" => "PageDown",
             "PAGEDOWN" => "PageDown",
+            "NUMPAD0" => "Numpad0",
+            "NUMPAD1" => "Numpad1",
+            "NUMPAD2" => "Numpad2",
+            "NUMPAD3" => "Numpad3",
+            "NUMPAD4" => "Numpad4",
+            "NUMPAD5" => "Numpad5",
+            "NUMPAD6" => "Numpad6",
+            "NUMPAD7" => "Numpad7",
+            "NUMPAD8" => "Numpad8",
+            "NUMPAD9" => "Numpad9",
+            "NUMPADMULTIPLY" => "NumpadMultiply",
+            "NUMPADADD" => "NumpadAdd",
+            "NUMPADSUBTRACT" => "NumpadSubtract",
+            "NUMPADDECIMAL" => "NumpadDecimal",
+            "NUMPADDIVIDE" => "NumpadDivide",
             _ => upper[0] + upper[1..].ToLowerInvariant(),
         };
     }
 
     private void NotifyHotkeys()
     {
+        OnPropertyChanged(nameof(ClipContainer));
         OnPropertyChanged(nameof(RecordingContainer));
+        OnPropertyChanged(nameof(ReplayBufferEnabled));
+        OnPropertyChanged(nameof(RecordingEnabled));
         OnPropertyChanged(nameof(SaveReplayHotkey));
         OnPropertyChanged(nameof(RecordingStartHotkey));
         OnPropertyChanged(nameof(RecordingStopHotkey));
