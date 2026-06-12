@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml.Controls;
 using Monolith.Settings.Models;
@@ -32,14 +33,14 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string recordingStopHotkey = "Ctrl+Shift+F10";
     private string pauseResumeHotkey = "Ctrl+Shift+F11";
 
-    // capture — restart-required fields
+    // capture pipeline fields
     private string monitorDevice = "";
     private string resolutionMode = "source";
     private int resolutionWidth = 0;
     private int resolutionHeight = 0;
     private bool showCaptureBorder = false;
 
-    // video_encoder — restart-required fields
+    // video encoder pipeline fields
     private string encoderBackend = "auto";
     private int bitrateKbps = 20000;
     private string extraFfmpegOptions = "";
@@ -50,7 +51,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string statusMessage = "";
     private InfoBarSeverity statusSeverity = InfoBarSeverity.Informational;
 
-    // restart-required tracking
+    // loaded baseline tracking
     private string loadedMonitorDevice = "";
     private string loadedResolutionMode = "source";
     private int loadedResolutionWidth = 0;
@@ -60,10 +61,18 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private int loadedBitrateKbps = 20000;
     private string loadedExtraFfmpegOptions = "";
     private string loadedAudioFingerprint = "";
-    private bool restartRequired;
-
+    private string loadedClipsDirectory = "";
+    private string loadedRecordingsDirectory = "";
+    private string loadedReplayDurationSeconds = "30";
+    private string loadedReplayMemoryBudgetMb = "512";
+    private string loadedRecordingContainer = "mkv";
+    private string loadedSaveReplayHotkey = "Ctrl+Shift+F8";
+    private string loadedRecordingStartHotkey = "Ctrl+Shift+F9";
+    private string loadedRecordingStopHotkey = "Ctrl+Shift+F10";
+    private string loadedPauseResumeHotkey = "Ctrl+Shift+F11";
     // runtime status (may be null if recorder never ran)
     private RuntimeStatus? runtimeStatus;
+    private bool runtimeStatusLoaded;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -241,6 +250,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public RuntimeStatus? RuntimeStatus => runtimeStatus;
 
     public bool HasRuntimeStatus => runtimeStatus is not null;
+    public bool RuntimeStatusLoaded => runtimeStatusLoaded;
 
     /// <summary>True when border_suppressed == false and ShowCaptureBorder is off.</summary>
     public bool ShowBorderSuppressedWarning =>
@@ -284,13 +294,6 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         private set => SetField(ref statusSeverity, value, trackDirty: false);
     }
 
-    /// <summary>True after a successful save that changed a restart-required field.</summary>
-    public bool RestartRequired
-    {
-        get => restartRequired;
-        private set => SetField(ref restartRequired, value, trackDirty: false);
-    }
-
     public string? LoadWarning => service.LoadWarning;
     public string ConfigPath => service.ConfigPath;
     public string LogFilePath =>
@@ -301,8 +304,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public void Load()
     {
         loading = true;
+        Stopwatch sw = Stopwatch.StartNew();
         SettingsData data = service.Load();
-        runtimeStatus = service.LoadRuntimeStatus();
+        StartupTrace.MarkDuration("SettingsService.Load config", sw.ElapsedMilliseconds);
 
         ClipsDirectory = data.ClipsDirectory;
         RecordingsDirectory = data.RecordingsDirectory;
@@ -329,7 +333,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         bitrateKbps = data.BitrateKbps;
         extraFfmpegOptions = data.ExtraFfmpegOptions;
 
-        // snapshot restart-required baseline
+        // snapshot loaded baseline
         loadedMonitorDevice = monitorDevice;
         loadedResolutionMode = resolutionMode;
         loadedResolutionWidth = resolutionWidth;
@@ -339,19 +343,44 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedBitrateKbps = bitrateKbps;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
         loadedAudioFingerprint = AudioFingerprint();
+        loadedClipsDirectory = clipsDirectory;
+        loadedRecordingsDirectory = recordingsDirectory;
+        loadedReplayDurationSeconds = replayDurationSeconds;
+        loadedReplayMemoryBudgetMb = replayMemoryBudgetMb;
+        loadedRecordingContainer = recordingContainer;
+        loadedSaveReplayHotkey = saveReplayHotkey;
+        loadedRecordingStartHotkey = recordingStartHotkey;
+        loadedRecordingStopHotkey = recordingStopHotkey;
+        loadedPauseResumeHotkey = pauseResumeHotkey;
 
         loading = false;
         HasUnsavedChanges = false;
-        RestartRequired = false;
         StatusMessage = "";
         NotifyHotkeys();
         NotifyCaptureFields();
         NotifyAudioFields();
         OnPropertyChanged(nameof(HasRuntimeStatus));
+        OnPropertyChanged(nameof(RuntimeStatusLoaded));
         OnPropertyChanged(nameof(ShowBorderSuppressedWarning));
         OnPropertyChanged(nameof(LoadWarning));
         OnPropertyChanged(nameof(ConfigPath));
         OnPropertyChanged(nameof(LogFilePath));
+    }
+
+    public async Task LoadRuntimeStatusAsync()
+    {
+        if (runtimeStatusLoaded)
+            return;
+
+        Stopwatch sw = Stopwatch.StartNew();
+        RuntimeStatus? status = await Task.Run(service.LoadRuntimeStatus);
+        runtimeStatus = status;
+        runtimeStatusLoaded = true;
+        StartupTrace.MarkDuration("SettingsService.LoadRuntimeStatus deferred", sw.ElapsedMilliseconds);
+        OnPropertyChanged(nameof(RuntimeStatus));
+        OnPropertyChanged(nameof(HasRuntimeStatus));
+        OnPropertyChanged(nameof(RuntimeStatusLoaded));
+        OnPropertyChanged(nameof(ShowBorderSuppressedWarning));
     }
 
     public bool Save()
@@ -396,7 +425,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             ExtraFfmpegOptions = ExtraFfmpegOptions,
         });
 
-        bool restartNeeded = IsRestartRequired();
+        string applyMessage = BuildApplyMessage();
+        bool notifiedRecorder = RecorderReloadNotifier.NotifySettingsSaved();
 
         // Update baseline after save
         loadedMonitorDevice = monitorDevice;
@@ -408,15 +438,22 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedBitrateKbps = bitrateKbps;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
         loadedAudioFingerprint = AudioFingerprint();
+        loadedClipsDirectory = clipsDirectory;
+        loadedRecordingsDirectory = recordingsDirectory;
+        loadedReplayDurationSeconds = replayDurationSeconds;
+        loadedReplayMemoryBudgetMb = replayMemoryBudgetMb;
+        loadedRecordingContainer = recordingContainer;
+        loadedSaveReplayHotkey = saveReplayHotkey;
+        loadedRecordingStartHotkey = recordingStartHotkey;
+        loadedRecordingStopHotkey = recordingStopHotkey;
+        loadedPauseResumeHotkey = pauseResumeHotkey;
 
         HasUnsavedChanges = false;
-        RestartRequired = restartNeeded;
 
         StatusSeverity = InfoBarSeverity.Success;
-        string msg = "Settings saved.";
-        if (restartNeeded)
-            msg += " Capture, encoder, and audio routing changes apply after Monolith restarts.";
-        StatusMessage = msg;
+        StatusMessage = notifiedRecorder
+            ? $"Settings saved. Monolith notified. {applyMessage}"
+            : $"Settings saved. {applyMessage} Monolith will reload after Settings closes.";
         return true;
     }
 
@@ -430,23 +467,19 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 break;
             case "Output":
                 PageTitle = "Settings / Output";
-                PageSubtitle = "Folder changes apply to new replay clips and recordings after save.";
+                PageSubtitle = "Storage and format settings for future clips and recordings.";
                 break;
             case "Clip":
                 PageTitle = "Settings / Clip";
                 PageSubtitle = "Replay buffer settings.";
                 break;
-            case "Recording":
-                PageTitle = "Settings / Recording";
-                PageSubtitle = "Manual recording output settings.";
-                break;
             case "Capture":
                 PageTitle = "Settings / Capture";
-                PageSubtitle = "Display capture and encoder settings.";
+                PageSubtitle = "Display capture and encoder settings. Restarted when safe.";
                 break;
             case "Audio":
                 PageTitle = "Settings / Audio";
-                PageSubtitle = "Default or custom audio routing. Changes apply after Monolith restarts.";
+                PageSubtitle = "Default or custom audio routing. Restarted when safe.";
                 break;
             case "Hotkeys":
                 PageTitle = "Settings / Hotkeys";
@@ -468,11 +501,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public void ResetClipsDirectory() => ClipsDirectory = service.DefaultClipsDirectory;
     public void ResetRecordingsDirectory() => RecordingsDirectory = service.DefaultRecordingsDirectory;
 
-    public void AddDesktopAudioSource()
+    public AudioSourceData? AddDesktopAudioSource()
     {
         if (AudioSources.Any(s => s.Type == "desktop"))
-            return;
-        AddAudioSource(new AudioSourceData
+            return null;
+        return AddAudioSource(new AudioSourceData
         {
             Id = "desktop",
             Type = "desktop",
@@ -482,11 +515,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         });
     }
 
-    public void AddActiveGameSource()
+    public AudioSourceData? AddActiveGameSource()
     {
         if (AudioSources.Any(s => s.Type == "active_game"))
-            return;
-        AddAudioSource(new AudioSourceData
+            return null;
+        return AddAudioSource(new AudioSourceData
         {
             Id = "active_game",
             Type = "active_game",
@@ -496,11 +529,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         });
     }
 
-    public void AddInputDeviceSource(AudioDeviceInfo device)
+    public AudioSourceData? AddInputDeviceSource(AudioDeviceInfo device)
     {
         if (AudioSources.Any(s => s.Type == "input" && s.DeviceId == device.Id))
-            return;
-        AddAudioSource(new AudioSourceData
+            return null;
+        return AddAudioSource(new AudioSourceData
         {
             Id = $"input:{device.Id}",
             Type = "input",
@@ -511,14 +544,14 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         });
     }
 
-    public void AddProcessSource(AudioSessionInfo session)
+    public AudioSourceData? AddProcessSource(AudioSessionInfo session)
     {
         string id = !string.IsNullOrWhiteSpace(session.ExecutablePath)
             ? $"process:{session.ExecutablePath}"
             : $"process:{session.ProcessId}";
         if (AudioSources.Any(s => s.Id == id))
-            return;
-        AddAudioSource(new AudioSourceData
+            return null;
+        return AddAudioSource(new AudioSourceData
         {
             Id = id,
             Type = "process",
@@ -531,9 +564,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         });
     }
 
-    public void RemoveAudioSource(AudioSourceData source)
+    public void RemoveAudioSourceById(string sourceId)
     {
-        AudioSources = AudioSources.Where(s => !ReferenceEquals(s, source)).ToList();
+        AudioSources = AudioSources
+            .Where(s => !string.Equals(s.Id, sourceId, StringComparison.Ordinal))
+            .ToList();
         MarkDirty();
     }
 
@@ -561,27 +596,62 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         MarkDirty();
     }
 
-    private void AddAudioSource(AudioSourceData source)
+    public AudioSourceData? FindAudioSourceById(string sourceId)
+    {
+        return AudioSources.FirstOrDefault(s => string.Equals(s.Id, sourceId, StringComparison.Ordinal));
+    }
+
+    public bool IsConfiguredSourceId(string sourceId)
+    {
+        return AudioSources.Any(s => string.Equals(s.Id, sourceId, StringComparison.Ordinal));
+    }
+
+    private AudioSourceData AddAudioSource(AudioSourceData source)
     {
         List<AudioSourceData> next = CloneAudioSources(AudioSources);
         next.Add(source);
         AudioSources = next;
         MarkDirty();
+        return source;
     }
 
     // ── private helpers ──────────────────────────────────────────────────────
 
-    private bool IsRestartRequired()
+    private string BuildApplyMessage()
     {
-        return monitorDevice != loadedMonitorDevice
-            || resolutionMode != loadedResolutionMode
-            || resolutionWidth != loadedResolutionWidth
-            || resolutionHeight != loadedResolutionHeight
-            || showCaptureBorder != loadedShowCaptureBorder
-            || encoderBackend != loadedEncoderBackend
-            || bitrateKbps != loadedBitrateKbps
-            || extraFfmpegOptions != loadedExtraFfmpegOptions
-            || loadedAudioFingerprint != AudioFingerprint();
+        List<string> scopes = new();
+
+        if (clipsDirectory != loadedClipsDirectory ||
+            recordingsDirectory != loadedRecordingsDirectory ||
+            recordingContainer != loadedRecordingContainer)
+            scopes.Add("Output applies to next clip/recording.");
+
+        if (replayDurationSeconds != loadedReplayDurationSeconds ||
+            replayMemoryBudgetMb != loadedReplayMemoryBudgetMb)
+            scopes.Add("Replay buffer reconfigures live.");
+
+        if (saveReplayHotkey != loadedSaveReplayHotkey ||
+            recordingStartHotkey != loadedRecordingStartHotkey ||
+            recordingStopHotkey != loadedRecordingStopHotkey ||
+            pauseResumeHotkey != loadedPauseResumeHotkey)
+            scopes.Add("Hotkeys reload live.");
+
+        if (loadedAudioFingerprint != AudioFingerprint())
+            scopes.Add("Audio routing restarts when no recording is active.");
+
+        if (monitorDevice != loadedMonitorDevice ||
+            resolutionMode != loadedResolutionMode ||
+            resolutionWidth != loadedResolutionWidth ||
+            resolutionHeight != loadedResolutionHeight ||
+            showCaptureBorder != loadedShowCaptureBorder ||
+            encoderBackend != loadedEncoderBackend ||
+            bitrateKbps != loadedBitrateKbps ||
+            extraFfmpegOptions != loadedExtraFfmpegOptions)
+            scopes.Add("Capture/encoder restarts when no recording is active.");
+
+        return scopes.Count == 0
+            ? "No runtime changes."
+            : string.Join(" ", scopes);
     }
 
     private bool Validate(out string error)

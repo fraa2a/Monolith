@@ -3,7 +3,9 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Monolith.Settings.Models;
+using Monolith.Settings.Services;
 using Monolith.Settings.ViewModels;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -13,6 +15,7 @@ namespace Monolith.Settings;
 public sealed partial class MainWindow : Window
 {
     private readonly SettingsViewModel viewModel = new();
+    private readonly HashSet<string> initializedPages = new(StringComparer.Ordinal);
     private AppWindow? appWindow;
     private bool closeAllowed;
 
@@ -68,10 +71,20 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        Stopwatch sw = Stopwatch.StartNew();
         InitializeComponent();
+        StartupTrace.MarkDuration("MainWindow.InitializeComponent", sw.ElapsedMilliseconds);
+
         RootLayout.DataContext = viewModel;
+        RootLayout.Loaded += OnRootLayoutLoaded;
+
+        sw.Restart();
         viewModel.Load();
+        StartupTrace.MarkDuration("SettingsViewModel.Load", sw.ElapsedMilliseconds);
+
+        sw.Restart();
         ConfigureWindow();
+<<<<<<< HEAD
         PopulateCaptureCombos();
         SelectRecordingFormat();
         SelectClipFormat();
@@ -79,7 +92,18 @@ public sealed partial class MainWindow : Window
         RefreshAudioSourcesList();
         UpdateCaptureBorderWarning();
         SyncComponentToggles();
+=======
+        StartupTrace.MarkDuration("ConfigureWindow", sw.ElapsedMilliseconds);
+
+>>>>>>> origin/main
         UpdateCorruptConfigBar();
+    }
+
+    private void OnRootLayoutLoaded(object sender, RoutedEventArgs e)
+    {
+        RootLayout.Loaded -= OnRootLayoutLoaded;
+        StartupTrace.Mark("RootLayout.Loaded first frame");
+        StartupTrace.Flush();
     }
 
     // ── Window setup ─────────────────────────────────────────────────────────
@@ -323,17 +347,22 @@ public sealed partial class MainWindow : Window
     private void PopulateAddAudioSourceCombo()
     {
         AddAudioSourceComboBox.Items.Clear();
-        AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "All desktop audio", Tag = "desktop" });
-        AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "Active Game", Tag = "active_game" });
+        if (!viewModel.IsConfiguredSourceId("desktop"))
+            AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "All desktop audio", Tag = "desktop" });
+        if (!viewModel.IsConfiguredSourceId("active_game"))
+            AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "Active Game", Tag = "active_game" });
 
         RuntimeStatus? status = viewModel.RuntimeStatus;
         if (status is not null)
         {
-            foreach (AudioDeviceInfo device in status.InputDevices)
+            foreach (AudioDeviceInfo device in status.InputDevices.Where(d => !viewModel.IsConfiguredSourceId(InputSourceId(d.Id))))
                 AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = $"Input: {device.Name}", Tag = device });
 
             foreach (AudioSessionInfo session in status.AudioSessions)
             {
+                if (viewModel.IsConfiguredSourceId(ProcessSourceId(session)))
+                    continue;
+
                 string label = string.IsNullOrWhiteSpace(session.DisplayName)
                     ? session.ProcessName
                     : session.DisplayName;
@@ -344,24 +373,54 @@ public sealed partial class MainWindow : Window
         }
 
         if (AddAudioSourceComboBox.Items.Count > 0)
+        {
+            AddAudioSourceComboBox.IsEnabled = true;
+            AddAudioSourceButton.IsEnabled = true;
             AddAudioSourceComboBox.SelectedIndex = 0;
+        }
+        else
+        {
+            AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "No detected sources to add", Tag = "" });
+            AddAudioSourceComboBox.SelectedIndex = 0;
+            AddAudioSourceComboBox.IsEnabled = false;
+            AddAudioSourceButton.IsEnabled = false;
+        }
     }
 
-    private void RefreshAudioSourcesList()
+    private void RefreshAudioSourcesList(string? selectedSourceId = null)
     {
+        selectedSourceId ??= SelectedAudioSource()?.Id;
         AudioSourcesList.Items.Clear();
+        ListViewItem? selectedItem = null;
         foreach (AudioSourceData source in viewModel.AudioSources)
         {
-            AudioSourcesList.Items.Add(new ListViewItem
+            ListViewItem item = new()
             {
                 Content = AudioSourceLabel(source),
                 Tag = source,
-            });
+            };
+            AudioSourcesList.Items.Add(item);
+            if (selectedSourceId is not null &&
+                string.Equals(source.Id, selectedSourceId, StringComparison.Ordinal))
+                selectedItem = item;
         }
 
-        if (AudioSourcesList.Items.Count > 0 && AudioSourcesList.SelectedIndex < 0)
+        if (selectedItem is not null)
+            AudioSourcesList.SelectedItem = selectedItem;
+        else if (AudioSourcesList.Items.Count > 0 && AudioSourcesList.SelectedIndex < 0)
             AudioSourcesList.SelectedIndex = 0;
         RefreshSelectedAudioSourceEditor();
+    }
+
+    private void RefreshSelectedAudioSourceListItem()
+    {
+        if (AudioSourcesList.SelectedItem is not ListViewItem item ||
+            item.Tag is not AudioSourceData source)
+            return;
+
+        string label = AudioSourceLabel(source);
+        item.Content = label;
+        SelectedAudioSourceName.Text = label;
     }
 
     private string AudioSourceLabel(AudioSourceData source)
@@ -419,21 +478,60 @@ public sealed partial class MainWindow : Window
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
-    private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    private async void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (args.SelectedItem is not NavigationViewItem item || item.Tag is not string page)
             return;
 
-        GeneralPage.Visibility   = page == "General"   ? Visibility.Visible : Visibility.Collapsed;
-        OutputPage.Visibility    = page == "Output"    ? Visibility.Visible : Visibility.Collapsed;
-        ClipPage.Visibility      = page == "Clip"      ? Visibility.Visible : Visibility.Collapsed;
-        RecordingPage.Visibility = page == "Recording" ? Visibility.Visible : Visibility.Collapsed;
-        CapturePage.Visibility   = page == "Capture"   ? Visibility.Visible : Visibility.Collapsed;
-        AudioPage.Visibility     = page == "Audio"     ? Visibility.Visible : Visibility.Collapsed;
-        HotkeysPage.Visibility   = page == "Hotkeys"   ? Visibility.Visible : Visibility.Collapsed;
-        AdvancedPage.Visibility  = page == "Advanced"  ? Visibility.Visible : Visibility.Collapsed;
-
         viewModel.SetPage(page);
+        ShowPage(page);
+        await InitializePageAsync(page);
+    }
+
+    private void ShowPage(string page)
+    {
+        GeneralPage.Visibility = page == "General" ? Visibility.Visible : Visibility.Collapsed;
+        if (OutputPage is not null) OutputPage.Visibility = page == "Output" ? Visibility.Visible : Visibility.Collapsed;
+        if (ClipPage is not null) ClipPage.Visibility = page == "Clip" ? Visibility.Visible : Visibility.Collapsed;
+        if (CapturePage is not null) CapturePage.Visibility = page == "Capture" ? Visibility.Visible : Visibility.Collapsed;
+        if (AudioPage is not null) AudioPage.Visibility = page == "Audio" ? Visibility.Visible : Visibility.Collapsed;
+        if (HotkeysPage is not null) HotkeysPage.Visibility = page == "Hotkeys" ? Visibility.Visible : Visibility.Collapsed;
+        if (AdvancedPage is not null) AdvancedPage.Visibility = page == "Advanced" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private async Task InitializePageAsync(string page)
+    {
+        if (!initializedPages.Add(page))
+            return;
+
+        Stopwatch sw = Stopwatch.StartNew();
+        try
+        {
+            switch (page)
+            {
+                case "Output":
+                    SelectRecordingFormat();
+                    break;
+                case "Capture":
+                    await viewModel.LoadRuntimeStatusAsync();
+                    PopulateCaptureCombos();
+                    UpdateCaptureBorderWarning();
+                    break;
+                case "Audio":
+                    await viewModel.LoadRuntimeStatusAsync();
+                    PopulateAudioControls();
+                    RefreshAudioSourcesList();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            StartupTrace.Mark($"Initialize {page} page failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            StartupTrace.MarkDuration($"Initialize {page} page", sw.ElapsedMilliseconds);
+        }
     }
 
     // ── Monitor ComboBox ──────────────────────────────────────────────────────
@@ -606,23 +704,25 @@ public sealed partial class MainWindow : Window
         if (AddAudioSourceComboBox.SelectedItem is not ComboBoxItem item)
             return;
 
+        AudioSourceData? added = null;
         switch (item.Tag)
         {
             case string tag when tag == "desktop":
-                viewModel.AddDesktopAudioSource();
+                added = viewModel.AddDesktopAudioSource();
                 break;
             case string tag when tag == "active_game":
-                viewModel.AddActiveGameSource();
+                added = viewModel.AddActiveGameSource();
                 break;
             case AudioDeviceInfo device:
-                viewModel.AddInputDeviceSource(device);
+                added = viewModel.AddInputDeviceSource(device);
                 break;
             case AudioSessionInfo session:
-                viewModel.AddProcessSource(session);
+                added = viewModel.AddProcessSource(session);
                 break;
         }
 
-        RefreshAudioSourcesList();
+        PopulateAddAudioSourceCombo();
+        RefreshAudioSourcesList(added?.Id);
     }
 
     private void OnRemoveAudioSource(object sender, RoutedEventArgs e)
@@ -630,7 +730,8 @@ public sealed partial class MainWindow : Window
         AudioSourceData? source = SelectedAudioSource();
         if (source is null)
             return;
-        viewModel.RemoveAudioSource(source);
+        viewModel.RemoveAudioSourceById(source.Id);
+        PopulateAddAudioSourceCombo();
         RefreshAudioSourcesList();
     }
 
@@ -648,7 +749,7 @@ public sealed partial class MainWindow : Window
         if (source is null)
             return;
         viewModel.SetAudioSourceEnabled(source, AudioSourceEnabledToggle.IsOn);
-        RefreshAudioSourcesList();
+        RefreshSelectedAudioSourceListItem();
     }
 
     private void OnAudioTrackChecked(object sender, RoutedEventArgs e)
@@ -663,7 +764,16 @@ public sealed partial class MainWindow : Window
         if (source is null)
             return;
         viewModel.SetAudioSourceTrack(source, track, box.IsChecked == true);
-        RefreshAudioSourcesList();
+        RefreshSelectedAudioSourceListItem();
+    }
+
+    private static string InputSourceId(string deviceId) => $"input:{deviceId}";
+
+    private static string ProcessSourceId(AudioSessionInfo session)
+    {
+        return !string.IsNullOrWhiteSpace(session.ExecutablePath)
+            ? $"process:{session.ExecutablePath}"
+            : $"process:{session.ProcessId}";
     }
 
     // Hotkey capture

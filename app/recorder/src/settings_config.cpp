@@ -321,6 +321,14 @@ std::vector<AudioSourceConfig> parse_audio_sources(const json& doc)
     return sources;
 }
 
+bool has_audio_sources_array(const json& doc)
+{
+    auto audio_it = doc.find("audio");
+    if (audio_it == doc.end() || !audio_it->is_object()) return false;
+    auto sources_it = audio_it->find("sources");
+    return sources_it != audio_it->end() && sources_it->is_array();
+}
+
 json audio_source_to_json(const AudioSourceConfig& source)
 {
     json item;
@@ -408,8 +416,9 @@ Config config_from_json(
         config.audio_mode = "default";
     config.primary_microphone_device_id = utf8_to_wide(
         utf8_at(doc, "audio", "primary_microphone_device_id", ""));
+    const bool explicit_audio_sources = has_audio_sources_array(doc);
     config.audio_sources = parse_audio_sources(doc);
-    if (config.audio_sources.empty()) {
+    if (!explicit_audio_sources && config.audio_sources.empty()) {
         AudioSourceConfig desktop;
         desktop.id = "desktop";
         desktop.type = "desktop";

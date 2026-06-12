@@ -1609,3 +1609,16 @@ CURRENT STATUS OVERRIDE — 2026-06-12
 - Audio V2 foundation is now implemented: Default mode records desktop audio to track 1 and selected microphone to track 2; Custom mode saves add/configure/disable/remove source routing for desktop, input devices, process sessions, and Active Game; muxers can write up to six audio tracks.
 - Remaining audio limitations: no PCM mixer for multiple sources sharing one track yet; process loopback and Active Game are best-effort; long-session A/V sync still needs runtime validation.
 - Treat the transcript below as historical build/debug context, not current project status.
+CURRENT STATUS OVERRIDE - 2026-06-12 Settings UX/runtime pass
+
+- Build: `dotnet build app\desktop-ui\Monolith.Settings.csproj -c Release -r win-x64 --no-restore` succeeds. `cmake --build build --config Release --parallel` succeeds and publishes `Monolith.exe` plus `Monolith.Settings.exe`; full build still emits non-fatal CS1668 for a missing local ATL/MFC LIB path.
+- Settings smoke: `build\app\recorder\Release\Monolith.Settings.exe` opens and closes cleanly.
+- Startup trace: `AppData\Local\Monolith\settings-startup.log` shows the main cold cost before `App` ctor, around 1.1-1.2s on this machine. App-side first frame is now about 0.4s after `App` ctor because config load is small and runtime enumeration is deferred.
+- Settings startup changes: runtime status, audio device/session enumeration, monitor/capture data, and capture warnings load only when Audio/Capture is opened. XAML page construction stays eager because WinUI named controls must remain reliable.
+- Settings layout: Output owns replay clips folder, manual recordings folder, and formats. Replay clips are MKV only. Manual recording format exposes MKV/MP4. Recording page was removed; pause behavior stays an internal fixed `timestamp_gap` policy.
+- Audio UI: selected custom source is preserved by stable source ID while editing. Track toggles no longer rebuild the full list. All six track buttons are visible in a 2x3 layout.
+- Audio source model: detected sources and configured sources are distinct. Removing a configured source deletes it from config; the detected app/device can be added again later but is not auto-restored.
+- Custom audio: desktop, Active Game, process sessions, and multiple input devices can be configured as separate sources with tracks 1-6. Missing/unavailable sources are tolerated and removable.
+- Apply scopes: output paths and hotkeys are live/future-operation; replay duration/memory reconfigure replay buffer; audio routing restarts audio pipeline when no manual recording is active; capture/encoder changes restart capture pipeline when no manual recording is active; unsafe changes are deferred while recording. Full app restart is no longer the default.
+- Runtime smoke: command-dispatched replay saved `20260612_191331_30s_clip.mkv`; manual recording with current config `recording.container=mp4` saved `20260612_191451_recording.mp4` after a longer recording window. Same dispatch path is used by the registered hotkeys.
+- Remaining risk: same-track multi-source PCM mixing is still not implemented; runtime skips later sources for an already-claimed track to avoid corrupt timing.

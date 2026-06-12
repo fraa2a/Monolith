@@ -57,6 +57,13 @@ void ReplayBuffer::configure(Config const& cfg)
     impl_->cfg = cfg;
 }
 
+void ReplayBuffer::clear()
+{
+    std::lock_guard lk(impl_->mutex);
+    impl_->ring.clear();
+    impl_->total_bytes = 0;
+}
+
 void ReplayBuffer::set_video_params(encoding::VideoStreamParams const& p)
 {
     std::lock_guard lk(impl_->mutex);

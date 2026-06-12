@@ -93,7 +93,7 @@ Status: complete.
   - `AppData\Local\Monolith\config.json` load/save path
   - default config merge from `config/default-config.json`
   - WinUI 3 settings sidecar opened from the tray
-  - editable replay clip folder, manual recording folder, replay duration, and replay memory budget
+  - editable replay clip folder, manual recording folder, replay duration, replay memory budget, and manual recording format
   - read-only hotkey display
 - Acceptance criteria:
   - settings opens from the tray (manually tested)
@@ -101,19 +101,30 @@ Status: complete.
   - missing or invalid user config does not crash startup
   - output folder changes are saved and used for replay/manual recording
   - replay duration and memory budget are saved and applied to the replay buffer
-  - visible settings are wired, read-only, or honestly marked restart-required/unsupported
+  - visible settings are wired, read-only, or honestly marked with their apply scope
+  - Settings cold start avoids app-side runtime enumeration until the relevant page is opened
 - Live-applied settings:
   - replay clip output folder
   - manual recording output folder
+  - hotkeys
+- Replay-buffer restart/reconfigure:
   - replay duration
   - replay memory budget
-- Restart-required settings:
+- Applies to next recording/clip:
+  - manual recording format
+- Capture/encoder restart when no manual recording is active:
   - capture monitor
   - output resolution
   - capture border
   - encoder backend
   - video bitrate
   - advanced FFmpeg options
+- Audio pipeline restart when no manual recording is active:
+  - audio mode
+  - primary microphone
+  - custom source routing/add/disable/remove
+- Full app restart:
+  - no currently exposed setting should require a full app restart by default
 - Not implemented:
   - Stream Deck settings
 
@@ -131,7 +142,7 @@ Status: foundation implemented; mixer/runtime validation remains.
   - Best-effort Active Game source that never breaks recording if no game is detected. Implemented as foreground-process best effort.
   - Encoder/muxer support for the required audio tracks, with resampling/mixing as needed. Implemented for independent tracks; same-track multi-source mixing remains pending.
 - Acceptance criteria:
-  - replay save, manual recording, Settings launch, and output paths still work. Build verified; runtime audio tests still needed.
+  - replay save, manual recording, Settings launch, and output paths still work. Build and Settings launch smoke verified; runtime audio tests still needed.
   - missing devices/processes do not crash recording or corrupt config. Implemented by fail-closed source startup and saved-source availability display.
   - assignments outside tracks 1-6 are rejected or sanitized. Implemented.
   - current limitations of per-app capture, active-game detection, multi-track muxing, and A/V sync are documented. Implemented in handover/architecture.
