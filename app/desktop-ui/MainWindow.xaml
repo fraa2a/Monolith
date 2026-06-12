@@ -26,12 +26,13 @@
                 <NavigationViewItem Content="Advanced" Tag="Advanced" IsEnabled="False" />
             </NavigationView.MenuItems>
 
-            <Grid Padding="32,24,32,24" RowSpacing="22">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
+            <Border Padding="32,24,32,24">
+                <Grid RowSpacing="22">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
 
                 <StackPanel Grid.Row="0" Spacing="4">
                     <TextBlock Text="{Binding PageTitle}" FontSize="28" FontWeight="SemiBold" Foreground="#F6F6F6" />
@@ -153,7 +154,8 @@
                         <Button Content="Save" Style="{StaticResource AccentButtonStyle}" Click="OnSave" />
                     </StackPanel>
                 </Grid>
-            </Grid>
+                </Grid>
+            </Border>
         </NavigationView>
     </Grid>
 </Window>
