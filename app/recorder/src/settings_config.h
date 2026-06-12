@@ -27,19 +27,19 @@ struct Config {
     int64_t replay_memory_budget_mb = 512;
     std::string recording_container = "mkv"; // "mkv" | "mp4"
 
-    // Audio (restart-required).
+    // Audio (restarted when no manual recording is active).
     std::string audio_mode = "default"; // "default" | "custom"
     std::wstring primary_microphone_device_id;
     std::vector<AudioSourceConfig> audio_sources;
 
-    // Capture (restart-required).
+    // Capture (capture/encoder restart when no manual recording is active).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
     std::string resolution_mode = "source"; // "source" | "custom"
     int output_width = 0;                 // used when resolution_mode == "custom"
     int output_height = 0;
     bool show_capture_border = false;
 
-    // Encoder (restart-required).
+    // Encoder (capture/encoder restart when no manual recording is active).
     std::string encoder_backend = "auto"; // auto | h264_* | hevc_* | libx264 | libx265
     int video_bitrate_kbps = 20000;       // clamped 1000–100000
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
