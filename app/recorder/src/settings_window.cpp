@@ -18,6 +18,10 @@ struct FocusContext {
     bool focused;
 };
 
+struct CloseContext {
+    DWORD pid;
+};
+
 BOOL CALLBACK focus_enum_proc(HWND hwnd, LPARAM lp)
 {
     auto* ctx = reinterpret_cast<FocusContext*>(lp);
@@ -27,6 +31,17 @@ BOOL CALLBACK focus_enum_proc(HWND hwnd, LPARAM lp)
         SetForegroundWindow(hwnd);
         ctx->focused = true;
         return FALSE;
+    }
+    return TRUE;
+}
+
+BOOL CALLBACK close_enum_proc(HWND hwnd, LPARAM lp)
+{
+    auto* ctx = reinterpret_cast<CloseContext*>(lp);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == ctx->pid && IsWindowVisible(hwnd)) {
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
     }
     return TRUE;
 }
@@ -112,6 +127,35 @@ void show(HWND owner, UINT reload_message)
         CloseHandle(process);
         PostMessageW(owner, reload_message, 0, 0);
     }).detach();
+}
+
+void close_running()
+{
+    if (!g_settings_process) return;
+
+    DWORD wait = WaitForSingleObject(g_settings_process, 0);
+    if (wait != WAIT_TIMEOUT) {
+        CloseHandle(g_settings_process);
+        g_settings_process = nullptr;
+        return;
+    }
+
+    DWORD pid = GetProcessId(g_settings_process);
+    CloseContext ctx{ pid };
+    EnumWindows(close_enum_proc, reinterpret_cast<LPARAM>(&ctx));
+
+    wait = WaitForSingleObject(g_settings_process, 2000);
+    if (wait == WAIT_TIMEOUT) {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+        if (process) {
+            TerminateProcess(process, 0);
+            WaitForSingleObject(process, 1000);
+            CloseHandle(process);
+        }
+    }
+
+    CloseHandle(g_settings_process);
+    g_settings_process = nullptr;
 }
 
 } // namespace settings_window

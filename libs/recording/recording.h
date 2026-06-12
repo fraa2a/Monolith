@@ -24,7 +24,7 @@ public:
     void set_video_params(encoding::VideoStreamParams const& p);
     void set_audio_params(encoding::AudioStreamParams const& p);
 
-    bool start(std::wstring output_dir);
+    bool start(std::wstring output_dir, std::string container);
     bool pause();
     bool resume();
     bool stop(std::wstring* output_path = nullptr);

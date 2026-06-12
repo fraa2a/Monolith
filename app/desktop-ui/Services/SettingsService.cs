@@ -246,6 +246,10 @@ public sealed class SettingsService
         SetIfMissing(videoEncoder, "bitrate_kbps", 20000);
         SetIfMissing(videoEncoder, "extra_ffmpeg_options", "");
 
+        JsonObject recording = ObjectAt(root, "recording");
+        SetIfMissing(recording, "container", "mkv");
+        SetIfMissing(recording, "pause_behavior", "timestamp_gap");
+
         JsonObject hotkeys = ObjectAt(root, "hotkeys");
         SetIfMissing(hotkeys, "save_replay", "Ctrl+Shift+F8");
         SetIfMissing(hotkeys, "recording_start", "Ctrl+Shift+F9");
@@ -260,6 +264,7 @@ public sealed class SettingsService
         JsonObject hotkeys = ObjectAt(root, "hotkeys");
         JsonObject capture = ObjectAt(root, "capture");
         JsonObject videoEncoder = ObjectAt(root, "video_encoder");
+        JsonObject recording = ObjectAt(root, "recording");
 
         return new SettingsData
         {
@@ -272,6 +277,7 @@ public sealed class SettingsService
             RecordingStartHotkey = StringAt(hotkeys, "recording_start", "Ctrl+Shift+F9"),
             RecordingStopHotkey = StringAt(hotkeys, "recording_stop", "Ctrl+Shift+F10"),
             PauseResumeHotkey = StringAt(hotkeys, "pause_resume", "Ctrl+Shift+F11"),
+            RecordingContainer = StringAt(recording, "container", "mkv"),
             MonitorDevice = StringAt(capture, "monitor_device"),
             ResolutionMode = StringAt(capture, "resolution_mode", "source"),
             ResolutionWidth = IntAt(capture, "resolution_width", 0),
@@ -305,6 +311,15 @@ public sealed class SettingsService
         videoEncoder["backend"] = settings.EncoderBackend;
         videoEncoder["bitrate_kbps"] = Math.Clamp(settings.BitrateKbps, 1000, 100000);
         videoEncoder["extra_ffmpeg_options"] = settings.ExtraFfmpegOptions;
+
+        JsonObject recording = ObjectAt(root, "recording");
+        recording["container"] = settings.RecordingContainer == "mp4" ? "mp4" : "mkv";
+
+        JsonObject hotkeys = ObjectAt(root, "hotkeys");
+        hotkeys["save_replay"] = settings.SaveReplayHotkey;
+        hotkeys["recording_start"] = settings.RecordingStartHotkey;
+        hotkeys["recording_stop"] = settings.RecordingStopHotkey;
+        hotkeys["pause_resume"] = settings.PauseResumeHotkey;
     }
 
     private void SaveRoot(JsonObject root)

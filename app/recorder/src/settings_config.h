@@ -13,6 +13,7 @@ struct Config {
     std::wstring temp_directory;
     int replay_duration_seconds = 30;
     int64_t replay_memory_budget_mb = 512;
+    std::string recording_container = "mkv"; // "mkv" | "mp4"
 
     // Capture (restart-required).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
@@ -22,9 +23,14 @@ struct Config {
     bool show_capture_border = false;
 
     // Encoder (restart-required).
-    std::string encoder_backend = "auto"; // auto | h264_nvenc | h264_amf | h264_qsv | libx264
+    std::string encoder_backend = "auto"; // auto | h264_* | hevc_* | libx264 | libx265
     int video_bitrate_kbps = 20000;       // clamped 1000–100000
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
+
+    std::string hotkey_save_replay = "Ctrl+Shift+F8";
+    std::string hotkey_recording_start = "Ctrl+Shift+F9";
+    std::string hotkey_recording_stop = "Ctrl+Shift+F10";
+    std::string hotkey_pause_resume = "Ctrl+Shift+F11";
 
     std::string merged_json;
 };

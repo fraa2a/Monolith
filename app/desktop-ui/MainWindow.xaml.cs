@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Monolith.Settings.Models;
 using Monolith.Settings.ViewModels;
+using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -15,8 +16,32 @@ public sealed partial class MainWindow : Window
     private AppWindow? appWindow;
     private bool closeAllowed;
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetWindowsHookExW(int idHook, LowLevelKeyboardProc callback, nint hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnhookWindowsHookEx(nint hhk);
+
+    [DllImport("user32.dll")]
+    private static extern nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
+
+    [DllImport("kernel32.dll")]
+    private static extern nint GetModuleHandleW(string? lpModuleName);
+
+    private delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
+
     // Suppress programmatic ComboBox changes from triggering ViewModel updates.
     private bool suppressComboBoxEvents;
+    private LowLevelKeyboardProc? hotkeyCaptureProc;
+    private nint hotkeyCaptureHook;
+    private string? hotkeyCaptureTarget;
+    private readonly HashSet<int> hotkeyCaptureDownKeys = new();
+
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_SYSKEYDOWN = 0x0104;
+    private const int WM_KEYUP = 0x0101;
+    private const int WM_SYSKEYUP = 0x0105;
 
     // Preset resolutions by tag
     private static readonly (string Tag, int Width, int Height)[] ResolutionPresets =
@@ -34,6 +59,10 @@ public sealed partial class MainWindow : Window
         ["h264_amf"]   = "AMD AMF (h264_amf)",
         ["h264_qsv"]   = "Intel Quick Sync (h264_qsv)",
         ["libx264"]    = "Software x264 (libx264)",
+        ["hevc_nvenc"] = "NVIDIA HEVC / H.265 (hevc_nvenc)",
+        ["hevc_amf"]   = "AMD HEVC / H.265 (hevc_amf)",
+        ["hevc_qsv"]   = "Intel HEVC / H.265 (hevc_qsv)",
+        ["libx265"]    = "Software x265 / H.265 (libx265)",
     };
 
     public MainWindow()
@@ -43,6 +72,7 @@ public sealed partial class MainWindow : Window
         viewModel.Load();
         ConfigureWindow();
         PopulateCaptureCombos();
+        SelectRecordingFormat();
         UpdateCaptureBorderWarning();
         UpdateCorruptConfigBar();
     }
@@ -51,12 +81,28 @@ public sealed partial class MainWindow : Window
 
     private void ConfigureWindow()
     {
+        RootLayout.RequestedTheme = ElementTheme.Dark;
+
         nint hwnd = WindowNative.GetWindowHandle(this);
         WindowId windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
         appWindow = AppWindow.GetFromWindowId(windowId);
         appWindow.Title = "Monolith Settings";
         appWindow.Resize(new Windows.Graphics.SizeInt32(1160, 760));
         appWindow.Closing += OnAppWindowClosing;
+
+        AppWindowTitleBar titleBar = appWindow.TitleBar;
+        titleBar.BackgroundColor = ColorHelper.FromArgb(255, 32, 32, 32);
+        titleBar.ForegroundColor = Colors.White;
+        titleBar.InactiveBackgroundColor = ColorHelper.FromArgb(255, 32, 32, 32);
+        titleBar.InactiveForegroundColor = ColorHelper.FromArgb(255, 180, 180, 180);
+        titleBar.ButtonBackgroundColor = ColorHelper.FromArgb(255, 32, 32, 32);
+        titleBar.ButtonForegroundColor = Colors.White;
+        titleBar.ButtonHoverBackgroundColor = ColorHelper.FromArgb(255, 50, 50, 50);
+        titleBar.ButtonHoverForegroundColor = Colors.White;
+        titleBar.ButtonPressedBackgroundColor = ColorHelper.FromArgb(255, 65, 65, 65);
+        titleBar.ButtonPressedForegroundColor = Colors.White;
+        titleBar.ButtonInactiveBackgroundColor = ColorHelper.FromArgb(255, 32, 32, 32);
+        titleBar.ButtonInactiveForegroundColor = ColorHelper.FromArgb(255, 180, 180, 180);
     }
 
     // ── Capture ComboBox population ──────────────────────────────────────────
@@ -207,6 +253,13 @@ public sealed partial class MainWindow : Window
         CustomResolutionPanel.Visibility = isCustom ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    private void SelectRecordingFormat()
+    {
+        suppressComboBoxEvents = true;
+        SelectComboBoxByTag(RecordingFormatComboBox, viewModel.RecordingContainer);
+        suppressComboBoxEvents = false;
+    }
+
     // ── Navigation ────────────────────────────────────────────────────────────
 
     private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -221,6 +274,7 @@ public sealed partial class MainWindow : Window
         CapturePage.Visibility   = page == "Capture"   ? Visibility.Visible : Visibility.Collapsed;
         AudioPage.Visibility     = page == "Audio"     ? Visibility.Visible : Visibility.Collapsed;
         HotkeysPage.Visibility   = page == "Hotkeys"   ? Visibility.Visible : Visibility.Collapsed;
+        AdvancedPage.Visibility  = page == "Advanced"  ? Visibility.Visible : Visibility.Collapsed;
 
         viewModel.SetPage(page);
     }
@@ -336,6 +390,174 @@ public sealed partial class MainWindow : Window
         CorruptConfigBar.IsOpen = viewModel.LoadWarning is not null;
     }
 
+    private void OnRecordingFormatSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressComboBoxEvents)
+            return;
+
+        if (RecordingFormatComboBox.SelectedItem is ComboBoxItem item && item.Tag is string container)
+            viewModel.RecordingContainer = container;
+    }
+
+    // Hotkey capture
+
+    private void OnHotkeyBoxGotFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox textBox || textBox.Tag is not string target)
+            return;
+
+        textBox.SelectAll();
+        hotkeyCaptureTarget = target;
+        StartHotkeyCapture();
+    }
+
+    private void OnHotkeyBoxLostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox textBox && Equals(textBox.Tag, hotkeyCaptureTarget))
+            StopHotkeyCapture();
+    }
+
+    private void StartHotkeyCapture()
+    {
+        if (hotkeyCaptureHook != 0)
+            return;
+
+        hotkeyCaptureDownKeys.Clear();
+        hotkeyCaptureProc = HotkeyCaptureHook;
+        hotkeyCaptureHook = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            hotkeyCaptureProc,
+            GetModuleHandleW(null),
+            0);
+    }
+
+    private void StopHotkeyCapture()
+    {
+        if (hotkeyCaptureHook != 0)
+        {
+            UnhookWindowsHookEx(hotkeyCaptureHook);
+            hotkeyCaptureHook = 0;
+        }
+
+        hotkeyCaptureProc = null;
+        hotkeyCaptureTarget = null;
+        hotkeyCaptureDownKeys.Clear();
+    }
+
+    private nint HotkeyCaptureHook(int nCode, nint wParam, nint lParam)
+    {
+        if (nCode < 0)
+            return CallNextHookEx(hotkeyCaptureHook, nCode, wParam, lParam);
+
+        int message = wParam.ToInt32();
+        if (message is not (WM_KEYDOWN or WM_SYSKEYDOWN or WM_KEYUP or WM_SYSKEYUP))
+            return 1;
+
+        int triggerKey = Marshal.ReadInt32(lParam);
+        if (message is WM_KEYUP or WM_SYSKEYUP)
+        {
+            hotkeyCaptureDownKeys.Remove(triggerKey);
+            return 1;
+        }
+
+        hotkeyCaptureDownKeys.Add(triggerKey);
+        string? hotkey = BuildHotkey(hotkeyCaptureDownKeys);
+        if (hotkey is null)
+            return 1;
+
+        DispatcherQueue.TryEnqueue(() => ApplyCapturedHotkey(hotkey));
+        return 1;
+    }
+
+    private void ApplyCapturedHotkey(string hotkey)
+    {
+        if (hotkeyCaptureTarget is null)
+            return;
+
+        switch (hotkeyCaptureTarget)
+        {
+            case "SaveReplayHotkey":
+                viewModel.SaveReplayHotkey = hotkey;
+                break;
+            case "RecordingStartHotkey":
+                viewModel.RecordingStartHotkey = hotkey;
+                break;
+            case "RecordingStopHotkey":
+                viewModel.RecordingStopHotkey = hotkey;
+                break;
+            case "PauseResumeHotkey":
+                viewModel.PauseResumeHotkey = hotkey;
+                break;
+        }
+    }
+
+    private static string? BuildHotkey(IReadOnlySet<int> downKeys)
+    {
+        List<string> parts = new();
+        if (HasAnyKey(downKeys, 0x11, 0xA2, 0xA3))
+            parts.Add("Ctrl");
+        if (HasAnyKey(downKeys, 0x10, 0xA0, 0xA1))
+            parts.Add("Shift");
+        if (HasAnyKey(downKeys, 0x12, 0xA4, 0xA5))
+            parts.Add("Alt");
+        if (HasAnyKey(downKeys, 0x5B, 0x5C))
+            parts.Add("Win");
+
+        bool hasNonModifierKey = false;
+        foreach ((int key, string name) in HotkeyKeyNames)
+        {
+            if (downKeys.Contains(key))
+            {
+                if (!parts.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    parts.Add(name);
+                hasNonModifierKey = true;
+            }
+        }
+
+        if (!hasNonModifierKey)
+            return null;
+
+        return string.Join("+", parts);
+    }
+
+    private static bool HasAnyKey(IReadOnlySet<int> downKeys, params int[] keys)
+    {
+        foreach (int key in keys)
+        {
+            if (downKeys.Contains(key))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static readonly (int Key, string Name)[] HotkeyKeyNames =
+    {
+        (0x09, "Tab"), (0x0D, "Enter"), (0x1B, "Esc"), (0x20, "Space"), (0x08, "Backspace"),
+        (0x2D, "Insert"), (0x2E, "Delete"), (0x24, "Home"), (0x23, "End"),
+        (0x21, "PageUp"), (0x22, "PageDown"), (0x26, "Up"), (0x28, "Down"),
+        (0x25, "Left"), (0x27, "Right"),
+        ('A', "A"), ('B', "B"), ('C', "C"), ('D', "D"), ('E', "E"), ('F', "F"),
+        ('G', "G"), ('H', "H"), ('I', "I"), ('J', "J"), ('K', "K"), ('L', "L"),
+        ('M', "M"), ('N', "N"), ('O', "O"), ('P', "P"), ('Q', "Q"), ('R', "R"),
+        ('S', "S"), ('T', "T"), ('U', "U"), ('V', "V"), ('W', "W"), ('X', "X"),
+        ('Y', "Y"), ('Z', "Z"),
+        ('0', "0"), ('1', "1"), ('2', "2"), ('3', "3"), ('4', "4"),
+        ('5', "5"), ('6', "6"), ('7', "7"), ('8', "8"), ('9', "9"),
+        (0x60, "Numpad0"), (0x61, "Numpad1"), (0x62, "Numpad2"), (0x63, "Numpad3"),
+        (0x64, "Numpad4"), (0x65, "Numpad5"), (0x66, "Numpad6"), (0x67, "Numpad7"),
+        (0x68, "Numpad8"), (0x69, "Numpad9"), (0x6A, "NumpadMultiply"),
+        (0x6B, "NumpadAdd"), (0x6D, "NumpadSubtract"), (0x6E, "NumpadDecimal"),
+        (0x6F, "NumpadDivide"),
+        (0x70, "F1"), (0x71, "F2"), (0x72, "F3"), (0x73, "F4"), (0x74, "F5"),
+        (0x75, "F6"), (0x76, "F7"), (0x77, "F8"), (0x78, "F9"), (0x79, "F10"),
+        (0x7A, "F11"), (0x7B, "F12"), (0x7C, "F13"), (0x7D, "F14"), (0x7E, "F15"),
+        (0x7F, "F16"), (0x80, "F17"), (0x81, "F18"), (0x82, "F19"), (0x83, "F20"),
+        (0x84, "F21"), (0x85, "F22"), (0x86, "F23"), (0x87, "F24"),
+        (0xBA, ";"), (0xBB, "="), (0xBC, ","), (0xBD, "-"), (0xBE, "."),
+        (0xBF, "/"), (0xC0, "`"), (0xDB, "["), (0xDC, "\\"), (0xDD, "]"), (0xDE, "'"),
+    };
+
     // ── Output folder browse / reset ──────────────────────────────────────────
 
     private async void OnBrowseClips(object sender, RoutedEventArgs e)
@@ -382,6 +604,7 @@ public sealed partial class MainWindow : Window
 
     private void OnCancel(object sender, RoutedEventArgs e)
     {
+        StopHotkeyCapture();
         closeAllowed = true;
         Close();
     }
@@ -389,7 +612,10 @@ public sealed partial class MainWindow : Window
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         if (closeAllowed || !viewModel.HasUnsavedChanges)
+        {
+            StopHotkeyCapture();
             return;
+        }
 
         args.Cancel = true;
         ContentDialogResult result = await ConfirmClose();
@@ -399,6 +625,7 @@ public sealed partial class MainWindow : Window
         if (result == ContentDialogResult.Primary && !viewModel.Save())
             return;
 
+        StopHotkeyCapture();
         closeAllowed = true;
         Close();
     }

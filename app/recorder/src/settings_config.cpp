@@ -249,6 +249,14 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["output"]["temp_directory"] = wide_to_utf8(config.temp_directory);
     doc["replay_buffer"]["duration_seconds"] = config.replay_duration_seconds;
     doc["replay_buffer"]["memory_budget_mb"] = config.replay_memory_budget_mb;
+    doc["recording"]["container"] = config.recording_container;
+    doc["video_encoder"]["backend"] = config.encoder_backend;
+    doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
+    doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
+    doc["hotkeys"]["save_replay"] = config.hotkey_save_replay;
+    doc["hotkeys"]["recording_start"] = config.hotkey_recording_start;
+    doc["hotkeys"]["recording_stop"] = config.hotkey_recording_stop;
+    doc["hotkeys"]["pause_resume"] = config.hotkey_pause_resume;
 }
 
 Config config_from_json(
@@ -276,6 +284,10 @@ Config config_from_json(
     if (config.replay_memory_budget_mb < 64 || config.replay_memory_budget_mb > 16384)
         config.replay_memory_budget_mb = 512;
 
+    config.recording_container = utf8_at(doc, "recording", "container", "mkv");
+    if (config.recording_container != "mkv" && config.recording_container != "mp4")
+        config.recording_container = "mkv";
+
     config.monitor_device = utf8_to_wide(
         utf8_at(doc, "capture", "monitor_device", ""));
     config.resolution_mode = utf8_at(doc, "capture", "resolution_mode", "source");
@@ -302,7 +314,11 @@ Config config_from_json(
         config.encoder_backend != "h264_nvenc" &&
         config.encoder_backend != "h264_amf" &&
         config.encoder_backend != "h264_qsv" &&
-        config.encoder_backend != "libx264")
+        config.encoder_backend != "libx264" &&
+        config.encoder_backend != "hevc_nvenc" &&
+        config.encoder_backend != "hevc_amf" &&
+        config.encoder_backend != "hevc_qsv" &&
+        config.encoder_backend != "libx265")
         config.encoder_backend = "auto";
 
     config.video_bitrate_kbps = int_at(doc, "video_encoder", "bitrate_kbps", 20000);
@@ -310,6 +326,11 @@ Config config_from_json(
         config.video_bitrate_kbps = 20000;
 
     config.extra_ffmpeg_options = utf8_at(doc, "video_encoder", "extra_ffmpeg_options", "");
+
+    config.hotkey_save_replay = utf8_at(doc, "hotkeys", "save_replay", "Ctrl+Shift+F8");
+    config.hotkey_recording_start = utf8_at(doc, "hotkeys", "recording_start", "Ctrl+Shift+F9");
+    config.hotkey_recording_stop = utf8_at(doc, "hotkeys", "recording_stop", "Ctrl+Shift+F10");
+    config.hotkey_pause_resume = utf8_at(doc, "hotkeys", "pause_resume", "Ctrl+Shift+F11");
 
     json sanitized = doc;
     write_runtime_fields(sanitized, config);

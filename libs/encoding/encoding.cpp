@@ -19,7 +19,9 @@ namespace encoding {
 // ── probe_video_encoder ───────────────────────────────────────────────────────
 
 static const char* kEncoderCandidates[] = {
-    "h264_nvenc", "h264_amf", "h264_qsv", "libx264", nullptr
+    "h264_nvenc", "h264_amf", "h264_qsv", "libx264",
+    "hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265",
+    nullptr
 };
 
 static bool try_open_probe(const char* name, int width, int height)
@@ -39,7 +41,7 @@ static bool try_open_probe(const char* name, int width, int height)
     ctx->gop_size   = 60;
 
     AVDictionary* opts = nullptr;
-    if (strcmp(name, "libx264") == 0)
+    if (strcmp(name, "libx264") == 0 || strcmp(name, "libx265") == 0)
         av_dict_set(&opts, "preset", "ultrafast", 0);
 
     bool ok = (avcodec_open2(ctx, codec, &opts) == 0);
@@ -182,7 +184,12 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         if (name == "libx264") {
             av_dict_set(&opts, "preset", "fast", 0);
             av_dict_set(&opts, "tune",   "zerolatency", 0);
+        } else if (name == "libx265") {
+            av_dict_set(&opts, "preset", "fast", 0);
+            av_dict_set(&opts, "tune",   "zerolatency", 0);
         } else if (name == "h264_nvenc") {
+            av_dict_set(&opts, "preset", "p4", 0);
+        } else if (name == "hevc_nvenc") {
             av_dict_set(&opts, "preset", "p4", 0);
         }
         if (use_extras && !cfg.extra_options.empty()) {
@@ -221,6 +228,9 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     impl_->src_h = 0;
 
     // Store stream params for replay buffer.
+    impl_->vsp.codec   = (ctx->codec_id == AV_CODEC_ID_HEVC)
+        ? VideoCodec::H265
+        : VideoCodec::H264;
     impl_->vsp.width   = cfg.width;
     impl_->vsp.height  = cfg.height;
     impl_->vsp.fps_num = cfg.fps;

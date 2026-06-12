@@ -3,9 +3,11 @@
 # The recorder's tray "Settings…" entry launches Monolith.Settings.exe from
 # its own directory, so the published output is dropped next to Monolith.exe.
 # Framework-dependent publish: needs the .NET 8 Desktop Runtime plus the
-# Windows App SDK 1.6 runtime on the target machine.
+# Windows App SDK 2.2 runtime on the target machine.
 
-find_program(DOTNET_EXECUTABLE dotnet)
+find_program(DOTNET_EXECUTABLE
+    NAMES dotnet dotnet.exe
+    PATHS "$ENV{ProgramFiles}/dotnet")
 
 if(DOTNET_EXECUTABLE)
     add_custom_target(settings_app ALL

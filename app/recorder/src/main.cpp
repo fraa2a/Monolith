@@ -22,7 +22,11 @@
 #include "settings_window.h"
 
 #include <atomic>
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -42,13 +46,6 @@ enum Cmd : UINT {
     CMD_PAUSE_RESUME    = 1004,
     CMD_SETTINGS        = 1005,
     CMD_EXIT            = 1006,
-};
-
-enum HotkeyId : int {
-    HK_SAVE_REPLAY     = 1,
-    HK_RECORDING_START = 2,
-    HK_RECORDING_STOP  = 3,
-    HK_PAUSE_RESUME    = 4,
 };
 
 // ── Logging ───────────────────────────────────────────────────────────────────
@@ -150,7 +147,76 @@ static void log_path(const char* tag, const char* prefix, const std::wstring& pa
     log_msg(tag, msg);
 }
 
+static std::wstring utf8_to_wide(const std::string& value)
+{
+    if (value.empty()) return {};
+    int count = MultiByteToWideChar(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        nullptr, 0);
+    if (count <= 0) return {};
+    std::wstring result(static_cast<size_t>(count), L'\0');
+    MultiByteToWideChar(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        result.data(), count);
+    return result;
+}
+
 // ── Globals ───────────────────────────────────────────────────────────────────
+
+static bool apps_use_light_theme()
+{
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    LSTATUS status = RegGetValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"AppsUseLightTheme",
+        RRF_RT_REG_DWORD,
+        nullptr,
+        &value,
+        &size);
+    return status != ERROR_SUCCESS || value != 0;
+}
+
+static void apply_native_window_theme(HWND hwnd)
+{
+    BOOL dark = apps_use_light_theme() ? FALSE : TRUE;
+
+    if (HMODULE dwm = LoadLibraryW(L"dwmapi.dll")) {
+        using DwmSetWindowAttributeFn = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+        auto set_attr = reinterpret_cast<DwmSetWindowAttributeFn>(
+            GetProcAddress(dwm, "DwmSetWindowAttribute"));
+        if (set_attr) {
+            DWORD attr = 20;
+            if (FAILED(set_attr(hwnd, attr, &dark, sizeof(dark)))) {
+                attr = 19;
+                set_attr(hwnd, attr, &dark, sizeof(dark));
+            }
+        }
+        FreeLibrary(dwm);
+    }
+
+    if (HMODULE ux = LoadLibraryW(L"uxtheme.dll")) {
+        using SetPreferredAppModeFn = int (WINAPI*)(int);
+        using FlushMenuThemesFn = void (WINAPI*)();
+        auto set_app_mode = reinterpret_cast<SetPreferredAppModeFn>(
+            GetProcAddress(ux, MAKEINTRESOURCEA(135)));
+        auto flush_menu_themes = reinterpret_cast<FlushMenuThemesFn>(
+            GetProcAddress(ux, MAKEINTRESOURCEA(136)));
+        if (set_app_mode) {
+            set_app_mode(dark ? 2 : 3); // ForceDark / ForceLight.
+            if (flush_menu_themes)
+                flush_menu_themes();
+        }
+
+        using SetWindowThemeFn = HRESULT (WINAPI*)(HWND, LPCWSTR, LPCWSTR);
+        auto set_theme = reinterpret_cast<SetWindowThemeFn>(
+            GetProcAddress(ux, "SetWindowTheme"));
+        if (set_theme)
+            set_theme(hwnd, dark ? L"DarkMode_Explorer" : nullptr, nullptr);
+        FreeLibrary(ux);
+    }
+}
 
 static capture::DisplayCapture      g_video;
 static audio::WasapiCapture         g_audio_system;
@@ -164,6 +230,7 @@ static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
 static std::wstring g_recordings_dir;
+static std::string g_recording_container = "mkv";
 static settings::Config g_settings;
 
 static std::mutex g_status_mutex;
@@ -254,11 +321,13 @@ static void apply_runtime_settings()
     g_replay.configure(rbcfg);
 
     g_recordings_dir = g_settings.recordings_directory;
+    g_recording_container = g_settings.recording_container;
 
     char msg[128];
-    snprintf(msg, sizeof(msg), "settings applied: replay=%ds / %lldMB",
+    snprintf(msg, sizeof(msg), "settings applied: replay=%ds / %lldMB recording=%s",
              g_settings.replay_duration_seconds,
-             static_cast<long long>(g_settings.replay_memory_budget_mb));
+             static_cast<long long>(g_settings.replay_memory_budget_mb),
+             g_recording_container.c_str());
     log_msg("settings", msg);
     log_path("replay", "clips dir: ", g_settings.clips_directory);
     log_path("recording", "recordings dir: ", g_recordings_dir);
@@ -274,6 +343,7 @@ static void load_app_settings()
 
     g_settings = result.config;
     g_recordings_dir = g_settings.recordings_directory;
+    g_recording_container = g_settings.recording_container;
 
     for (const auto& warning : result.warnings)
         log_msg("settings", warning.c_str());
@@ -286,12 +356,24 @@ static void show_settings(HWND hwnd)
     settings_window::show(hwnd, WM_SETTINGS_RELOAD);
 }
 
-static void reload_settings_from_disk()
+static void hotkeys_register(HWND hwnd);
+static void hotkeys_unregister(HWND hwnd);
+
+static void reload_settings_from_disk(HWND hwnd)
 {
     settings::Config previous = g_settings;
     load_app_settings();
     apply_runtime_settings();
     log_msg("settings", "settings reloaded from WinUI app");
+
+    if (previous.hotkey_save_replay      != g_settings.hotkey_save_replay ||
+        previous.hotkey_recording_start  != g_settings.hotkey_recording_start ||
+        previous.hotkey_recording_stop   != g_settings.hotkey_recording_stop ||
+        previous.hotkey_pause_resume     != g_settings.hotkey_pause_resume) {
+        hotkeys_unregister(hwnd);
+        hotkeys_register(hwnd);
+        log_msg("hotkey", "hotkeys reloaded from settings");
+    }
 
     // Capture/encoder settings are read once at media_start; flag the
     // difference instead of pretending they were applied live.
@@ -426,7 +508,7 @@ static void media_start(HWND hwnd)
                             ? g_settings.extra_ffmpeg_options.c_str() : "");
                     log_msg("encoding", enc_msg);
                 } else {
-                    log_msg("encoding", "WARNING: no H.264 encoder - replay disabled");
+                    log_msg("encoding", "WARNING: no video encoder - replay disabled");
                 }
 
                 if (enc_ok) {
@@ -543,6 +625,8 @@ static void tray_add(HWND hwnd)
 
 static void tray_remove() { Shell_NotifyIconW(NIM_DELETE, &g_nid); }
 
+static std::string hotkey_or_default(const std::string& configured, const char* fallback);
+
 static void tray_show_menu(HWND hwnd)
 {
     HMENU menu = CreatePopupMenu();
@@ -550,15 +634,23 @@ static void tray_show_menu(HWND hwnd)
     UINT start_flags = (state == recording::RecordingState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
     UINT stop_flags  = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
     UINT pause_flags = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
-    const wchar_t* pause_text =
+    std::wstring save_text = L"Save Replay\t" + utf8_to_wide(
+        hotkey_or_default(g_settings.hotkey_save_replay, "Ctrl+Shift+F8"));
+    std::wstring start_text = L"Start Recording\t" + utf8_to_wide(
+        hotkey_or_default(g_settings.hotkey_recording_start, "Ctrl+Shift+F9"));
+    std::wstring stop_text = L"Stop Recording\t" + utf8_to_wide(
+        hotkey_or_default(g_settings.hotkey_recording_stop, "Ctrl+Shift+F10"));
+    std::wstring pause_hotkey = utf8_to_wide(
+        hotkey_or_default(g_settings.hotkey_pause_resume, "Ctrl+Shift+F11"));
+    std::wstring pause_text =
         (state == recording::RecordingState::Paused)
-            ? L"Resume Recording\tCtrl+Shift+F11"
-            : L"Pause Recording\tCtrl+Shift+F11";
-    AppendMenuW(menu, MF_STRING,             CMD_SAVE_REPLAY,     L"Save Replay\tCtrl+Shift+F8");
+            ? (L"Resume Recording\t" + pause_hotkey)
+            : (L"Pause Recording\t" + pause_hotkey);
+    AppendMenuW(menu, MF_STRING,             CMD_SAVE_REPLAY,     save_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
-    AppendMenuW(menu, start_flags,            CMD_RECORDING_START, L"Start Recording\tCtrl+Shift+F9");
-    AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  L"Stop Recording\tCtrl+Shift+F10");
-    AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text);
+    AppendMenuW(menu, start_flags,            CMD_RECORDING_START, start_text.c_str());
+    AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  stop_text.c_str());
+    AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Settings\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
@@ -572,39 +664,257 @@ static void tray_show_menu(HWND hwnd)
 
 // ── Hotkeys ───────────────────────────────────────────────────────────────────
 
+struct HotkeySpec {
+    std::vector<UINT> keys;
+};
+
+struct HotkeyBinding {
+    Cmd command;
+    std::string name;
+    std::string label;
+    HotkeySpec spec;
+    bool active = false;
+};
+
+static HHOOK g_hotkey_hook = nullptr;
+static HWND g_hotkey_hwnd = nullptr;
+static bool g_key_down[256] = {};
+static std::vector<HotkeyBinding> g_hotkey_bindings;
+
+static std::string upper_ascii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return value;
+}
+
+static UINT key_vk(const std::string& token)
+{
+    std::string key = upper_ascii(token);
+    if (key.size() == 1 && key[0] >= 'A' && key[0] <= 'Z')
+        return static_cast<UINT>(key[0]);
+    if (key.size() == 1 && key[0] >= '0' && key[0] <= '9')
+        return static_cast<UINT>(key[0]);
+    if (key.size() == 1) {
+        switch (key[0]) {
+        case ';': return VK_OEM_1;
+        case '=': return VK_OEM_PLUS;
+        case ',': return VK_OEM_COMMA;
+        case '-': return VK_OEM_MINUS;
+        case '.': return VK_OEM_PERIOD;
+        case '/': return VK_OEM_2;
+        case '`': return VK_OEM_3;
+        case '[': return VK_OEM_4;
+        case '\\': return VK_OEM_5;
+        case ']': return VK_OEM_6;
+        case '\'': return VK_OEM_7;
+        default: break;
+        }
+    }
+    if (key.size() >= 2 && key[0] == 'F') {
+        int n = atoi(key.c_str() + 1);
+        if (n >= 1 && n <= 24) return VK_F1 + static_cast<UINT>(n - 1);
+    }
+    if (key == "SPACE") return VK_SPACE;
+    if (key == "TAB") return VK_TAB;
+    if (key == "ENTER") return VK_RETURN;
+    if (key == "BACKSPACE") return VK_BACK;
+    if (key == "ESC" || key == "ESCAPE") return VK_ESCAPE;
+    if (key == "INSERT" || key == "INS") return VK_INSERT;
+    if (key == "DELETE" || key == "DEL") return VK_DELETE;
+    if (key == "HOME") return VK_HOME;
+    if (key == "END") return VK_END;
+    if (key == "PAGEUP" || key == "PGUP") return VK_PRIOR;
+    if (key == "PAGEDOWN" || key == "PGDN") return VK_NEXT;
+    if (key == "UP") return VK_UP;
+    if (key == "DOWN") return VK_DOWN;
+    if (key == "LEFT") return VK_LEFT;
+    if (key == "RIGHT") return VK_RIGHT;
+    if (key == "NUMPAD0") return VK_NUMPAD0;
+    if (key == "NUMPAD1") return VK_NUMPAD1;
+    if (key == "NUMPAD2") return VK_NUMPAD2;
+    if (key == "NUMPAD3") return VK_NUMPAD3;
+    if (key == "NUMPAD4") return VK_NUMPAD4;
+    if (key == "NUMPAD5") return VK_NUMPAD5;
+    if (key == "NUMPAD6") return VK_NUMPAD6;
+    if (key == "NUMPAD7") return VK_NUMPAD7;
+    if (key == "NUMPAD8") return VK_NUMPAD8;
+    if (key == "NUMPAD9") return VK_NUMPAD9;
+    if (key == "NUMPADMULTIPLY") return VK_MULTIPLY;
+    if (key == "NUMPADADD") return VK_ADD;
+    if (key == "NUMPADSUBTRACT") return VK_SUBTRACT;
+    if (key == "NUMPADDECIMAL") return VK_DECIMAL;
+    if (key == "NUMPADDIVIDE") return VK_DIVIDE;
+    return 0;
+}
+
+static bool parse_hotkey(const std::string& text, HotkeySpec* out)
+{
+    HotkeySpec spec;
+    size_t start = 0;
+    bool saw_key = false;
+    while (start <= text.size()) {
+        size_t end = text.find('+', start);
+        std::string token = text.substr(start, end == std::string::npos ? end : end - start);
+        token.erase(std::remove_if(token.begin(), token.end(),
+            [](unsigned char c) { return std::isspace(c) != 0; }), token.end());
+        if (token.empty()) return false;
+
+        std::string upper = upper_ascii(token);
+        UINT vk = 0;
+        if (upper == "CTRL" || upper == "CONTROL") vk = VK_CONTROL;
+        else if (upper == "SHIFT") vk = VK_SHIFT;
+        else if (upper == "ALT") vk = VK_MENU;
+        else if (upper == "WIN" || upper == "WINDOWS") vk = VK_LWIN;
+        else vk = key_vk(token);
+
+        if (vk == 0) return false;
+        if (std::find(spec.keys.begin(), spec.keys.end(), vk) != spec.keys.end())
+            return false;
+        spec.keys.push_back(vk);
+        if (vk != VK_CONTROL && vk != VK_SHIFT && vk != VK_MENU &&
+            vk != VK_LWIN && vk != VK_RWIN)
+            saw_key = true;
+
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+
+    if (!saw_key || spec.keys.empty()) return false;
+    *out = spec;
+    return true;
+}
+
+static std::string hotkey_or_default(const std::string& configured, const char* fallback)
+{
+    HotkeySpec spec;
+    return parse_hotkey(configured, &spec) ? configured : std::string(fallback);
+}
+
+static void register_one_hotkey(
+    HWND hwnd,
+    Cmd command,
+    const char* name,
+    const std::string& configured,
+    const char* fallback)
+{
+    (void)hwnd;
+    std::string label = hotkey_or_default(configured, fallback);
+    HotkeySpec spec;
+    if (!parse_hotkey(label, &spec)) {
+        log_msg("hotkey", (std::string("WARNING: ") + name + " (" + label + ") invalid").c_str());
+        return;
+    }
+    g_hotkey_bindings.push_back({ command, name, label, std::move(spec), false });
+    log_msg("hotkey", (std::string(name) + " (" + label + ") registered").c_str());
+}
+
+static bool key_down(UINT vk)
+{
+    if (vk == VK_CONTROL)
+        return g_key_down[VK_CONTROL] || g_key_down[VK_LCONTROL] || g_key_down[VK_RCONTROL];
+    if (vk == VK_SHIFT)
+        return g_key_down[VK_SHIFT] || g_key_down[VK_LSHIFT] || g_key_down[VK_RSHIFT];
+    if (vk == VK_MENU)
+        return g_key_down[VK_MENU] || g_key_down[VK_LMENU] || g_key_down[VK_RMENU];
+    if (vk == VK_LWIN || vk == VK_RWIN)
+        return g_key_down[VK_LWIN] || g_key_down[VK_RWIN];
+    return vk < 256 && g_key_down[vk];
+}
+
+static bool hotkey_down(const HotkeySpec& spec)
+{
+    for (UINT vk : spec.keys) {
+        if (!key_down(vk)) return false;
+    }
+    return true;
+}
+
+static void set_key_state(UINT vk, bool down)
+{
+    if (vk >= 256) return;
+    g_key_down[vk] = down;
+    if (vk == VK_LCONTROL || vk == VK_RCONTROL) g_key_down[VK_CONTROL] = down;
+    if (vk == VK_LSHIFT || vk == VK_RSHIFT) g_key_down[VK_SHIFT] = down;
+    if (vk == VK_LMENU || vk == VK_RMENU) g_key_down[VK_MENU] = down;
+}
+
+static LRESULT CALLBACK keyboard_hook_proc(int code, WPARAM wp, LPARAM lp)
+{
+    if (code < 0)
+        return CallNextHookEx(g_hotkey_hook, code, wp, lp);
+
+    auto* info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lp);
+    const bool down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+    const bool up = (wp == WM_KEYUP || wp == WM_SYSKEYUP);
+    if (!down && !up)
+        return CallNextHookEx(g_hotkey_hook, code, wp, lp);
+
+    set_key_state(info->vkCode, down);
+
+    if (up) {
+        for (auto& binding : g_hotkey_bindings) {
+            if (!hotkey_down(binding.spec))
+                binding.active = false;
+        }
+        return CallNextHookEx(g_hotkey_hook, code, wp, lp);
+    }
+
+    for (auto& binding : g_hotkey_bindings) {
+        if (!hotkey_down(binding.spec)) {
+            binding.active = false;
+            continue;
+        }
+
+        if (!binding.active && g_hotkey_hwnd) {
+            binding.active = true;
+            PostMessageW(g_hotkey_hwnd, WM_COMMAND, MAKEWPARAM(binding.command, 0), 0);
+        }
+        break;
+    }
+
+    return CallNextHookEx(g_hotkey_hook, code, wp, lp);
+}
+
 static void hotkeys_register(HWND hwnd)
 {
-    if (!RegisterHotKey(hwnd, HK_SAVE_REPLAY,
-                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F8))
-        log_msg("hotkey", "WARNING: save_replay (Ctrl+Shift+F8) failed - key in use");
-    else
-        log_msg("hotkey", "save_replay (Ctrl+Shift+F8) registered");
+    hotkeys_unregister(hwnd);
+    g_hotkey_hwnd = hwnd;
+    memset(g_key_down, 0, sizeof(g_key_down));
 
-    if (!RegisterHotKey(hwnd, HK_RECORDING_START,
-                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F9))
-        log_msg("hotkey", "WARNING: recording_start (Ctrl+Shift+F9) failed - key in use");
-    else
-        log_msg("hotkey", "recording_start (Ctrl+Shift+F9) registered");
+    register_one_hotkey(hwnd, CMD_SAVE_REPLAY, "save_replay",
+        g_settings.hotkey_save_replay, "Ctrl+Shift+F8");
+    register_one_hotkey(hwnd, CMD_RECORDING_START, "recording_start",
+        g_settings.hotkey_recording_start, "Ctrl+Shift+F9");
+    register_one_hotkey(hwnd, CMD_RECORDING_STOP, "recording_stop",
+        g_settings.hotkey_recording_stop, "Ctrl+Shift+F10");
+    register_one_hotkey(hwnd, CMD_PAUSE_RESUME, "pause_resume",
+        g_settings.hotkey_pause_resume, "Ctrl+Shift+F11");
 
-    if (!RegisterHotKey(hwnd, HK_RECORDING_STOP,
-                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F10))
-        log_msg("hotkey", "WARNING: recording_stop (Ctrl+Shift+F10) failed - key in use");
-    else
-        log_msg("hotkey", "recording_stop (Ctrl+Shift+F10) registered");
+    std::sort(g_hotkey_bindings.begin(), g_hotkey_bindings.end(),
+        [](const HotkeyBinding& a, const HotkeyBinding& b) {
+            return a.spec.keys.size() > b.spec.keys.size();
+        });
 
-    if (!RegisterHotKey(hwnd, HK_PAUSE_RESUME,
-                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F11))
-        log_msg("hotkey", "WARNING: pause_resume (Ctrl+Shift+F11) failed - key in use");
-    else
-        log_msg("hotkey", "pause_resume (Ctrl+Shift+F11) registered");
+    g_hotkey_hook = SetWindowsHookExW(
+        WH_KEYBOARD_LL,
+        keyboard_hook_proc,
+        GetModuleHandleW(nullptr),
+        0);
+    if (!g_hotkey_hook)
+        log_msg("hotkey", "WARNING: low-level keyboard hook failed");
 }
 
 static void hotkeys_unregister(HWND hwnd)
 {
-    UnregisterHotKey(hwnd, HK_SAVE_REPLAY);
-    UnregisterHotKey(hwnd, HK_RECORDING_START);
-    UnregisterHotKey(hwnd, HK_RECORDING_STOP);
-    UnregisterHotKey(hwnd, HK_PAUSE_RESUME);
+    (void)hwnd;
+    if (g_hotkey_hook) {
+        UnhookWindowsHookEx(g_hotkey_hook);
+        g_hotkey_hook = nullptr;
+    }
+    g_hotkey_bindings.clear();
+    g_hotkey_hwnd = nullptr;
+    memset(g_key_down, 0, sizeof(g_key_down));
 }
 
 // ── Command dispatch ──────────────────────────────────────────────────────────
@@ -629,7 +939,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
         break;
     }
     case CMD_RECORDING_START:
-        if (g_recording.start(g_recordings_dir)) {
+        if (g_recording.start(g_recordings_dir, g_recording_container)) {
             log_path("recording", "recording started: ", g_recording.current_path());
         } else {
             char msg[96];
@@ -685,6 +995,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_DESTROY:
+        settings_window::close_running();
         media_stop();
         hotkeys_unregister(hwnd);
         tray_remove();
@@ -693,27 +1004,22 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_TRAYICON:
-        if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONDBLCLK)
+        if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONDBLCLK) {
+            apply_native_window_theme(hwnd);
             tray_show_menu(hwnd);
+        }
+        return 0;
+
+    case WM_SETTINGCHANGE:
+        apply_native_window_theme(hwnd);
         return 0;
 
     case WM_COMMAND:
         dispatch(static_cast<Cmd>(LOWORD(wp)), hwnd);
         return 0;
 
-    case WM_HOTKEY:
-        if (wp == HK_SAVE_REPLAY)
-            dispatch(CMD_SAVE_REPLAY, hwnd);
-        else if (wp == HK_RECORDING_START)
-            dispatch(CMD_RECORDING_START, hwnd);
-        else if (wp == HK_RECORDING_STOP)
-            dispatch(CMD_RECORDING_STOP, hwnd);
-        else if (wp == HK_PAUSE_RESUME)
-            dispatch(CMD_PAUSE_RESUME, hwnd);
-        return 0;
-
     case WM_SETTINGS_RELOAD:
-        reload_settings_from_disk();
+        reload_settings_from_disk(hwnd);
         return 0;
 
     default:
@@ -750,15 +1056,16 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     }
 
     HWND hwnd = CreateWindowExW(
-        0, kWindowClass, kAppName,
-        0, 0, 0, 0, 0,
-        HWND_MESSAGE, nullptr, hInst, nullptr);
+        WS_EX_TOOLWINDOW, kWindowClass, kAppName,
+        WS_OVERLAPPED, 0, 0, 0, 0,
+        nullptr, nullptr, hInst, nullptr);
     if (!hwnd) {
         log_msg("app", "FATAL: CreateWindowExW failed");
         winrt::uninit_apartment();
         CloseHandle(mutex);
         return 1;
     }
+    apply_native_window_theme(hwnd);
 
     MSG msg = {};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

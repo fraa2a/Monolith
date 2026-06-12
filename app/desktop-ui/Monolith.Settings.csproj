@@ -11,11 +11,20 @@
     <WindowsPackageType>None</WindowsPackageType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <WindowsSdkPackageVersion>10.0.19041.38</WindowsSdkPackageVersion>
+    <WindowsSdkPackageVersion>10.0.26100.56</WindowsSdkPackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
   </ItemGroup>
+
+  <Target Name="CopyPriFileToPublishDirectory"
+          AfterTargets="Publish"
+          Condition="'$(PublishDir)' != '' and Exists('$(TargetDir)$(AssemblyName).pri')">
+    <Copy
+        SourceFiles="$(TargetDir)$(AssemblyName).pri"
+        DestinationFiles="$(PublishDir)$(AssemblyName).pri"
+        SkipUnchangedFiles="true" />
+  </Target>
 </Project>

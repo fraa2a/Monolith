@@ -35,6 +35,7 @@ struct ManualRecorder::Impl {
     mutable std::mutex          mutex;
     RecordingState              state = RecordingState::Idle;
     std::wstring                output_dir;
+    std::string                 container = "mkv";
     std::wstring                path;
 
     encoding::VideoStreamParams vsp;
@@ -66,16 +67,36 @@ static std::string wcs_to_utf8(const std::wstring& ws)
     return s;
 }
 
-static std::wstring generate_recording_path(const std::wstring& dir)
+static const char* muxer_name(const std::string& container)
+{
+    return container == "mp4" ? "mp4" : "matroska";
+}
+
+static const wchar_t* file_extension(const std::string& container)
+{
+    return container == "mp4" ? L"mp4" : L"mkv";
+}
+
+static AVCodecID video_codec_id(encoding::VideoCodec codec)
+{
+    return codec == encoding::VideoCodec::H265
+        ? AV_CODEC_ID_HEVC
+        : AV_CODEC_ID_H264;
+}
+
+static std::wstring generate_recording_path(
+    const std::wstring& dir,
+    const std::string& container)
 {
     SYSTEMTIME st;
     GetLocalTime(&st);
     wchar_t path[MAX_PATH];
     swprintf_s(path, MAX_PATH,
-        L"%s\\%04d%02d%02d_%02d%02d%02d_recording.mkv",
+        L"%s\\%04d%02d%02d_%02d%02d%02d_recording.%s",
         dir.c_str(),
         st.wYear, st.wMonth, st.wDay,
-        st.wHour, st.wMinute, st.wSecond);
+        st.wHour, st.wMinute, st.wSecond,
+        file_extension(container));
     return path;
 }
 
@@ -101,14 +122,14 @@ static bool open_output(ImplT* impl)
     std::string path_utf = wcs_to_utf8(impl->path);
     if (path_utf.empty()) return false;
 
-    if (avformat_alloc_output_context2(&impl->fmt, nullptr, "matroska",
+    if (avformat_alloc_output_context2(&impl->fmt, nullptr, muxer_name(impl->container),
                                        path_utf.c_str()) < 0)
         return false;
 
     impl->video_stream = avformat_new_stream(impl->fmt, nullptr);
     if (!impl->video_stream) return false;
     impl->video_stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-    impl->video_stream->codecpar->codec_id   = AV_CODEC_ID_H264;
+    impl->video_stream->codecpar->codec_id   = video_codec_id(impl->vsp.codec);
     impl->video_stream->codecpar->width      = impl->vsp.width;
     impl->video_stream->codecpar->height     = impl->vsp.height;
     impl->video_stream->time_base            = {impl->vsp.tb_num, impl->vsp.tb_den};
@@ -125,7 +146,13 @@ static bool open_output(ImplT* impl)
     if (!copy_extradata(impl->audio_stream->codecpar, impl->asp.extradata)) return false;
 
     if (avio_open(&impl->fmt->pb, path_utf.c_str(), AVIO_FLAG_WRITE) < 0) return false;
-    if (avformat_write_header(impl->fmt, nullptr) < 0) return false;
+
+    AVDictionary* opts = nullptr;
+    if (impl->container == "mp4")
+        av_dict_set(&opts, "movflags", "+faststart", 0);
+    const bool header_ok = avformat_write_header(impl->fmt, &opts) >= 0;
+    av_dict_free(&opts);
+    if (!header_ok) return false;
 
     impl->header_written = true;
     return true;
@@ -218,12 +245,13 @@ void ManualRecorder::set_audio_params(encoding::AudioStreamParams const& p)
     impl_->asp_set = true;
 }
 
-bool ManualRecorder::start(std::wstring output_dir)
+bool ManualRecorder::start(std::wstring output_dir, std::string container)
 {
     std::lock_guard lk(impl_->mutex);
     if (impl_->state != RecordingState::Idle) return false;
     impl_->output_dir = std::move(output_dir);
-    impl_->path = generate_recording_path(impl_->output_dir);
+    impl_->container = (container == "mp4") ? "mp4" : "mkv";
+    impl_->path = generate_recording_path(impl_->output_dir, impl_->container);
     impl_->state = RecordingState::Recording;
     return true;
 }

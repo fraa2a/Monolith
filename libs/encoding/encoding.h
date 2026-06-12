@@ -19,12 +19,18 @@ struct EncodedPacket {
 
 using PacketSink = std::function<void(EncodedPacket)>;
 
-// Codec metadata needed by the replay buffer to write MKV stream headers.
+enum class VideoCodec {
+    H264,
+    H265,
+};
+
+// Codec metadata needed by muxers to write stream headers.
 struct VideoStreamParams {
+    VideoCodec codec = VideoCodec::H264;
     int width, height;
     int fps_num, fps_den;
     int tb_num, tb_den;
-    std::vector<uint8_t> extradata; // SPS/PPS (H.264 global header)
+    std::vector<uint8_t> extradata; // global headers (SPS/PPS/VPS)
 };
 
 struct AudioStreamParams {

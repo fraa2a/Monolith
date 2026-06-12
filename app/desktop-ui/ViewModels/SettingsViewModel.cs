@@ -20,6 +20,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     // replay_buffer
     private string replayDurationSeconds = "30";
     private string replayMemoryBudgetMb = "512";
+    private string recordingContainer = "mkv";
+    private string saveReplayHotkey = "Ctrl+Shift+F8";
+    private string recordingStartHotkey = "Ctrl+Shift+F9";
+    private string recordingStopHotkey = "Ctrl+Shift+F10";
+    private string pauseResumeHotkey = "Ctrl+Shift+F11";
 
     // capture — restart-required fields
     private string monitorDevice = "";
@@ -84,6 +89,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     {
         get => replayMemoryBudgetMb;
         set => SetField(ref replayMemoryBudgetMb, value);
+    }
+
+    public string RecordingContainer
+    {
+        get => recordingContainer;
+        set => SetField(ref recordingContainer, value);
     }
 
     // ── capture ──────────────────────────────────────────────────────────────
@@ -152,10 +163,29 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     // ── hotkeys (read-only) ─────────────────────────────────────────────────
 
-    public string SaveReplayHotkey { get; private set; } = "Ctrl+Shift+F8";
-    public string RecordingStartHotkey { get; private set; } = "Ctrl+Shift+F9";
-    public string RecordingStopHotkey { get; private set; } = "Ctrl+Shift+F10";
-    public string PauseResumeHotkey { get; private set; } = "Ctrl+Shift+F11";
+    public string SaveReplayHotkey
+    {
+        get => saveReplayHotkey;
+        set => SetField(ref saveReplayHotkey, value);
+    }
+
+    public string RecordingStartHotkey
+    {
+        get => recordingStartHotkey;
+        set => SetField(ref recordingStartHotkey, value);
+    }
+
+    public string RecordingStopHotkey
+    {
+        get => recordingStopHotkey;
+        set => SetField(ref recordingStopHotkey, value);
+    }
+
+    public string PauseResumeHotkey
+    {
+        get => pauseResumeHotkey;
+        set => SetField(ref pauseResumeHotkey, value);
+    }
 
     // ── runtime status ────────────────────────────────────────────────────────
 
@@ -230,6 +260,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         tempDirectory = data.TempDirectory;
         ReplayDurationSeconds = data.ReplayDurationSeconds;
         ReplayMemoryBudgetMb = data.ReplayMemoryBudgetMb;
+        RecordingContainer = data.RecordingContainer == "mp4" ? "mp4" : "mkv";
         SaveReplayHotkey = data.SaveReplayHotkey;
         RecordingStartHotkey = data.RecordingStartHotkey;
         RecordingStopHotkey = data.RecordingStopHotkey;
@@ -275,6 +306,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             return false;
         }
 
+        SaveReplayHotkey = NormalizeHotkey(SaveReplayHotkey);
+        RecordingStartHotkey = NormalizeHotkey(RecordingStartHotkey);
+        RecordingStopHotkey = NormalizeHotkey(RecordingStopHotkey);
+        PauseResumeHotkey = NormalizeHotkey(PauseResumeHotkey);
+
         service.Save(new SettingsData
         {
             ClipsDirectory = ClipsDirectory,
@@ -282,6 +318,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             TempDirectory = tempDirectory,
             ReplayDurationSeconds = ReplayDurationSeconds,
             ReplayMemoryBudgetMb = ReplayMemoryBudgetMb,
+            RecordingContainer = RecordingContainer,
             SaveReplayHotkey = SaveReplayHotkey,
             RecordingStartHotkey = RecordingStartHotkey,
             RecordingStopHotkey = RecordingStopHotkey,
@@ -349,7 +386,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 break;
             case "Hotkeys":
                 PageTitle = "Settings / Hotkeys";
-                PageSubtitle = "Current global shortcuts. Rebinding comes later.";
+                PageSubtitle = "Global shortcuts apply after save and Settings closes.";
+                break;
+            case "Advanced":
+                PageTitle = "Settings / Advanced";
+                PageSubtitle = "Diagnostics paths are read-only.";
                 break;
             default:
                 PageTitle = "Settings";
@@ -415,6 +456,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             return false;
         }
 
+        if (RecordingContainer != "mkv" && RecordingContainer != "mp4")
+        {
+            error = "Recording format must be MKV or MP4.";
+            return false;
+        }
+
         if (!IsIntInRange(BitrateKbps.ToString(), 1000, 100000))
         {
             error = "Video bitrate must be 1000 to 100000 kbps.";
@@ -436,6 +483,31 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             }
         }
 
+        (string Name, string Value)[] hotkeys =
+        {
+            ("Save replay", SaveReplayHotkey),
+            ("Start recording", RecordingStartHotkey),
+            ("Stop recording", RecordingStopHotkey),
+            ("Pause / resume", PauseResumeHotkey),
+        };
+
+        HashSet<string> seenHotkeys = new(StringComparer.OrdinalIgnoreCase);
+        foreach ((string name, string value) in hotkeys)
+        {
+            if (!IsValidHotkey(value))
+            {
+                error = $"{name} hotkey must be a valid key or key combination.";
+                return false;
+            }
+
+            string normalized = NormalizeHotkey(value);
+            if (!seenHotkeys.Add(normalized))
+            {
+                error = "Hotkeys must be unique.";
+                return false;
+            }
+        }
+
         error = "";
         return true;
     }
@@ -445,8 +517,129 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         return int.TryParse(text, out int value) && value >= min && value <= max;
     }
 
+    private static bool IsValidHotkey(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        string[] parts = text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 1)
+            return false;
+
+        bool sawKey = false;
+        HashSet<string> modifiers = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> keys = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string part in parts)
+        {
+            string? modifier = NormalizeHotkeyModifier(part);
+            if (modifier is not null)
+            {
+                if (!modifiers.Add(modifier))
+                    return false;
+                continue;
+            }
+
+            if (!IsValidHotkeyKey(part))
+                return false;
+
+            if (!keys.Add(NormalizeHotkeyKey(part)))
+                return false;
+            sawKey = true;
+        }
+
+        return sawKey;
+    }
+
+    private static bool IsValidHotkeyKey(string key)
+    {
+        string upper = key.Trim().ToUpperInvariant();
+        if (upper.Length == 1)
+        {
+            char c = upper[0];
+            return (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9')
+                || ";=,-./`[]\\'".Contains(c);
+        }
+
+        if (upper.Length >= 2 && upper[0] == 'F' &&
+            int.TryParse(upper[1..], out int functionKey))
+            return functionKey >= 1 && functionKey <= 24;
+
+        return upper is "SPACE" or "TAB" or "ESC" or "ESCAPE"
+            or "ENTER" or "BACKSPACE"
+            or "INSERT" or "INS" or "DELETE" or "DEL"
+            or "HOME" or "END"
+            or "PAGEUP" or "PGUP" or "PAGEDOWN" or "PGDN"
+            or "UP" or "DOWN" or "LEFT" or "RIGHT"
+            or "NUMPAD0" or "NUMPAD1" or "NUMPAD2" or "NUMPAD3" or "NUMPAD4"
+            or "NUMPAD5" or "NUMPAD6" or "NUMPAD7" or "NUMPAD8" or "NUMPAD9"
+            or "NUMPADMULTIPLY" or "NUMPADADD" or "NUMPADSUBTRACT"
+            or "NUMPADDECIMAL" or "NUMPADDIVIDE";
+    }
+
+    private static string NormalizeHotkey(string text)
+    {
+        string[] parts = text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        List<string> modifiers = new();
+        List<string> keys = new();
+
+        foreach (string part in parts)
+        {
+            string? modifier = NormalizeHotkeyModifier(part);
+            if (modifier is not null)
+                modifiers.Add(modifier);
+            else
+                keys.Add(NormalizeHotkeyKey(part));
+        }
+
+        modifiers.AddRange(keys);
+        return string.Join("+", modifiers);
+    }
+
+    private static string? NormalizeHotkeyModifier(string token)
+    {
+        return token.Trim().ToUpperInvariant() switch
+        {
+            "CTRL" or "CONTROL" => "Ctrl",
+            "SHIFT" => "Shift",
+            "ALT" => "Alt",
+            "WIN" or "WINDOWS" => "Win",
+            _ => null,
+        };
+    }
+
+    private static string NormalizeHotkeyKey(string token)
+    {
+        string upper = token.Trim().ToUpperInvariant();
+        if (upper.Length == 1)
+            return upper;
+
+        if (upper.Length >= 2 && upper[0] == 'F' &&
+            int.TryParse(upper[1..], out int functionKey))
+            return $"F{functionKey}";
+
+        return upper switch
+        {
+            "ESCAPE" => "Esc",
+            "ESC" => "Esc",
+            "ENTER" => "Enter",
+            "BACKSPACE" => "Backspace",
+            "INS" => "Insert",
+            "INSERT" => "Insert",
+            "DEL" => "Delete",
+            "DELETE" => "Delete",
+            "PGUP" => "PageUp",
+            "PAGEUP" => "PageUp",
+            "PGDN" => "PageDown",
+            "PAGEDOWN" => "PageDown",
+            _ => upper[0] + upper[1..].ToLowerInvariant(),
+        };
+    }
+
     private void NotifyHotkeys()
     {
+        OnPropertyChanged(nameof(RecordingContainer));
         OnPropertyChanged(nameof(SaveReplayHotkey));
         OnPropertyChanged(nameof(RecordingStartHotkey));
         OnPropertyChanged(nameof(RecordingStopHotkey));

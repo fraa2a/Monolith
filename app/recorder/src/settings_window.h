@@ -11,5 +11,6 @@
 namespace settings_window {
 
 void show(HWND owner, UINT reload_message);
+void close_running();
 
 } // namespace settings_window
