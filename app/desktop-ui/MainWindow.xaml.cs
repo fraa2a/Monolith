@@ -84,7 +84,6 @@ public sealed partial class MainWindow : Window
 
         sw.Restart();
         ConfigureWindow();
-<<<<<<< HEAD
         PopulateCaptureCombos();
         SelectRecordingFormat();
         SelectClipFormat();
@@ -92,10 +91,7 @@ public sealed partial class MainWindow : Window
         RefreshAudioSourcesList();
         UpdateCaptureBorderWarning();
         SyncComponentToggles();
-=======
         StartupTrace.MarkDuration("ConfigureWindow", sw.ElapsedMilliseconds);
-
->>>>>>> origin/main
         UpdateCorruptConfigBar();
     }
 
