@@ -13,6 +13,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private bool hasUnsavedChanges;
     private string clipsDirectory = "";
     private string recordingsDirectory = "";
+    private string tempDirectory = "";
     private string replayDurationSeconds = "30";
     private string replayMemoryBudgetMb = "512";
     private string pageTitle = "Settings / Basic";
@@ -93,6 +94,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         SettingsData data = service.Load();
         ClipsDirectory = data.ClipsDirectory;
         RecordingsDirectory = data.RecordingsDirectory;
+        tempDirectory = data.TempDirectory;
         ReplayDurationSeconds = data.ReplayDurationSeconds;
         ReplayMemoryBudgetMb = data.ReplayMemoryBudgetMb;
         SaveReplayHotkey = data.SaveReplayHotkey;
@@ -118,6 +120,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         {
             ClipsDirectory = ClipsDirectory,
             RecordingsDirectory = RecordingsDirectory,
+            TempDirectory = tempDirectory,
             ReplayDurationSeconds = ReplayDurationSeconds,
             ReplayMemoryBudgetMb = ReplayMemoryBudgetMb,
             SaveReplayHotkey = SaveReplayHotkey,
