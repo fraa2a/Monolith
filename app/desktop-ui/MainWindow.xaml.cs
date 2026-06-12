@@ -1,3 +1,4 @@
+using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -16,7 +17,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        DataContext = viewModel;
+        RootLayout.DataContext = viewModel;
         viewModel.Load();
         ConfigureWindow();
     }
@@ -24,7 +25,7 @@ public sealed partial class MainWindow : Window
     private void ConfigureWindow()
     {
         nint hwnd = WindowNative.GetWindowHandle(this);
-        WindowId windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+        WindowId windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
         appWindow = AppWindow.GetFromWindowId(windowId);
         appWindow.Title = "Monolith Settings";
         appWindow.Resize(new Windows.Graphics.SizeInt32(1160, 760));
