@@ -7,7 +7,7 @@
     mc:Ignorable="d"
     Title="Monolith Settings">
 
-    <Grid x:Name="RootLayout" Background="#111111">
+    <Grid x:Name="RootLayout" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
         <NavigationView
             x:Name="RootNav"
             PaneDisplayMode="Left"
@@ -24,6 +24,7 @@
                 <NavigationViewItem x:Name="NavCapture"    Content="Capture"   Tag="Capture" />
                 <NavigationViewItem x:Name="NavAudio"      Content="Audio"     Tag="Audio" />
                 <NavigationViewItem x:Name="NavHotkeys"    Content="Hotkeys"   Tag="Hotkeys" />
+                <NavigationViewItem x:Name="NavAdvanced"   Content="Advanced"  Tag="Advanced" />
             </NavigationView.MenuItems>
 
             <Border Padding="32,24,32,24">
@@ -36,8 +37,8 @@
 
                     <!-- Page header -->
                     <StackPanel Grid.Row="0" Spacing="4">
-                        <TextBlock Text="{Binding PageTitle}" FontSize="28" FontWeight="SemiBold" Foreground="#F6F6F6" />
-                        <TextBlock Text="{Binding PageSubtitle}" FontSize="14" Foreground="#BDBDBD" />
+                        <TextBlock Text="{Binding PageTitle}" FontSize="28" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                        <TextBlock Text="{Binding PageSubtitle}" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <InfoBar
                             x:Name="GlobalStatusBar"
                             Margin="0,14,0,0"
@@ -52,26 +53,10 @@
 
                             <!-- ══ GENERAL PAGE ══════════════════════════════════ -->
                             <StackPanel x:Name="GeneralPage" Spacing="18">
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Monolith" FontSize="22" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                        <StackPanel Spacing="6">
-                                            <TextBlock Text="Config file" FontSize="13" Foreground="#BDBDBD" />
-                                            <TextBox
-                                                x:Name="ConfigPathBox"
-                                                IsReadOnly="True"
-                                                FontFamily="Cascadia Mono, Consolas, monospace"
-                                                FontSize="12"
-                                                Text="{Binding ConfigPath}" />
-                                        </StackPanel>
-                                        <StackPanel Spacing="6">
-                                            <TextBlock Text="Log file" FontSize="13" Foreground="#BDBDBD" />
-                                            <TextBox
-                                                IsReadOnly="True"
-                                                FontFamily="Cascadia Mono, Consolas, monospace"
-                                                FontSize="12"
-                                                Text="{Binding LogFilePath}" />
-                                        </StackPanel>
+                                        <TextBlock Text="Monolith" FontSize="22" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <TextBlock Text="Use the pages on the left to configure output, capture, recording, and hotkeys." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </Border>
 
@@ -86,9 +71,9 @@
 
                             <!-- ══ OUTPUT PAGE ═══════════════════════════════════ -->
                             <StackPanel x:Name="OutputPage" Spacing="18" Visibility="Collapsed">
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="16">
-                                        <TextBlock Text="Clip Storage" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Clip Storage" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -104,9 +89,9 @@
                                     </StackPanel>
                                 </Border>
 
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="16">
-                                        <TextBlock Text="Recording Storage" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Recording Storage" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -125,17 +110,17 @@
 
                             <!-- ══ CLIP PAGE ═════════════════════════════════════ -->
                             <StackPanel x:Name="ClipPage" Spacing="18" Visibility="Collapsed">
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="16">
-                                        <TextBlock Text="Replay Buffer" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Replay Buffer" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <Grid ColumnSpacing="18">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="180" />
                                             </Grid.ColumnDefinitions>
                                             <StackPanel>
-                                                <TextBlock Text="Duration (seconds)" Foreground="#FFFFFF" />
-                                                <TextBlock Text="Saved clips use this replay window. Applies live after save." Foreground="#BDBDBD" TextWrapping="Wrap" />
+                                                <TextBlock Text="Duration (seconds)" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                                <TextBlock Text="Saved clips use this replay window. Applies live after save." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                                             </StackPanel>
                                             <TextBox Grid.Column="1" Text="{Binding ReplayDurationSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
@@ -145,35 +130,21 @@
                                                 <ColumnDefinition Width="180" />
                                             </Grid.ColumnDefinitions>
                                             <StackPanel>
-                                                <TextBlock Text="Memory budget (MB)" Foreground="#FFFFFF" />
-                                                <TextBlock Text="Ring-buffer cap for encoded packets. Applies live after save." Foreground="#BDBDBD" TextWrapping="Wrap" />
+                                                <TextBlock Text="Memory budget (MB)" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                                <TextBlock Text="Ring-buffer cap for encoded packets. Applies live after save." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                                             </StackPanel>
                                             <TextBox Grid.Column="1" Text="{Binding ReplayMemoryBudgetMb, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                     </StackPanel>
                                 </Border>
 
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Save Hotkey" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                        <Grid ColumnSpacing="16">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="180" />
-                                                <ColumnDefinition Width="200" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Save replay" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Column="1" Text="{Binding SaveReplayHotkey}" IsReadOnly="True" />
-                                        </Grid>
-                                        <TextBlock Text="Clips are saved as MKV into the clips folder configured on the Output page." Foreground="#BDBDBD" TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0" />
-                                    </StackPanel>
-                                </Border>
                             </StackPanel>
 
                             <!-- ══ RECORDING PAGE ════════════════════════════════ -->
                             <StackPanel x:Name="RecordingPage" Spacing="18" Visibility="Collapsed">
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Recording Output" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Recording Output" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <Grid ColumnSpacing="16" RowSpacing="10">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="180" />
@@ -182,41 +153,23 @@
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
-                                            <TextBlock Grid.Row="0" Text="Output folder" Foreground="#BDBDBD" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="0" Text="Output folder" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
                                             <TextBox Grid.Row="0" Grid.Column="1"
                                                 Text="{Binding RecordingsDirectory}"
                                                 IsReadOnly="True"
                                                 FontFamily="Cascadia Mono, Consolas, monospace"
                                                 FontSize="12" />
-                                            <TextBlock Grid.Row="1" Text="Format" Foreground="#BDBDBD" VerticalAlignment="Center" />
-                                            <TextBox Grid.Row="1" Grid.Column="1" Text="MKV" IsReadOnly="True" />
-                                            <TextBlock Grid.Row="2" Text="Pause behavior" Foreground="#BDBDBD" VerticalAlignment="Center" />
-                                            <TextBox Grid.Row="2" Grid.Column="1" Text="Continuous output; paused time omitted" IsReadOnly="True" />
-                                        </Grid>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
-                                    <StackPanel Spacing="14">
-                                        <TextBlock Text="Recording Hotkeys" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
-                                        <Grid ColumnSpacing="16" RowSpacing="10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="180" />
-                                                <ColumnDefinition Width="200" />
-                                            </Grid.ColumnDefinitions>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-                                            <TextBlock Grid.Row="0" Text="Start recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding RecordingStartHotkey}" IsReadOnly="True" />
-                                            <TextBlock Grid.Row="1" Text="Stop recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding RecordingStopHotkey}" IsReadOnly="True" />
-                                            <TextBlock Grid.Row="2" Text="Pause / resume" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PauseResumeHotkey}" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="1" Text="Format" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                            <ComboBox
+                                                Grid.Row="1"
+                                                Grid.Column="1"
+                                                x:Name="RecordingFormatComboBox"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="OnRecordingFormatSelectionChanged">
+                                                <ComboBoxItem Content="MKV (Matroska)" Tag="mkv" />
+                                                <ComboBoxItem Content="MP4" Tag="mp4" />
+                                            </ComboBox>
                                         </Grid>
                                     </StackPanel>
                                 </Border>
@@ -230,9 +183,9 @@
                                     Message="Capture &amp; encoder changes take effect after Monolith restarts." />
 
                                 <!-- Monitor selection -->
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Monitor" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Monitor" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <ComboBox
                                             x:Name="MonitorComboBox"
                                             Header="Capture monitor"
@@ -241,16 +194,16 @@
                                         <TextBlock
                                             x:Name="MonitorUnavailableNote"
                                             Text="Start Monolith once to detect monitors."
-                                            Foreground="#BDBDBD"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                             FontSize="12"
                                             Visibility="Collapsed" />
                                     </StackPanel>
                                 </Border>
 
                                 <!-- Resolution -->
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Resolution" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Resolution" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <ComboBox
                                             x:Name="ResolutionComboBox"
                                             Header="Output resolution"
@@ -293,9 +246,9 @@
                                 </Border>
 
                                 <!-- Video encoder / bitrate -->
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Video Encoder" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Video Encoder" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <ComboBox
                                             x:Name="EncoderComboBox"
                                             Header="Encoder"
@@ -317,16 +270,16 @@
                                             <TextBlock
                                                 x:Name="BitrateMbpsLabel"
                                                 Text="{Binding BitrateMbps}"
-                                                Foreground="#BDBDBD"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                 FontSize="12" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
 
                                 <!-- Capture border -->
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="10">
-                                        <TextBlock Text="Capture Border" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Capture Border" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <ToggleSwitch
                                             x:Name="CaptureBorderToggle"
                                             Header="Show Windows capture border"
@@ -343,9 +296,9 @@
                                 </Border>
 
                                 <!-- Advanced FFmpeg options -->
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="10">
-                                        <TextBlock Text="Advanced" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Advanced" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <TextBox
                                             Header="Extra FFmpeg options"
                                             PlaceholderText="key=value:key=value"
@@ -360,25 +313,25 @@
 
                             <!-- ══ AUDIO PAGE ════════════════════════════════════ -->
                             <StackPanel x:Name="AudioPage" Spacing="18" Visibility="Collapsed">
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Audio Capture" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Audio Capture" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <StackPanel Spacing="8">
                                             <Grid ColumnSpacing="12">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="160" />
                                                     <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <TextBlock Text="System audio" Foreground="#BDBDBD" VerticalAlignment="Center" />
-                                                <TextBlock Grid.Column="1" Text="Captured and recorded (AAC 192 kbps)" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                                <TextBlock Text="System audio" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1" Text="Captured and recorded (AAC 192 kbps)" Foreground="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
                                             </Grid>
                                             <Grid ColumnSpacing="12">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="160" />
                                                     <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <TextBlock Text="Microphone" Foreground="#BDBDBD" VerticalAlignment="Center" />
-                                                <TextBlock Grid.Column="1" Text="Captured but not yet mixed into recordings — planned work." Foreground="#FFFFFF" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                                <TextBlock Text="Microphone" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1" Text="Captured but not yet mixed into recordings — planned work." Foreground="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" TextWrapping="Wrap" />
                                             </Grid>
                                         </StackPanel>
                                     </StackPanel>
@@ -387,9 +340,9 @@
 
                             <!-- ══ HOTKEYS PAGE ══════════════════════════════════ -->
                             <StackPanel x:Name="HotkeysPage" Spacing="18" Visibility="Collapsed">
-                                <Border Background="#242424" CornerRadius="12" Padding="22">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
-                                        <TextBlock Text="Global Hotkeys" FontSize="18" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        <TextBlock Text="Global Hotkeys" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <Grid ColumnSpacing="16" RowSpacing="12">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="220" />
@@ -402,19 +355,42 @@
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
-                                            <TextBlock Grid.Row="0" Text="Save replay" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SaveReplayHotkey}" IsReadOnly="True" />
-                                            <TextBlock Grid.Row="1" Text="Start recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding RecordingStartHotkey}" IsReadOnly="True" />
-                                            <TextBlock Grid.Row="2" Text="Stop recording" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding RecordingStopHotkey}" IsReadOnly="True" />
-                                            <TextBlock Grid.Row="3" Text="Pause / resume" VerticalAlignment="Center" Foreground="#FFFFFF" />
-                                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding PauseResumeHotkey}" IsReadOnly="True" />
+                                            <TextBlock Grid.Row="0" Text="Save replay" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <TextBox Grid.Row="0" Grid.Column="1" Tag="SaveReplayHotkey" Text="{Binding SaveReplayHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
+                                            <TextBlock Grid.Row="1" Text="Start recording" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <TextBox Grid.Row="1" Grid.Column="1" Tag="RecordingStartHotkey" Text="{Binding RecordingStartHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
+                                            <TextBlock Grid.Row="2" Text="Stop recording" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <TextBox Grid.Row="2" Grid.Column="1" Tag="RecordingStopHotkey" Text="{Binding RecordingStopHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
+                                            <TextBlock Grid.Row="3" Text="Pause / resume" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <TextBox Grid.Row="3" Grid.Column="1" Tag="PauseResumeHotkey" Text="{Binding PauseResumeHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
                                         </Grid>
                                         <InfoBar
                                             IsOpen="True"
                                             Severity="Informational"
-                                            Message="Hotkey rebinding is intentionally disabled until conflict detection is wired." />
+                                            Message="Click a field, press the key or key combination, then save. Saved changes reload in Monolith after Settings closes." />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- â•â• ADVANCED PAGE â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+                            <StackPanel x:Name="AdvancedPage" Spacing="18" Visibility="Collapsed">
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="14">
+                                        <TextBlock Text="Diagnostics" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <Grid ColumnSpacing="16" RowSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="160" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="Config file" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ConfigPath}" IsTextSelectionEnabled="True" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                                            <TextBlock Grid.Row="1" Text="Log file" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding LogFilePath}" IsTextSelectionEnabled="True" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

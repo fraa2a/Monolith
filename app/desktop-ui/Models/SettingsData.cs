@@ -16,6 +16,7 @@ public sealed class SettingsData
     public string RecordingStartHotkey { get; set; } = "Ctrl+Shift+F9";
     public string RecordingStopHotkey { get; set; } = "Ctrl+Shift+F10";
     public string PauseResumeHotkey { get; set; } = "Ctrl+Shift+F11";
+    public string RecordingContainer { get; set; } = "mkv";
 
     // capture
     public string MonitorDevice { get; set; } = "";

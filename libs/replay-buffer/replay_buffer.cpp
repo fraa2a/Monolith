@@ -172,6 +172,13 @@ static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec
     return path;
 }
 
+static AVCodecID video_codec_id(encoding::VideoCodec codec)
+{
+    return codec == encoding::VideoCodec::H265
+        ? AV_CODEC_ID_HEVC
+        : AV_CODEC_ID_H264;
+}
+
 static std::wstring write_mkv(
     const std::vector<encoding::EncodedPacket>& pkts,
     const encoding::VideoStreamParams&          vsp,
@@ -199,7 +206,7 @@ static std::wstring write_mkv(
     AVStream* vs = avformat_new_stream(fmt, nullptr);
     if (!vs) { avformat_free_context(fmt); return {}; }
     vs->codecpar->codec_type  = AVMEDIA_TYPE_VIDEO;
-    vs->codecpar->codec_id    = AV_CODEC_ID_H264;
+    vs->codecpar->codec_id    = video_codec_id(vsp.codec);
     vs->codecpar->width       = vsp.width;
     vs->codecpar->height      = vsp.height;
     vs->time_base             = {vsp.tb_num, vsp.tb_den};
