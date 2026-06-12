@@ -16,6 +16,19 @@
     "container": "mkv",
     "pause_behavior": "timestamp_gap"
   },
+  "audio": {
+    "mode": "default",
+    "primary_microphone_device_id": "",
+    "sources": [
+      {
+        "id": "desktop",
+        "type": "desktop",
+        "name": "All desktop audio",
+        "enabled": true,
+        "tracks": [1]
+      }
+    ]
+  },
   "video_encoder": {
     "backend": "auto",
     "bitrate_kbps": 20000,

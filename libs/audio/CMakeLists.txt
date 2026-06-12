@@ -15,6 +15,12 @@ target_compile_definitions(audio
         NOMINMAX
 )
 
+target_link_libraries(audio
+    PUBLIC
+        mmdevapi
+        propsys
+)
+
 if(MSVC)
     target_compile_options(audio PRIVATE /W4 /permissive-)
 endif()

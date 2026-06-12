@@ -11,7 +11,7 @@ struct EncodedPacket {
     std::vector<uint8_t> data;
     int64_t  pts;           // in packet timebase
     int64_t  dts;
-    int32_t  stream_index;  // 0 = video, 1 = audio
+    int32_t  stream_index;  // 0 = video, 1..6 = audio tracks
     bool     is_keyframe;
     int32_t  tb_num;        // timebase numerator
     int32_t  tb_den;        // timebase denominator
@@ -34,6 +34,7 @@ struct VideoStreamParams {
 };
 
 struct AudioStreamParams {
+    int stream_index = 1; // 1..6; 0 is reserved for video
     int sample_rate;
     int channels;
     int tb_num, tb_den;
@@ -108,6 +109,7 @@ public:
         int     sample_rate = 48000;
         int     channels    = 2;
         int64_t bitrate     = 192'000;
+        int     stream_index = 1;
     };
 
     bool open(Config const& cfg, PacketSink sink);

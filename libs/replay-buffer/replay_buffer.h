@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace replay_buffer {
 
@@ -25,6 +26,7 @@ public:
     void configure(Config const& cfg);
     void set_video_params(encoding::VideoStreamParams const& p);
     void set_audio_params(encoding::AudioStreamParams const& p);
+    void set_audio_params(std::vector<encoding::AudioStreamParams> const& p);
 
     // Thread-safe — call from encoder sink callbacks.
     void push(encoding::EncodedPacket pkt);

@@ -19,7 +19,7 @@
 
 ### Why start from scratch
 
-- The product needs a narrow, recorder-first pipeline: capture, sync, encode, ring buffer, clip save, tray control, and a minimal settings UI.
+- The product needs a narrow, recorder-first pipeline: capture, sync, encode, ring buffer, clip save, tray control, Settings, and configurable audio routing.
 - A custom architecture can minimize process count, startup cost, memory residency, and CPU/GPU copies.
 - It allows explicit design for Windows 11 capture APIs, WASAPI, hardware encoders, and crash-safe containers without carrying unrelated subsystems.
 
@@ -53,7 +53,7 @@ enforced by library separation under `/libs`, not process separation.
 **Future: two-process split** — once the MVP is stable, the recording engine (capture
 through replay) will be extracted into a separate headless process (`app/engine`). The
 rationale for crash isolation and independent restarts remains valid; the split is deferred
-to reduce early IPC complexity. A settings UI process (`app/desktop-ui`) follows after that.
+to reduce early IPC complexity. Settings already runs as a WinUI 3 sidecar process (`app/desktop-ui`).
 
 ### Main subsystems
 
@@ -78,7 +78,7 @@ to reduce early IPC complexity. A settings UI process (`app/desktop-ui`) follows
 3. **Audio Pipeline**
    - WASAPI loopback for system audio.
    - Separate WASAPI capture for microphone.
-   - Per-device capture workers feed normalized PCM into a mixer/router.
+   - Per-device capture workers feed track-specific AAC encoders; a real PCM mixer/router is still needed for multiple sources sharing one track.
    - Support multiple logical tracks in v1:
      - system/game mix track
      - microphone track
@@ -482,9 +482,9 @@ Build the smallest prototype that proves the hardest v1 engineering problems wit
 
 ### Explicitly out of scope for prototype
 
-- Full settings UI
+- Stream Deck UI/settings
 - Per-app profiles
-- Pause/resume recording
+- Advanced audio routing polish
 - Multiple simultaneous output formats
 - Stream Deck plugin
 - Advanced remux workflows
@@ -492,7 +492,7 @@ Build the smallest prototype that proves the hardest v1 engineering problems wit
 ### Prototype acceptance criteria
 
 - Saves a valid 30-second MKV clip on hotkey press.
-- Uses system audio plus microphone in the output.
+- Uses system audio plus microphone in separate output tracks when Audio V2 Default mode devices start successfully.
 - Remains stable for a 10-minute armed replay session.
 - Logs capture timing, encoder queue depth, and clip-save latency.
 
@@ -502,7 +502,7 @@ Build the smallest prototype that proves the hardest v1 engineering problems wit
 /app
   /recorder                # Single MVP executable (links all libs)
   /engine                  # (future) Headless recording engine process — two-process target
-  /desktop-ui              # (future) WinUI 3 settings UI
+  /desktop-ui              # WinUI 3 settings UI sidecar
 
 /libs
   /capture                 # Video capture abstractions and implementations

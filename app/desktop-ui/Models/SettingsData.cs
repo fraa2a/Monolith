@@ -1,5 +1,18 @@
 namespace Monolith.Settings.Models;
 
+public sealed class AudioSourceData
+{
+    public string Id { get; set; } = "";
+    public string Type { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string DeviceId { get; set; } = "";
+    public uint ProcessId { get; set; }
+    public string ProcessName { get; set; } = "";
+    public string ExecutablePath { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public List<int> Tracks { get; set; } = new();
+}
+
 public sealed class SettingsData
 {
     // output
@@ -17,6 +30,11 @@ public sealed class SettingsData
     public string RecordingStopHotkey { get; set; } = "Ctrl+Shift+F10";
     public string PauseResumeHotkey { get; set; } = "Ctrl+Shift+F11";
     public string RecordingContainer { get; set; } = "mkv";
+
+    // audio
+    public string AudioMode { get; set; } = "default";
+    public string PrimaryMicrophoneDeviceId { get; set; } = "";
+    public List<AudioSourceData> AudioSources { get; set; } = new();
 
     // capture
     public string MonitorDevice { get; set; } = "";

@@ -44,7 +44,19 @@ long-term target; the split is deferred to reduce early IPC complexity.
 
 - Native app lives in `app/recorder` as the single-process MVP.
 - Win32 tray, message-only window, single-instance guard, and global hotkeys are implemented.
-- WGC display capture, WASAPI loopback/microphone ingress, FFmpeg H.264/AAC encoding, replay-buffer MKV clip save, and basic manual recording are implemented.
+- WGC display capture, WASAPI loopback/microphone/input-device ingress, FFmpeg H.264/AAC encoding, replay-buffer MKV clip save, and manual recording are implemented.
 - User-facing branding is Monolith. User video output defaults under `Videos\Monolith`; logs/runtime data default under `AppData\Local\Monolith`.
-- IPC server/client, Stream Deck plugin, settings UI, Desktop Duplication fallback, GPU-resident encoder path, and microphone mixing into output are still pending.
+- WinUI 3 Settings is implemented as `Monolith.Settings.exe`; it opens from the tray, persists config under `AppData\Local\Monolith\config.json`, and the implemented settings have been manually verified.
+- Audio V2 foundation is implemented: Default mode routes desktop audio to track 1 and the selected microphone to track 2; Custom mode persists source routing for desktop audio, input devices, process sessions, and Active Game; muxers can create up to six logical audio tracks.
+- IPC server/client, Stream Deck plugin, Desktop Duplication fallback, and GPU-resident encoder path are still pending.
+
+## Audio V2 Implementation Notes
+
+- Default mode records all desktop/system audio to track 1 and the selected primary microphone to track 2 when the devices start successfully.
+- Custom mode supports up to six logical audio tracks and lets one source route to multiple tracks.
+- Sources include all desktop audio, microphone/input devices, detected process audio sessions, and a best-effort Active Game source.
+- Per-process and Active Game capture use Windows process-loopback activation and fail closed if unsupported or unavailable.
+- Missing devices, closed processes, and no active game are tolerated without crashing or corrupting config.
+- Current limitation: multiple sources assigned to the same track are not mixed yet; the runtime logs and skips the later source for that track to avoid corrupt timing.
+- The muxer/encoder layer owns encoded stream creation; Settings only exposes controls that are wired, read-only, or explicitly marked unsupported/restart-required.
 

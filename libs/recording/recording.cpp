@@ -19,6 +19,7 @@ extern "C" {
 #include <cstring>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 namespace recording {
 
@@ -39,18 +40,17 @@ struct ManualRecorder::Impl {
     std::wstring                path;
 
     encoding::VideoStreamParams vsp;
-    encoding::AudioStreamParams asp;
+    std::vector<encoding::AudioStreamParams> audio_params;
     bool                        vsp_set = false;
-    bool                        asp_set = false;
 
     AVFormatContext*            fmt = nullptr;
     AVStream*                   video_stream = nullptr;
-    AVStream*                   audio_stream = nullptr;
+    std::array<AVStream*, 7>    audio_streams{};
     bool                        header_written = false;
     bool                        wrote_packet = false;
     bool                        started_at_keyframe = false;
     bool                        resume_needs_keyframe = false;
-    std::array<StreamTiming, 2> timing{};
+    std::array<StreamTiming, 7> timing{};
 };
 
 static std::string wcs_to_utf8(const std::wstring& ws)
@@ -115,7 +115,7 @@ template <typename ImplT>
 static bool open_output(ImplT* impl)
 {
     if (impl->header_written) return true;
-    if (!impl->vsp_set || !impl->asp_set || impl->path.empty()) return false;
+    if (!impl->vsp_set || impl->path.empty()) return false;
 
     CreateDirectoryW(impl->output_dir.c_str(), nullptr);
 
@@ -135,15 +135,19 @@ static bool open_output(ImplT* impl)
     impl->video_stream->time_base            = {impl->vsp.tb_num, impl->vsp.tb_den};
     if (!copy_extradata(impl->video_stream->codecpar, impl->vsp.extradata)) return false;
 
-    impl->audio_stream = avformat_new_stream(impl->fmt, nullptr);
-    if (!impl->audio_stream) return false;
-    impl->audio_stream->codecpar->codec_type  = AVMEDIA_TYPE_AUDIO;
-    impl->audio_stream->codecpar->codec_id    = AV_CODEC_ID_AAC;
-    impl->audio_stream->codecpar->sample_rate = impl->asp.sample_rate;
-    av_channel_layout_default(&impl->audio_stream->codecpar->ch_layout,
-                              impl->asp.channels);
-    impl->audio_stream->time_base = {impl->asp.tb_num, impl->asp.tb_den};
-    if (!copy_extradata(impl->audio_stream->codecpar, impl->asp.extradata)) return false;
+    impl->audio_streams = {};
+    for (const auto& asp : impl->audio_params) {
+        if (asp.stream_index < 1 || asp.stream_index > 6) continue;
+        AVStream* stream = avformat_new_stream(impl->fmt, nullptr);
+        if (!stream) return false;
+        stream->codecpar->codec_type  = AVMEDIA_TYPE_AUDIO;
+        stream->codecpar->codec_id    = AV_CODEC_ID_AAC;
+        stream->codecpar->sample_rate = asp.sample_rate;
+        av_channel_layout_default(&stream->codecpar->ch_layout, asp.channels);
+        stream->time_base = {asp.tb_num, asp.tb_den};
+        if (!copy_extradata(stream->codecpar, asp.extradata)) return false;
+        impl->audio_streams[asp.stream_index] = stream;
+    }
 
     if (avio_open(&impl->fmt->pb, path_utf.c_str(), AVIO_FLAG_WRITE) < 0) return false;
 
@@ -168,7 +172,7 @@ static void close_output(ImplT* impl)
     }
     impl->fmt = nullptr;
     impl->video_stream = nullptr;
-    impl->audio_stream = nullptr;
+    impl->audio_streams = {};
     impl->header_written = false;
     impl->wrote_packet = false;
     impl->started_at_keyframe = false;
@@ -180,7 +184,14 @@ template <typename ImplT>
 static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
 {
     if (!open_output(impl)) return false;
-    if (ep.stream_index < 0 || ep.stream_index > 1) return false;
+    if (ep.stream_index < 0 || ep.stream_index > 6) return false;
+
+    AVStream* dst_stream = nullptr;
+    if (ep.stream_index == 0)
+        dst_stream = impl->video_stream;
+    else
+        dst_stream = impl->audio_streams[ep.stream_index];
+    if (!dst_stream) return false;
 
     StreamTiming& timing = impl->timing[ep.stream_index];
     if (!timing.input_anchor_set) {
@@ -202,7 +213,7 @@ static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
         return false;
     }
 
-    pkt->stream_index = ep.stream_index;
+    pkt->stream_index = dst_stream->index;
     memcpy(pkt->data, ep.data.data(), ep.data.size());
     pkt->flags = ep.is_keyframe ? AV_PKT_FLAG_KEY : 0;
     pkt->pts = ep.pts - timing.input_anchor_pts - timing.paused_pts;
@@ -210,9 +221,7 @@ static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
     if (pkt->dts > pkt->pts) pkt->dts = pkt->pts;
 
     AVRational src_tb = {ep.tb_num, ep.tb_den};
-    AVRational dst_tb = (ep.stream_index == 0)
-        ? impl->video_stream->time_base
-        : impl->audio_stream->time_base;
+    AVRational dst_tb = dst_stream->time_base;
     av_packet_rescale_ts(pkt, src_tb, dst_tb);
 
     bool ok = av_interleaved_write_frame(impl->fmt, pkt) >= 0;
@@ -240,9 +249,18 @@ void ManualRecorder::set_video_params(encoding::VideoStreamParams const& p)
 
 void ManualRecorder::set_audio_params(encoding::AudioStreamParams const& p)
 {
+    set_audio_params(std::vector<encoding::AudioStreamParams>{ p });
+}
+
+void ManualRecorder::set_audio_params(std::vector<encoding::AudioStreamParams> const& p)
+{
     std::lock_guard lk(impl_->mutex);
-    impl_->asp = p;
-    impl_->asp_set = true;
+    impl_->audio_params.clear();
+    for (const auto& stream : p) {
+        if (stream.stream_index < 1 || stream.stream_index > 6) continue;
+        if (stream.tb_den == 0 || stream.sample_rate <= 0 || stream.channels <= 0) continue;
+        impl_->audio_params.push_back(stream);
+    }
 }
 
 bool ManualRecorder::start(std::wstring output_dir, std::string container)
@@ -290,7 +308,7 @@ void ManualRecorder::push(encoding::EncodedPacket pkt)
     if (impl_->state == RecordingState::Idle) return;
 
     if (impl_->state == RecordingState::Paused) {
-        if (pkt.stream_index >= 0 && pkt.stream_index <= 1) {
+        if (pkt.stream_index >= 0 && pkt.stream_index <= 6) {
             StreamTiming& timing = impl_->timing[pkt.stream_index];
             if (timing.input_anchor_set && !timing.pause_start_set) {
                 timing.pause_start_set = true;

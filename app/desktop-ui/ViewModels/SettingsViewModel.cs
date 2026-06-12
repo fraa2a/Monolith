@@ -21,6 +21,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string replayDurationSeconds = "30";
     private string replayMemoryBudgetMb = "512";
     private string recordingContainer = "mkv";
+    private string audioMode = "default";
+    private string primaryMicrophoneDeviceId = "";
+    private List<AudioSourceData> audioSources = new();
     private string saveReplayHotkey = "Ctrl+Shift+F8";
     private string recordingStartHotkey = "Ctrl+Shift+F9";
     private string recordingStopHotkey = "Ctrl+Shift+F10";
@@ -53,6 +56,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string loadedEncoderBackend = "auto";
     private int loadedBitrateKbps = 20000;
     private string loadedExtraFfmpegOptions = "";
+    private string loadedAudioFingerprint = "";
     private bool restartRequired;
 
     // runtime status (may be null if recorder never ran)
@@ -95,6 +99,30 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     {
         get => recordingContainer;
         set => SetField(ref recordingContainer, value);
+    }
+
+    public string AudioMode
+    {
+        get => audioMode;
+        set
+        {
+            SetField(ref audioMode, value == "custom" ? "custom" : "default");
+            OnPropertyChanged(nameof(IsCustomAudioMode));
+        }
+    }
+
+    public bool IsCustomAudioMode => audioMode == "custom";
+
+    public string PrimaryMicrophoneDeviceId
+    {
+        get => primaryMicrophoneDeviceId;
+        set => SetField(ref primaryMicrophoneDeviceId, value);
+    }
+
+    public List<AudioSourceData> AudioSources
+    {
+        get => audioSources;
+        private set => SetField(ref audioSources, value);
     }
 
     // ── capture ──────────────────────────────────────────────────────────────
@@ -265,6 +293,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         RecordingStartHotkey = data.RecordingStartHotkey;
         RecordingStopHotkey = data.RecordingStopHotkey;
         PauseResumeHotkey = data.PauseResumeHotkey;
+        audioMode = data.AudioMode == "custom" ? "custom" : "default";
+        primaryMicrophoneDeviceId = data.PrimaryMicrophoneDeviceId;
+        audioSources = CloneAudioSources(data.AudioSources);
         monitorDevice = data.MonitorDevice;
         resolutionMode = data.ResolutionMode;
         resolutionWidth = data.ResolutionWidth;
@@ -283,6 +314,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedEncoderBackend = encoderBackend;
         loadedBitrateKbps = bitrateKbps;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
+        loadedAudioFingerprint = AudioFingerprint();
 
         loading = false;
         HasUnsavedChanges = false;
@@ -290,6 +322,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         StatusMessage = "";
         NotifyHotkeys();
         NotifyCaptureFields();
+        NotifyAudioFields();
         OnPropertyChanged(nameof(HasRuntimeStatus));
         OnPropertyChanged(nameof(ShowBorderSuppressedWarning));
         OnPropertyChanged(nameof(LoadWarning));
@@ -323,6 +356,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             RecordingStartHotkey = RecordingStartHotkey,
             RecordingStopHotkey = RecordingStopHotkey,
             PauseResumeHotkey = PauseResumeHotkey,
+            AudioMode = AudioMode,
+            PrimaryMicrophoneDeviceId = PrimaryMicrophoneDeviceId,
+            AudioSources = CloneAudioSources(AudioSources),
             MonitorDevice = MonitorDevice,
             ResolutionMode = ResolutionMode,
             ResolutionWidth = ResolutionWidth,
@@ -344,6 +380,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedEncoderBackend = encoderBackend;
         loadedBitrateKbps = bitrateKbps;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
+        loadedAudioFingerprint = AudioFingerprint();
 
         HasUnsavedChanges = false;
         RestartRequired = restartNeeded;
@@ -351,7 +388,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         StatusSeverity = InfoBarSeverity.Success;
         string msg = "Settings saved.";
         if (restartNeeded)
-            msg += " Capture & encoder changes apply after Monolith restarts.";
+            msg += " Capture, encoder, and audio routing changes apply after Monolith restarts.";
         StatusMessage = msg;
         return true;
     }
@@ -382,7 +419,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 break;
             case "Audio":
                 PageTitle = "Settings / Audio";
-                PageSubtitle = "Audio capture status.";
+                PageSubtitle = "Default or custom audio routing. Changes apply after Monolith restarts.";
                 break;
             case "Hotkeys":
                 PageTitle = "Settings / Hotkeys";
@@ -404,6 +441,107 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public void ResetClipsDirectory() => ClipsDirectory = service.DefaultClipsDirectory;
     public void ResetRecordingsDirectory() => RecordingsDirectory = service.DefaultRecordingsDirectory;
 
+    public void AddDesktopAudioSource()
+    {
+        if (AudioSources.Any(s => s.Type == "desktop"))
+            return;
+        AddAudioSource(new AudioSourceData
+        {
+            Id = "desktop",
+            Type = "desktop",
+            Name = "All desktop audio",
+            Enabled = true,
+            Tracks = new List<int> { 1 },
+        });
+    }
+
+    public void AddActiveGameSource()
+    {
+        if (AudioSources.Any(s => s.Type == "active_game"))
+            return;
+        AddAudioSource(new AudioSourceData
+        {
+            Id = "active_game",
+            Type = "active_game",
+            Name = "Active Game",
+            Enabled = true,
+            Tracks = new List<int> { 1 },
+        });
+    }
+
+    public void AddInputDeviceSource(AudioDeviceInfo device)
+    {
+        if (AudioSources.Any(s => s.Type == "input" && s.DeviceId == device.Id))
+            return;
+        AddAudioSource(new AudioSourceData
+        {
+            Id = $"input:{device.Id}",
+            Type = "input",
+            Name = device.Name,
+            DeviceId = device.Id,
+            Enabled = true,
+            Tracks = new List<int> { 2 },
+        });
+    }
+
+    public void AddProcessSource(AudioSessionInfo session)
+    {
+        string id = !string.IsNullOrWhiteSpace(session.ExecutablePath)
+            ? $"process:{session.ExecutablePath}"
+            : $"process:{session.ProcessId}";
+        if (AudioSources.Any(s => s.Id == id))
+            return;
+        AddAudioSource(new AudioSourceData
+        {
+            Id = id,
+            Type = "process",
+            Name = string.IsNullOrWhiteSpace(session.DisplayName) ? session.ProcessName : session.DisplayName,
+            ProcessId = session.ProcessId,
+            ProcessName = session.ProcessName,
+            ExecutablePath = session.ExecutablePath,
+            Enabled = true,
+            Tracks = new List<int> { 1 },
+        });
+    }
+
+    public void RemoveAudioSource(AudioSourceData source)
+    {
+        AudioSources = AudioSources.Where(s => !ReferenceEquals(s, source)).ToList();
+        MarkDirty();
+    }
+
+    public void SetAudioSourceEnabled(AudioSourceData source, bool enabled)
+    {
+        source.Enabled = enabled;
+        OnPropertyChanged(nameof(AudioSources));
+        MarkDirty();
+    }
+
+    public void SetAudioSourceTrack(AudioSourceData source, int track, bool enabled)
+    {
+        if (track < 1 || track > 6) return;
+        if (enabled)
+        {
+            if (!source.Tracks.Contains(track))
+                source.Tracks.Add(track);
+        }
+        else
+        {
+            source.Tracks.Remove(track);
+        }
+        source.Tracks = source.Tracks.Distinct().Where(t => t is >= 1 and <= 6).OrderBy(t => t).ToList();
+        OnPropertyChanged(nameof(AudioSources));
+        MarkDirty();
+    }
+
+    private void AddAudioSource(AudioSourceData source)
+    {
+        List<AudioSourceData> next = CloneAudioSources(AudioSources);
+        next.Add(source);
+        AudioSources = next;
+        MarkDirty();
+    }
+
     // ── private helpers ──────────────────────────────────────────────────────
 
     private bool IsRestartRequired()
@@ -415,7 +553,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             || showCaptureBorder != loadedShowCaptureBorder
             || encoderBackend != loadedEncoderBackend
             || bitrateKbps != loadedBitrateKbps
-            || extraFfmpegOptions != loadedExtraFfmpegOptions;
+            || extraFfmpegOptions != loadedExtraFfmpegOptions
+            || loadedAudioFingerprint != AudioFingerprint();
     }
 
     private bool Validate(out string error)
@@ -460,6 +599,27 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         {
             error = "Recording format must be MKV or MP4.";
             return false;
+        }
+
+        if (AudioMode != "default" && AudioMode != "custom")
+        {
+            error = "Audio mode must be Default or Custom.";
+            return false;
+        }
+
+        foreach (AudioSourceData source in AudioSources)
+        {
+            if (source.Type is not ("desktop" or "input" or "process" or "active_game"))
+            {
+                error = $"Audio source '{source.Name}' has an unsupported type.";
+                return false;
+            }
+
+            if (source.Tracks.Count == 0 || source.Tracks.Any(t => t < 1 || t > 6))
+            {
+                error = $"Audio source '{source.Name}' must use tracks 1 to 6.";
+                return false;
+            }
         }
 
         if (!IsIntInRange(BitrateKbps.ToString(), 1000, 100000))
@@ -658,6 +818,59 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(BitrateKbps));
         OnPropertyChanged(nameof(BitrateMbps));
         OnPropertyChanged(nameof(ExtraFfmpegOptions));
+    }
+
+    private void NotifyAudioFields()
+    {
+        OnPropertyChanged(nameof(AudioMode));
+        OnPropertyChanged(nameof(IsCustomAudioMode));
+        OnPropertyChanged(nameof(PrimaryMicrophoneDeviceId));
+        OnPropertyChanged(nameof(AudioSources));
+    }
+
+    private string AudioFingerprint()
+    {
+        IEnumerable<string> sourceBits = AudioSources
+            .OrderBy(s => s.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(s => string.Join("|",
+                s.Id,
+                s.Type,
+                s.Name,
+                s.DeviceId,
+                s.ProcessId.ToString(),
+                s.ProcessName,
+                s.ExecutablePath,
+                s.Enabled ? "1" : "0",
+                string.Join(",", s.Tracks.OrderBy(t => t))));
+
+        return string.Join(";", new[]
+        {
+            AudioMode,
+            PrimaryMicrophoneDeviceId,
+            string.Join(";", sourceBits),
+        });
+    }
+
+    private static List<AudioSourceData> CloneAudioSources(IEnumerable<AudioSourceData> sources)
+    {
+        return sources.Select(s => new AudioSourceData
+        {
+            Id = s.Id,
+            Type = s.Type,
+            Name = s.Name,
+            DeviceId = s.DeviceId,
+            ProcessId = s.ProcessId,
+            ProcessName = s.ProcessName,
+            ExecutablePath = s.ExecutablePath,
+            Enabled = s.Enabled,
+            Tracks = s.Tracks.Distinct().Where(t => t is >= 1 and <= 6).OrderBy(t => t).ToList(),
+        }).ToList();
+    }
+
+    private void MarkDirty()
+    {
+        if (!loading)
+            HasUnsavedChanges = true;
     }
 
     private void SetField<T>(ref T field, T value, bool trackDirty = true, [CallerMemberName] string? name = null)

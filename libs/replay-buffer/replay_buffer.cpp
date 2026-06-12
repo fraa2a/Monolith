@@ -15,6 +15,7 @@ extern "C" {
 #endif
 #include <windows.h>
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <deque>
@@ -33,9 +34,8 @@ struct ReplayBuffer::Impl {
 
     Config                          cfg;
     encoding::VideoStreamParams     vsp;
-    encoding::AudioStreamParams     asp;
+    std::vector<encoding::AudioStreamParams> audio_params;
     bool                            vsp_set = false;
-    bool                            asp_set = false;
 
     std::atomic<bool>               saving{false};
     std::thread                     save_thread;
@@ -66,9 +66,18 @@ void ReplayBuffer::set_video_params(encoding::VideoStreamParams const& p)
 
 void ReplayBuffer::set_audio_params(encoding::AudioStreamParams const& p)
 {
+    set_audio_params(std::vector<encoding::AudioStreamParams>{ p });
+}
+
+void ReplayBuffer::set_audio_params(std::vector<encoding::AudioStreamParams> const& p)
+{
     std::lock_guard lk(impl_->mutex);
-    impl_->asp     = p;
-    impl_->asp_set = true;
+    impl_->audio_params.clear();
+    for (const auto& stream : p) {
+        if (stream.stream_index < 1 || stream.stream_index > 6) continue;
+        if (stream.tb_den == 0 || stream.sample_rate <= 0 || stream.channels <= 0) continue;
+        impl_->audio_params.push_back(stream);
+    }
 }
 
 void ReplayBuffer::push(encoding::EncodedPacket pkt)
@@ -182,12 +191,12 @@ static AVCodecID video_codec_id(encoding::VideoCodec codec)
 static std::wstring write_mkv(
     const std::vector<encoding::EncodedPacket>& pkts,
     const encoding::VideoStreamParams&          vsp,
-    const encoding::AudioStreamParams&          asp,
+    const std::vector<encoding::AudioStreamParams>& audio_params,
     const std::wstring&                         out_dir,
     int                                         duration_sec)
 {
     if (pkts.empty()) return {};
-    if (!vsp.tb_den || !asp.tb_den) return {};
+    if (!vsp.tb_den) return {};
 
     // Ensure the output directory exists.
     CreateDirectoryW(out_dir.c_str(), nullptr);
@@ -221,21 +230,26 @@ static std::wstring write_mkv(
     }
 
     // ── Audio stream ─────────────────────────────────────────────────────────
-    AVStream* as = avformat_new_stream(fmt, nullptr);
-    if (!as) { avformat_free_context(fmt); return {}; }
-    as->codecpar->codec_type  = AVMEDIA_TYPE_AUDIO;
-    as->codecpar->codec_id    = AV_CODEC_ID_AAC;
-    as->codecpar->sample_rate = asp.sample_rate;
-    av_channel_layout_default(&as->codecpar->ch_layout, asp.channels);
-    as->time_base             = {asp.tb_num, asp.tb_den};
-    if (!asp.extradata.empty()) {
-        as->codecpar->extradata = reinterpret_cast<uint8_t*>(
-            av_mallocz(asp.extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
-        if (as->codecpar->extradata) {
-            memcpy(as->codecpar->extradata,
-                   asp.extradata.data(), asp.extradata.size());
-            as->codecpar->extradata_size = static_cast<int>(asp.extradata.size());
+    std::array<AVStream*, 7> audio_streams{};
+    for (const auto& asp : audio_params) {
+        if (asp.stream_index < 1 || asp.stream_index > 6) continue;
+        AVStream* as = avformat_new_stream(fmt, nullptr);
+        if (!as) { avformat_free_context(fmt); return {}; }
+        as->codecpar->codec_type  = AVMEDIA_TYPE_AUDIO;
+        as->codecpar->codec_id    = AV_CODEC_ID_AAC;
+        as->codecpar->sample_rate = asp.sample_rate;
+        av_channel_layout_default(&as->codecpar->ch_layout, asp.channels);
+        as->time_base             = {asp.tb_num, asp.tb_den};
+        if (!asp.extradata.empty()) {
+            as->codecpar->extradata = reinterpret_cast<uint8_t*>(
+                av_mallocz(asp.extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
+            if (as->codecpar->extradata) {
+                memcpy(as->codecpar->extradata,
+                       asp.extradata.data(), asp.extradata.size());
+                as->codecpar->extradata_size = static_cast<int>(asp.extradata.size());
+            }
         }
+        audio_streams[asp.stream_index] = as;
     }
 
     // ── Open file + write header ──────────────────────────────────────────────
@@ -251,16 +265,34 @@ static std::wstring write_mkv(
 
     // ── Compute PTS offsets so the clip starts at 0 ───────────────────────────
     int64_t v_offset = AV_NOPTS_VALUE;
-    int64_t a_offset = AV_NOPTS_VALUE;
+    std::array<int64_t, 7> a_offsets;
+    a_offsets.fill(AV_NOPTS_VALUE);
     for (const auto& ep : pkts) {
         if (ep.stream_index == 0 && v_offset == AV_NOPTS_VALUE) v_offset = ep.pts;
-        if (ep.stream_index == 1 && a_offset == AV_NOPTS_VALUE) a_offset = ep.pts;
+        if (ep.stream_index >= 1 && ep.stream_index <= 6 &&
+            audio_streams[ep.stream_index] &&
+            a_offsets[ep.stream_index] == AV_NOPTS_VALUE) {
+            a_offsets[ep.stream_index] = ep.pts;
+        }
     }
     if (v_offset == AV_NOPTS_VALUE) v_offset = 0;
-    if (a_offset == AV_NOPTS_VALUE) a_offset = 0;
+    for (auto& offset : a_offsets) {
+        if (offset == AV_NOPTS_VALUE) offset = 0;
+    }
 
     // ── Write packets ─────────────────────────────────────────────────────────
     for (const auto& ep : pkts) {
+        AVStream* dst_stream = nullptr;
+        int64_t offset = 0;
+        if (ep.stream_index == 0) {
+            dst_stream = vs;
+            offset = v_offset;
+        } else if (ep.stream_index >= 1 && ep.stream_index <= 6) {
+            dst_stream = audio_streams[ep.stream_index];
+            offset = a_offsets[ep.stream_index];
+        }
+        if (!dst_stream) continue;
+
         AVPacket* pkt = av_packet_alloc();
         if (!pkt) continue;
         if (av_new_packet(pkt, static_cast<int>(ep.data.size())) < 0) {
@@ -268,18 +300,17 @@ static std::wstring write_mkv(
             continue;
         }
 
-        pkt->stream_index = ep.stream_index;
+        pkt->stream_index = dst_stream->index;
         memcpy(pkt->data, ep.data.data(), ep.data.size());
         pkt->flags        = ep.is_keyframe ? AV_PKT_FLAG_KEY : 0;
 
-        const int64_t offset = (ep.stream_index == 0) ? v_offset : a_offset;
         pkt->pts = ep.pts - offset;
         pkt->dts = ep.dts - offset;
 
         // Rescale from packet timebase to stream timebase (both are set the same,
         // so this is a no-op but guards against future divergence).
         AVRational src_tb = {ep.tb_num, ep.tb_den};
-        AVRational dst_tb = (ep.stream_index == 0) ? vs->time_base : as->time_base;
+        AVRational dst_tb = dst_stream->time_base;
         av_packet_rescale_ts(pkt, src_tb, dst_tb);
 
         av_interleaved_write_frame(fmt, pkt);
@@ -305,15 +336,14 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
     std::vector<encoding::EncodedPacket> snapshot;
     Config                               cfg;
     encoding::VideoStreamParams          vsp;
-    encoding::AudioStreamParams          asp;
-    bool vsp_set, asp_set;
+    std::vector<encoding::AudioStreamParams> audio_params;
+    bool vsp_set;
     {
         std::lock_guard lk(impl_->mutex);
         cfg     = impl_->cfg;
         vsp     = impl_->vsp;
-        asp     = impl_->asp;
+        audio_params = impl_->audio_params;
         vsp_set = impl_->vsp_set;
-        asp_set = impl_->asp_set;
 
         size_t start = find_clip_start(impl_->ring, cfg.duration_sec);
         if (start < impl_->ring.size()) {
@@ -327,12 +357,13 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
         impl_->save_thread.join();
 
     impl_->save_thread = std::thread(
-        [this, snapshot = std::move(snapshot), cfg, vsp, asp, vsp_set, asp_set,
+        [this, snapshot = std::move(snapshot), cfg, vsp,
+         audio_params = std::move(audio_params), vsp_set,
          cb = std::move(cb)]() mutable
         {
             std::wstring result;
-            if (!snapshot.empty() && vsp_set && asp_set) {
-                result = write_mkv(snapshot, vsp, asp,
+            if (!snapshot.empty() && vsp_set) {
+                result = write_mkv(snapshot, vsp, audio_params,
                                    cfg.output_dir, cfg.duration_sec);
             }
             impl_->saving.store(false);

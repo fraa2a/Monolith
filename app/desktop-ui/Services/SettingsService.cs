@@ -25,6 +25,19 @@ public sealed class SettingsService
         "container": "mkv",
         "pause_behavior": "timestamp_gap"
       },
+      "audio": {
+        "mode": "default",
+        "primary_microphone_device_id": "",
+        "sources": [
+          {
+            "id": "desktop",
+            "type": "desktop",
+            "name": "All desktop audio",
+            "enabled": true,
+            "tracks": [1]
+          }
+        ]
+      },
       "video_encoder": {
         "backend": "auto",
         "bitrate_kbps": 20000,
@@ -124,6 +137,49 @@ public sealed class SettingsService
                     if (s is not null)
                         status.AvailableEncoders.Add(s);
                 }
+            }
+
+            if (obj["input_devices"] is JsonArray devArr)
+            {
+                foreach (JsonNode? item in devArr)
+                {
+                    if (item is not JsonObject d)
+                        continue;
+                    status.InputDevices.Add(new AudioDeviceInfo
+                    {
+                        Id = StringAt(d, "id"),
+                        Name = StringAt(d, "name"),
+                        DefaultDevice = BoolAt(d, "default_device"),
+                        Available = BoolAt(d, "available"),
+                    });
+                }
+            }
+
+            if (obj["audio_sessions"] is JsonArray sessionArr)
+            {
+                foreach (JsonNode? item in sessionArr)
+                {
+                    if (item is not JsonObject s)
+                        continue;
+                    status.AudioSessions.Add(new AudioSessionInfo
+                    {
+                        ProcessId = UIntAt(s, "process_id", 0),
+                        ProcessName = StringAt(s, "process_name"),
+                        DisplayName = StringAt(s, "display_name"),
+                        ExecutablePath = StringAt(s, "executable_path"),
+                    });
+                }
+            }
+
+            if (obj["active_game"] is JsonObject game)
+            {
+                status.ActiveGame = new AudioSessionInfo
+                {
+                    ProcessId = UIntAt(game, "process_id", 0),
+                    ProcessName = StringAt(game, "process_name"),
+                    DisplayName = StringAt(game, "display_name"),
+                    ExecutablePath = StringAt(game, "executable_path"),
+                };
             }
 
             status.ActiveEncoder = StringAt(obj, "active_encoder");
@@ -250,6 +306,25 @@ public sealed class SettingsService
         SetIfMissing(recording, "container", "mkv");
         SetIfMissing(recording, "pause_behavior", "timestamp_gap");
 
+        JsonObject audio = ObjectAt(root, "audio");
+        SetIfMissing(audio, "mode", "default");
+        SetIfMissing(audio, "primary_microphone_device_id", "");
+        if (audio["sources"] is not JsonArray)
+        {
+            JsonArray sources = new()
+            {
+                new JsonObject
+                {
+                    ["id"] = "desktop",
+                    ["type"] = "desktop",
+                    ["name"] = "All desktop audio",
+                    ["enabled"] = true,
+                    ["tracks"] = new JsonArray { JsonValue.Create(1) },
+                },
+            };
+            audio["sources"] = sources;
+        }
+
         JsonObject hotkeys = ObjectAt(root, "hotkeys");
         SetIfMissing(hotkeys, "save_replay", "Ctrl+Shift+F8");
         SetIfMissing(hotkeys, "recording_start", "Ctrl+Shift+F9");
@@ -265,6 +340,7 @@ public sealed class SettingsService
         JsonObject capture = ObjectAt(root, "capture");
         JsonObject videoEncoder = ObjectAt(root, "video_encoder");
         JsonObject recording = ObjectAt(root, "recording");
+        JsonObject audio = ObjectAt(root, "audio");
 
         return new SettingsData
         {
@@ -278,6 +354,9 @@ public sealed class SettingsService
             RecordingStopHotkey = StringAt(hotkeys, "recording_stop", "Ctrl+Shift+F10"),
             PauseResumeHotkey = StringAt(hotkeys, "pause_resume", "Ctrl+Shift+F11"),
             RecordingContainer = StringAt(recording, "container", "mkv"),
+            AudioMode = StringAt(audio, "mode", "default"),
+            PrimaryMicrophoneDeviceId = StringAt(audio, "primary_microphone_device_id"),
+            AudioSources = ReadAudioSources(audio),
             MonitorDevice = StringAt(capture, "monitor_device"),
             ResolutionMode = StringAt(capture, "resolution_mode", "source"),
             ResolutionWidth = IntAt(capture, "resolution_width", 0),
@@ -315,11 +394,102 @@ public sealed class SettingsService
         JsonObject recording = ObjectAt(root, "recording");
         recording["container"] = settings.RecordingContainer == "mp4" ? "mp4" : "mkv";
 
+        JsonObject audio = ObjectAt(root, "audio");
+        audio["mode"] = settings.AudioMode == "custom" ? "custom" : "default";
+        audio["primary_microphone_device_id"] = settings.PrimaryMicrophoneDeviceId;
+        JsonArray sources = new();
+        foreach (AudioSourceData source in settings.AudioSources)
+        {
+            JsonObject item = new()
+            {
+                ["id"] = source.Id,
+                ["type"] = source.Type,
+                ["name"] = source.Name,
+                ["enabled"] = source.Enabled,
+                ["tracks"] = TracksToJson(source.Tracks),
+            };
+            if (!string.IsNullOrWhiteSpace(source.DeviceId))
+                item["device_id"] = source.DeviceId;
+            if (source.ProcessId != 0)
+                item["process_id"] = source.ProcessId;
+            if (!string.IsNullOrWhiteSpace(source.ProcessName))
+                item["process_name"] = source.ProcessName;
+            if (!string.IsNullOrWhiteSpace(source.ExecutablePath))
+                item["executable_path"] = source.ExecutablePath;
+            sources.Add(item);
+        }
+        audio["sources"] = sources;
+
         JsonObject hotkeys = ObjectAt(root, "hotkeys");
         hotkeys["save_replay"] = settings.SaveReplayHotkey;
         hotkeys["recording_start"] = settings.RecordingStartHotkey;
         hotkeys["recording_stop"] = settings.RecordingStopHotkey;
         hotkeys["pause_resume"] = settings.PauseResumeHotkey;
+    }
+
+    private static List<AudioSourceData> ReadAudioSources(JsonObject audio)
+    {
+        List<AudioSourceData> result = new();
+        if (audio["sources"] is not JsonArray arr)
+            return result;
+
+        foreach (JsonNode? item in arr)
+        {
+            if (item is not JsonObject obj)
+                continue;
+
+            AudioSourceData source = new()
+            {
+                Id = StringAt(obj, "id"),
+                Type = StringAt(obj, "type"),
+                Name = StringAt(obj, "name"),
+                DeviceId = StringAt(obj, "device_id"),
+                ProcessId = UIntAt(obj, "process_id", 0),
+                ProcessName = StringAt(obj, "process_name"),
+                ExecutablePath = StringAt(obj, "executable_path"),
+                Enabled = BoolAt(obj, "enabled", true),
+                Tracks = ReadTracks(obj["tracks"]),
+            };
+
+            if (source.Tracks.Count == 0)
+                continue;
+            if (source.Type is not ("desktop" or "input" or "process" or "active_game"))
+                continue;
+            if (string.IsNullOrWhiteSpace(source.Id))
+                source.Id = $"{source.Type}:{source.Name}:{source.ProcessId}:{source.DeviceId}";
+            if (string.IsNullOrWhiteSpace(source.Name))
+                source.Name = source.Id;
+            result.Add(source);
+        }
+
+        return result;
+    }
+
+    private static List<int> ReadTracks(JsonNode? node)
+    {
+        List<int> tracks = new();
+        if (node is not JsonArray arr)
+            return tracks;
+
+        foreach (JsonNode? item in arr)
+        {
+            int value;
+            try { value = item?.GetValue<int>() ?? 0; }
+            catch { continue; }
+            if (value < 1 || value > 6 || tracks.Contains(value))
+                continue;
+            tracks.Add(value);
+        }
+
+        return tracks;
+    }
+
+    private static JsonArray TracksToJson(IEnumerable<int> tracks)
+    {
+        JsonArray arr = new();
+        foreach (int track in tracks.Distinct().Where(t => t is >= 1 and <= 6).OrderBy(t => t))
+            arr.Add(JsonValue.Create(track));
+        return arr;
     }
 
     private void SaveRoot(JsonObject root)
@@ -380,6 +550,26 @@ public sealed class SettingsService
     {
         try { return root[key]?.GetValue<bool>() ?? false; }
         catch { return false; }
+    }
+
+    private static bool BoolAt(JsonObject root, string key, bool fallback)
+    {
+        try { return root[key]?.GetValue<bool>() ?? fallback; }
+        catch { return fallback; }
+    }
+
+    private static uint UIntAt(JsonObject root, string key, uint fallback)
+    {
+        try { return root[key]?.GetValue<uint>() ?? fallback; }
+        catch
+        {
+            try
+            {
+                int value = root[key]?.GetValue<int>() ?? (int)fallback;
+                return value < 0 ? fallback : (uint)value;
+            }
+            catch { return fallback; }
+        }
     }
 
     private static int ParseInt(string text, int fallback, int min, int max)

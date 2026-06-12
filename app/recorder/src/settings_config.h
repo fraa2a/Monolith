@@ -6,6 +6,18 @@
 
 namespace settings {
 
+struct AudioSourceConfig {
+    std::string id;
+    std::string type; // desktop | input | process | active_game
+    std::string name;
+    std::wstring device_id;
+    uint32_t process_id = 0;
+    std::string process_name;
+    std::wstring executable_path;
+    bool enabled = true;
+    std::vector<int> tracks;
+};
+
 struct Config {
     std::wstring user_config_path;
     std::wstring clips_directory;
@@ -14,6 +26,11 @@ struct Config {
     int replay_duration_seconds = 30;
     int64_t replay_memory_budget_mb = 512;
     std::string recording_container = "mkv"; // "mkv" | "mp4"
+
+    // Audio (restart-required).
+    std::string audio_mode = "default"; // "default" | "custom"
+    std::wstring primary_microphone_device_id;
+    std::vector<AudioSourceConfig> audio_sources;
 
     // Capture (restart-required).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
@@ -58,8 +75,25 @@ struct RuntimeMonitor {
     bool primary = false;
 };
 
+struct RuntimeAudioDevice {
+    std::wstring id;
+    std::wstring name;
+    bool default_device = false;
+    bool available = true;
+};
+
+struct RuntimeAudioSession {
+    uint32_t process_id = 0;
+    std::wstring process_name;
+    std::wstring display_name;
+    std::wstring executable_path;
+};
+
 struct RuntimeStatus {
     std::vector<RuntimeMonitor> monitors;
+    std::vector<RuntimeAudioDevice> input_devices;
+    std::vector<RuntimeAudioSession> audio_sessions;
+    RuntimeAudioSession active_game;
     std::vector<std::string> available_encoders;
     std::string active_encoder;        // "" until the encoder opens
     std::wstring active_monitor_device;
