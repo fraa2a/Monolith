@@ -20,7 +20,6 @@
                 <NavigationViewItem x:Name="NavGeneral"    Content="General"   Tag="General"   IsSelected="True" />
                 <NavigationViewItem x:Name="NavOutput"     Content="Output"    Tag="Output" />
                 <NavigationViewItem x:Name="NavClip"       Content="Clip"      Tag="Clip" />
-                <NavigationViewItem x:Name="NavRecording"  Content="Recording" Tag="Recording" />
                 <NavigationViewItem x:Name="NavCapture"    Content="Capture"   Tag="Capture" />
                 <NavigationViewItem x:Name="NavAudio"      Content="Audio"     Tag="Audio" />
                 <NavigationViewItem x:Name="NavHotkeys"    Content="Hotkeys"   Tag="Hotkeys" />
@@ -71,6 +70,10 @@
 
                             <!-- ══ OUTPUT PAGE ═══════════════════════════════════ -->
                             <StackPanel x:Name="OutputPage" Spacing="18" Visibility="Collapsed">
+                                <InfoBar
+                                    IsOpen="True"
+                                    Severity="Informational"
+                                    Message="Output folders apply to future saves. Replay clips are MKV only; manual recordings support MKV or MP4." />
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="16">
                                         <TextBlock Text="Clip Storage" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -106,10 +109,44 @@
                                         </Grid>
                                     </StackPanel>
                                 </Border>
+
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="16">
+                                        <TextBlock Text="Formats" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <Grid ColumnSpacing="16" RowSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="180" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+
+                                            <TextBlock Grid.Row="0" Text="Replay clips" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                            <TextBox Grid.Row="0" Grid.Column="1" Text="MKV (Matroska)" IsReadOnly="True" />
+
+                                            <TextBlock Grid.Row="1" Text="Manual recordings" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                            <ComboBox
+                                                x:Name="RecordingFormatComboBox"
+                                                Grid.Row="1"
+                                                Grid.Column="1"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="OnRecordingFormatSelectionChanged">
+                                                <ComboBoxItem Content="MKV (Matroska)" Tag="mkv" />
+                                                <ComboBoxItem Content="MP4 (MPEG-4)" Tag="mp4" />
+                                            </ComboBox>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
 
                             <!-- ══ CLIP PAGE ═════════════════════════════════════ -->
                             <StackPanel x:Name="ClipPage" Spacing="18" Visibility="Collapsed">
+                                <InfoBar
+                                    IsOpen="True"
+                                    Severity="Success"
+                                    Message="Scope: live replay-buffer reconfigure after save. Active recordings are not interrupted." />
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="16">
                                         <TextBlock Text="Replay Buffer" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -161,47 +198,12 @@
 
                             </StackPanel>
 
-                            <!-- ══ RECORDING PAGE ════════════════════════════════ -->
-                            <StackPanel x:Name="RecordingPage" Spacing="18" Visibility="Collapsed">
-                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
-                                    <StackPanel Spacing="14">
-                                        <TextBlock Text="Recording Output" FontSize="18" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                                        <Grid ColumnSpacing="16" RowSpacing="10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="180" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-                                            <TextBlock Grid.Row="0" Text="Output folder" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                            <TextBox Grid.Row="0" Grid.Column="1"
-                                                Text="{Binding RecordingsDirectory}"
-                                                IsReadOnly="True"
-                                                FontFamily="Cascadia Mono, Consolas, monospace"
-                                                FontSize="12" />
-                                            <TextBlock Grid.Row="1" Text="Format" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                            <ComboBox
-                                                Grid.Row="1"
-                                                Grid.Column="1"
-                                                x:Name="RecordingFormatComboBox"
-                                                HorizontalAlignment="Stretch"
-                                                SelectionChanged="OnRecordingFormatSelectionChanged">
-                                                <ComboBoxItem Content="MKV (Matroska)" Tag="mkv" />
-                                                <ComboBoxItem Content="MP4" Tag="mp4" />
-                                            </ComboBox>
-                                        </Grid>
-                                    </StackPanel>
-                                </Border>
-                            </StackPanel>
-
                             <!-- ══ CAPTURE PAGE ══════════════════════════════════ -->
                             <StackPanel x:Name="CapturePage" Spacing="18" Visibility="Collapsed">
                                 <InfoBar
                                     IsOpen="True"
                                     Severity="Informational"
-                                    Message="Capture &amp; encoder changes take effect after Monolith restarts." />
+                                    Message="Scope: capture/encoder restart when no manual recording is active. Unsafe changes are deferred while recording." />
 
                                 <!-- Monitor selection -->
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
@@ -337,7 +339,7 @@
                                 <InfoBar
                                     IsOpen="True"
                                     Severity="Informational"
-                                    Message="Audio routing changes take effect after Monolith restarts. Shared-track mixing and process loopback are best-effort in this build." />
+                                    Message="Scope: audio routing restart when no manual recording is active. Same-track multi-source mixing is not implemented yet." />
 
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
@@ -370,7 +372,7 @@
                                                 x:Name="AddAudioSourceComboBox"
                                                 Header="Add source"
                                                 HorizontalAlignment="Stretch" />
-                                            <Button Grid.Column="1" Content="Add" VerticalAlignment="Bottom" Click="OnAddAudioSource" />
+                                            <Button x:Name="AddAudioSourceButton" Grid.Column="1" Content="Add" VerticalAlignment="Bottom" Click="OnAddAudioSource" />
                                         </Grid>
                                         <Grid ColumnSpacing="18">
                                             <Grid.ColumnDefinitions>
@@ -387,15 +389,24 @@
                                                     x:Name="AudioSourceEnabledToggle"
                                                     Header="Enabled"
                                                     Toggled="OnAudioSourceEnabledToggled" />
-                                                <TextBlock Text="Tracks" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                                    <CheckBox x:Name="AudioTrack1Box" Content="1" Tag="1" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
-                                                    <CheckBox x:Name="AudioTrack2Box" Content="2" Tag="2" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
-                                                    <CheckBox x:Name="AudioTrack3Box" Content="3" Tag="3" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
-                                                    <CheckBox x:Name="AudioTrack4Box" Content="4" Tag="4" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
-                                                    <CheckBox x:Name="AudioTrack5Box" Content="5" Tag="5" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
-                                                    <CheckBox x:Name="AudioTrack6Box" Content="6" Tag="6" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
-                                                </StackPanel>
+                                                <TextBlock Text="Tracks 1-6" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                <Grid ColumnSpacing="8" RowSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                    </Grid.RowDefinitions>
+                                                    <CheckBox x:Name="AudioTrack1Box" Grid.Row="0" Grid.Column="0" MinWidth="72" Content="Track 1" Tag="1" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack2Box" Grid.Row="0" Grid.Column="1" MinWidth="72" Content="Track 2" Tag="2" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack3Box" Grid.Row="0" Grid.Column="2" MinWidth="72" Content="Track 3" Tag="3" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack4Box" Grid.Row="1" Grid.Column="0" MinWidth="72" Content="Track 4" Tag="4" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack5Box" Grid.Row="1" Grid.Column="1" MinWidth="72" Content="Track 5" Tag="5" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                    <CheckBox x:Name="AudioTrack6Box" Grid.Row="1" Grid.Column="2" MinWidth="72" Content="Track 6" Tag="6" Checked="OnAudioTrackChecked" Unchecked="OnAudioTrackChecked" />
+                                                </Grid>
                                                 <Button Content="Remove source" Click="OnRemoveAudioSource" />
                                             </StackPanel>
                                         </Grid>
@@ -432,7 +443,7 @@
                                         <InfoBar
                                             IsOpen="True"
                                             Severity="Informational"
-                                            Message="Click a field, press the key or key combination, then save. Saved changes reload in Monolith after Settings closes." />
+                                            Message="Scope: hotkeys reload live after save when Monolith is running." />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

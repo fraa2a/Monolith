@@ -392,11 +392,67 @@ static void show_settings(HWND hwnd)
 
 static void hotkeys_register(HWND hwnd);
 static void hotkeys_unregister(HWND hwnd);
+static void stop_audio_system();
+static void start_audio_system();
+static void media_start(HWND hwnd);
+static void media_stop();
+static std::vector<int> valid_tracks(const std::vector<int>& tracks);
+
+static bool same_tracks(const std::vector<int>& a, const std::vector<int>& b)
+{
+    return valid_tracks(a) == valid_tracks(b);
+}
+
+static bool same_audio_source(const settings::AudioSourceConfig& a,
+                              const settings::AudioSourceConfig& b)
+{
+    return a.id == b.id
+        && a.type == b.type
+        && a.name == b.name
+        && a.device_id == b.device_id
+        && a.process_id == b.process_id
+        && a.process_name == b.process_name
+        && a.executable_path == b.executable_path
+        && a.enabled == b.enabled
+        && same_tracks(a.tracks, b.tracks);
+}
+
+static bool audio_config_changed(const settings::Config& a, const settings::Config& b)
+{
+    if (a.audio_mode != b.audio_mode ||
+        a.primary_microphone_device_id != b.primary_microphone_device_id ||
+        a.audio_sources.size() != b.audio_sources.size()) {
+        return true;
+    }
+
+    for (size_t i = 0; i < a.audio_sources.size(); ++i) {
+        if (!same_audio_source(a.audio_sources[i], b.audio_sources[i]))
+            return true;
+    }
+    return false;
+}
+
+static bool capture_encoder_config_changed(const settings::Config& a,
+                                           const settings::Config& b)
+{
+    return a.monitor_device != b.monitor_device
+        || a.resolution_mode != b.resolution_mode
+        || a.output_width != b.output_width
+        || a.output_height != b.output_height
+        || a.show_capture_border != b.show_capture_border
+        || a.encoder_backend != b.encoder_backend
+        || a.video_bitrate_kbps != b.video_bitrate_kbps
+        || a.extra_ffmpeg_options != b.extra_ffmpeg_options;
+}
 
 static void reload_settings_from_disk(HWND hwnd)
 {
     settings::Config previous = g_settings;
     load_app_settings();
+    const bool capture_or_encoder_changed =
+        capture_encoder_config_changed(previous, g_settings);
+    const bool audio_changed = audio_config_changed(previous, g_settings);
+
     apply_runtime_settings();
     log_msg("settings", "settings reloaded from WinUI app");
 
@@ -409,20 +465,28 @@ static void reload_settings_from_disk(HWND hwnd)
         log_msg("hotkey", "hotkeys reloaded from settings");
     }
 
-    // Capture/encoder settings are read once at media_start; flag the
-    // difference instead of pretending they were applied live.
-    if (previous.monitor_device       != g_settings.monitor_device ||
-        previous.resolution_mode      != g_settings.resolution_mode ||
-        previous.output_width         != g_settings.output_width ||
-        previous.output_height        != g_settings.output_height ||
-        previous.show_capture_border  != g_settings.show_capture_border ||
-        previous.encoder_backend      != g_settings.encoder_backend ||
-        previous.video_bitrate_kbps   != g_settings.video_bitrate_kbps ||
-        previous.extra_ffmpeg_options != g_settings.extra_ffmpeg_options ||
-        previous.audio_mode           != g_settings.audio_mode ||
-        previous.primary_microphone_device_id != g_settings.primary_microphone_device_id ||
-        previous.audio_sources.size() != g_settings.audio_sources.size()) {
-        log_msg("settings", "capture/encoder/audio changes saved: restart Monolith to apply");
+    if (!capture_or_encoder_changed && !audio_changed)
+        return;
+
+    if (g_recording.state() != recording::RecordingState::Idle) {
+        log_msg("settings", "capture/audio changes deferred: manual recording is active");
+        return;
+    }
+
+    if (capture_or_encoder_changed) {
+        log_msg("settings", "capture/encoder settings changed: restarting capture pipeline");
+        media_stop();
+        g_replay.clear();
+        media_start(hwnd);
+        return;
+    }
+
+    if (audio_changed) {
+        log_msg("settings", "audio routing changed: restarting audio pipeline");
+        stop_audio_system();
+        g_replay.clear();
+        start_audio_system();
+        publish_runtime_status();
     }
 
     // Component toggles gate commands/menu immediately, but the media pipeline
