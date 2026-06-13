@@ -86,7 +86,6 @@ public sealed partial class MainWindow : Window
         ConfigureWindow();
         PopulateCaptureCombos();
         SelectRecordingFormat();
-        SelectClipFormat();
         PopulateAudioControls();
         RefreshAudioSourcesList();
         UpdateCaptureBorderWarning();
@@ -290,13 +289,6 @@ public sealed partial class MainWindow : Window
     {
         suppressComboBoxEvents = true;
         SelectComboBoxByTag(RecordingFormatComboBox, viewModel.RecordingContainer);
-        suppressComboBoxEvents = false;
-    }
-
-    private void SelectClipFormat()
-    {
-        suppressComboBoxEvents = true;
-        SelectComboBoxByTag(ClipFormatComboBox, viewModel.ClipContainer);
         suppressComboBoxEvents = false;
     }
 
@@ -681,15 +673,6 @@ public sealed partial class MainWindow : Window
 
         if (RecordingFormatComboBox.SelectedItem is ComboBoxItem item && item.Tag is string container)
             viewModel.RecordingContainer = container;
-    }
-
-    private void OnClipFormatSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (suppressComboBoxEvents)
-            return;
-
-        if (ClipFormatComboBox.SelectedItem is ComboBoxItem item && item.Tag is string container)
-            viewModel.ClipContainer = container;
     }
 
     private void OnAudioModeSelectionChanged(object sender, SelectionChangedEventArgs e)

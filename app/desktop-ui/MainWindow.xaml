@@ -87,7 +87,7 @@
                                 <InfoBar
                                     IsOpen="True"
                                     Severity="Informational"
-                                    Message="Output folders apply to future saves. Replay clips are MKV only; manual recordings support MKV or MP4." />
+                                    Message="Output folders and format apply to future clips and recordings." />
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="16">
                                         <TextBlock Text="Clip Storage" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -132,18 +132,9 @@
                                                 <ColumnDefinition Width="180" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-
-                                            <TextBlock Grid.Row="0" Text="Replay clips" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                            <TextBox Grid.Row="0" Grid.Column="1" Text="MKV (Matroska)" IsReadOnly="True" />
-
-                                            <TextBlock Grid.Row="1" Text="Manual recordings" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                            <TextBlock Text="Clips and recordings" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
                                             <ComboBox
                                                 x:Name="RecordingFormatComboBox"
-                                                Grid.Row="1"
                                                 Grid.Column="1"
                                                 HorizontalAlignment="Stretch"
                                                 SelectionChanged="OnRecordingFormatSelectionChanged">
@@ -185,27 +176,6 @@
                                                 <TextBlock Text="Ring-buffer cap for encoded packets. Applies live after save." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                                             </StackPanel>
                                             <TextBox Grid.Column="1" Text="{Binding ReplayMemoryBudgetMb, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        </Grid>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
-                                    <StackPanel Spacing="14">
-                                        <TextBlock Text="Clip Output" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                                        <Grid ColumnSpacing="16" RowSpacing="10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="180" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Row="0" Text="Format" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                            <ComboBox
-                                                Grid.Column="1"
-                                                x:Name="ClipFormatComboBox"
-                                                HorizontalAlignment="Stretch"
-                                                SelectionChanged="OnClipFormatSelectionChanged">
-                                                <ComboBoxItem Content="MKV (Matroska)" Tag="mkv" />
-                                                <ComboBoxItem Content="MP4" Tag="mp4" />
-                                            </ComboBox>
                                         </Grid>
                                     </StackPanel>
                                 </Border>

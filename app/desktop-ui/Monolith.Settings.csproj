@@ -14,7 +14,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <WindowsSdkPackageVersion>10.0.26100.56</WindowsSdkPackageVersion>
     <!-- App version: overridden by CMake publish via -p:Version=X.Y.Z. -->
-    <Version>0.3.0</Version>
+    <Version>0.4.3</Version>
     <!-- Self-contained: bundle .NET + Windows App SDK runtimes so installed
          machines need no prerequisites. WinUI 3 is not trim-safe. -->
     <SelfContained>true</SelfContained>
@@ -23,7 +23,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.2.1" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" Version="2.1.0" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
   </ItemGroup>
 
