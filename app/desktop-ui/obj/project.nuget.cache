@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "oOJliikUcSc9ZXpGSM2al6Bdf+aPwmFDGfKCnbcdw1RgC36oUqU81NXVPSu3hRW9wZ4DW3SwccauYpo9GBcWoQ==",
+  "dgSpecHash": "gWIPv2J+s8Glg+3fMi9jMNfxRN1Mh93nGSZGiQN1/5RO0oj4NG9mhp0hbu1FY2Ze/YJb5uMTbkjc09lOrAnPdA==",
   "success": true,
   "projectFilePath": "C:\\Pattumiera\\Monolith\\app\\desktop-ui\\Monolith.Settings.csproj",
   "expectedPackageFiles": [
@@ -24,12 +24,5 @@
     "C:\\Users\\Mario\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\8.0.0\\microsoft.aspnetcore.app.runtime.win-x64.8.0.0.nupkg.sha512",
     "C:\\Users\\Mario\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.26100.56\\microsoft.windows.sdk.net.ref.10.0.26100.56.nupkg.sha512"
   ],
-  "logs": [
-    {
-      "code": "Undefined",
-      "level": "Warning",
-      "warningLevel": 1,
-      "message": "Problem reading the cache file C:\\Pattumiera\\Monolith\\app\\desktop-ui\\obj\\project.nuget.cache : Invalid property identifier character: <. Path 'version', line 3, position 0."
-    }
-  ]
+  "logs": []
 }

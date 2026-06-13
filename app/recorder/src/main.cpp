@@ -18,9 +18,11 @@
 #include <replay-buffer/replay_buffer.h>
 #include <recording/recording.h>
 
+#include "ipc_server.h"
 #include "resource.h"
 #include "settings_config.h"
 #include "settings_window.h"
+#include "updater.h"
 
 #include <atomic>
 #include <algorithm>
@@ -50,6 +52,7 @@ enum Cmd : UINT {
     CMD_PAUSE_RESUME    = 1004,
     CMD_SETTINGS        = 1005,
     CMD_EXIT            = 1006,
+    CMD_CHECK_UPDATE    = 1007,
 };
 
 // ── Logging ───────────────────────────────────────────────────────────────────
@@ -465,6 +468,20 @@ static void reload_settings_from_disk(HWND hwnd)
         log_msg("hotkey", "hotkeys reloaded from settings");
     }
 
+    if (previous.update_auto_check != g_settings.update_auto_check) {
+        updater::set_auto_check(g_settings.update_auto_check);
+        log_msg("updater", g_settings.update_auto_check
+            ? "automatic update checks enabled"
+            : "automatic update checks disabled");
+    }
+
+    // Component toggles gate commands/menu immediately, but the media pipeline
+    // shape (capture/encoders started or skipped) is decided at media_start.
+    if (previous.replay_buffer_enabled != g_settings.replay_buffer_enabled ||
+        previous.recording_enabled     != g_settings.recording_enabled) {
+        log_msg("settings", "component toggles saved: restart Monolith to fully apply");
+    }
+
     if (!capture_or_encoder_changed && !audio_changed)
         return;
 
@@ -487,13 +504,6 @@ static void reload_settings_from_disk(HWND hwnd)
         g_replay.clear();
         start_audio_system();
         publish_runtime_status();
-    }
-
-    // Component toggles gate commands/menu immediately, but the media pipeline
-    // shape (capture/encoders started or skipped) is decided at media_start.
-    if (previous.replay_buffer_enabled != g_settings.replay_buffer_enabled ||
-        previous.recording_enabled     != g_settings.recording_enabled) {
-        log_msg("settings", "component toggles saved: restart Monolith to fully apply");
     }
 }
 
@@ -1080,6 +1090,7 @@ static void tray_show_menu(HWND hwnd)
     AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Settings\x2026");
+    AppendMenuW(menu, MF_STRING,             CMD_CHECK_UPDATE,    L"Check for Updates\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_EXIT,            L"Exit");
     POINT pt;
@@ -1409,6 +1420,10 @@ static void dispatch(Cmd cmd, HWND hwnd)
         log_msg("tray", "settings opened");
         show_settings(hwnd);
         break;
+    case CMD_CHECK_UPDATE:
+        log_msg("updater", "manual update check requested");
+        updater::check_now();
+        break;
     case CMD_EXIT:
         log_msg("app", "exit requested");
         DestroyWindow(hwnd);
@@ -1425,6 +1440,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         tray_add(hwnd);
         hotkeys_register(hwnd);
         media_start(hwnd);
+        ipc::start(hwnd, [&]() -> ipc::RecordingState {
+            auto st = g_recording.state();
+            return {
+                st == recording::RecordingState::Recording,
+                st == recording::RecordingState::Paused,
+                g_settings.replay_buffer_enabled,
+                g_settings.recording_enabled,
+            };
+        });
         publish_runtime_status();
         log_msg("app", "app shell ready");
         return 0;
@@ -1439,6 +1463,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DESTROY:
         settings_window::close_running();
         KillTimer(hwnd, kActiveGameTimerId);
+        updater::shutdown();
+        ipc::stop();
         media_stop();
         hotkeys_unregister(hwnd);
         tray_remove();
@@ -1485,6 +1511,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     log_init();
     log_msg("app", "initializing (Monolith: replay + manual recording)");
     load_app_settings();
+    updater::init(g_settings.update_auto_check);
 
     WNDCLASSEXW wc   = {};
     wc.cbSize        = sizeof(wc);

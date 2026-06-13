@@ -1,4 +1,37 @@
+#include <winres.h>
 #include "src/resource.h"
+#include "version.h"
 
 // Lowest-ID icon doubles as the executable's shell icon.
 IDI_MONOLITH ICON "../assets/Monolith.ico"
+
+// File version resource — read by Explorer, installers, and WinSparkle
+// (update comparison uses the FileVersion of the running executable).
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     MONOLITH_VERSION_MAJOR,MONOLITH_VERSION_MINOR,MONOLITH_VERSION_PATCH,0
+PRODUCTVERSION  MONOLITH_VERSION_MAJOR,MONOLITH_VERSION_MINOR,MONOLITH_VERSION_PATCH,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0" // U.S. English, Unicode
+        BEGIN
+            VALUE "CompanyName",      "Monolith"
+            VALUE "FileDescription",  "Monolith game recorder"
+            VALUE "FileVersion",      MONOLITH_VERSION_STRING
+            VALUE "InternalName",     "Monolith"
+            VALUE "LegalCopyright",   "Licensed under GNU GPL v3"
+            VALUE "OriginalFilename", "Monolith.exe"
+            VALUE "ProductName",      "Monolith"
+            VALUE "ProductVersion",   MONOLITH_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

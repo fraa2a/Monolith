@@ -68,6 +68,9 @@ constexpr const char* kFallbackDefaultConfig = R"json(
     "recording_start": "Ctrl+Shift+F9",
     "recording_stop": "Ctrl+Shift+F10",
     "pause_resume": "Ctrl+Shift+F11"
+  },
+  "update": {
+    "auto_check": true
   }
 }
 )json";
@@ -374,6 +377,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["hotkeys"]["recording_start"] = config.hotkey_recording_start;
     doc["hotkeys"]["recording_stop"] = config.hotkey_recording_stop;
     doc["hotkeys"]["pause_resume"] = config.hotkey_pause_resume;
+    doc["update"]["auto_check"] = config.update_auto_check;
 }
 
 Config config_from_json(
@@ -410,6 +414,8 @@ Config config_from_json(
     if (config.recording_container != "mkv" && config.recording_container != "mp4")
         config.recording_container = "mkv";
     config.recording_enabled = bool_at(doc, "recording", "enabled", true);
+
+    config.update_auto_check = bool_at(doc, "update", "auto_check", true);
 
     config.audio_mode = utf8_at(doc, "audio", "mode", "default");
     if (config.audio_mode != "default" && config.audio_mode != "custom")

@@ -47,6 +47,9 @@ struct Config {
     int video_bitrate_kbps = 20000;       // clamped 1000–100000
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
 
+    // Auto-update (applied live via WinSparkle on settings reload).
+    bool update_auto_check = true;
+
     std::string hotkey_save_replay = "Ctrl+Shift+F8";
     std::string hotkey_recording_start = "Ctrl+Shift+F9";
     std::string hotkey_recording_stop = "Ctrl+Shift+F10";

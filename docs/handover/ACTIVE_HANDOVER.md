@@ -12,6 +12,7 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 - Milestone 4 complete enough for MVP: manual recording start/stop/pause/resume is wired from tray and hotkeys.
 - Milestone 5 complete: WinUI 3 Settings opens from the tray, saves config, persists across restarts, lazy-loads expensive runtime data, and reports realistic apply scopes instead of defaulting to full-app restart.
 - Milestone 6 foundation implemented: Default audio mode, Custom routing config/UI, source enumeration, source removal, multiple input devices, and up to six encoded audio tracks are wired. Mixer/A/V soak testing remains open.
+- Distribution milestone implemented: versioned builds, self-contained Settings sidecar, per-user Inno Setup installer, WinSparkle auto-update, and a tag-driven release pipeline publishing to a public release-only repo. One-time release setup (key generation, public repo, CI secrets) is documented in `docs/RELEASING.md` and still pending.
 
 ## Locked Architecture
 
@@ -36,6 +37,15 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 - App wiring: WGC frames and configured audio sources feed encoders; encoded packets feed replay buffer and, when armed, the manual recorder. Default audio mode routes desktop audio to track 1 and selected microphone to track 2.
 - User media output defaults to `Videos\Monolith\Clips` and `Videos\Monolith\Recordings`; logs/runtime data stay under `AppData\Local\Monolith`.
 - Settings: `AppData\Local\Monolith\config.json`, default/user JSON merge through `nlohmann-json`, and a WinUI 3 tray-launched settings sidecar. Settings has been manually tested: it opens, saves configuration, persists across restarts, and notifies the recorder to reload settings after save.
+- App icon: `Monolith.ico` embedded via `app/recorder/monolith.rc` (tray + exe icon) and used by the Settings sidecar and installer.
+- Replay clips support MP4 in addition to MKV: `replay_buffer.save_container` config field, Settings Output-tab format selector, and MP4 clip write path in `libs/replay-buffer` (video-only fallback preserved).
+- Component toggles: `replay_buffer.enabled` / `recording.enabled` (Settings Components card) let low-end users disable the replay buffer or manual recording entirely; disabled components skip pipeline work and their tray menu items render grayed/disabled.
+- Active Game audio source detection improved beyond raw foreground-process: `detect_active_game()` in `libs/audio` scores candidate windows (+2 fullscreen-sized, +2 foreground, +1 owns a render audio session), excludes shell processes, and falls back to the bare foreground process; still best-effort and fail-closed when no game is found.
+- Versioning: single source of truth flows git tag → `-DMONOLITH_VERSION` (CMake cache var, default from `project(monolith VERSION ...)`) → generated `version.h` (consumed by the `.rc` VERSIONINFO block and the updater) and `dotnet publish -p:Version=`. `Monolith.exe` and `Monolith.Settings.exe` both carry the real file version.
+- Self-contained sidecar: `Monolith.Settings.csproj` publishes with `SelfContained` + `WindowsAppSDKSelfContained` (`PublishTrimmed=false`; WinUI3 not trim-safe). No .NET or Windows App SDK prerequisites on target machines; payload stays flat next to `Monolith.exe`.
+- Auto-update: WinSparkle (vcpkg dep, pinned `builtin-baseline`) integrated via `app/recorder/src/updater.{h,cpp}`; tray menu "Check for Updates…" (`CMD_CHECK_UPDATE`); `update.auto_check` config field (default true) with a Settings "Updates" card toggle, applied live on settings reload. Appcast URL points at `fraa2a/Monolith-releases` latest release; EdDSA public key placeholder (`kEdDsaPublicKey`) must be filled after one-time keygen (see `docs/RELEASING.md`).
+- Installer: `installer/monolith.iss` — per-user (`PrivilegesRequired=lowest`, `{localappdata}\Programs\Monolith`, no UAC so WinSparkle can update silently), stable AppId GUID for in-place upgrades, GPLv3 license page, optional desktop/startup tasks, full self-contained payload; uninstall never touches user config in AppData.
+- Release CI: `.github/workflows/version-tag.yml` extracts the version from tag `vX.Y.Z`, builds with pinned vcpkg, compiles the installer, signs it and generates `appcast.xml` (`scripts/generate-appcast.ps1`, Ed25519 via openssl), creates a GPLv3 source zip (`git archive`), and publishes everything to the public `fraa2a/Monolith-releases` repo via `RELEASES_REPO_PAT`.
 
 ## Latest Continuation Notes
 
@@ -70,14 +80,15 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 
 - PCM mixer for multiple simultaneous sources sharing the same output track.
 - Long-session A/V sync soak tests for the new multi-track audio path.
-- Strong game detection; Active Game is foreground-process best effort.
+- Strong game detection; Active Game uses heuristic window scoring, still best effort.
 - True live audio re-route without restarting the audio pipeline.
 - Real IPC server/client.
 - Stream Deck plugin code.
 - Desktop Duplication fallback.
 - GPU-resident encoder path; current spike uses CPU-readable BGRA staging.
-- MP4 replay-clip remux support; replay clips are MKV only.
 - Automated tests for replay/manual recording.
+- Release one-time setup: public repo `fraa2a/Monolith-releases`, Ed25519 keygen + public key in `updater.cpp`, CI secrets `WINSPARKLE_ED_PRIVATE_KEY` / `RELEASES_REPO_PAT` (see `docs/RELEASING.md`).
+- Clean-VM verification of the self-contained installer and a real end-to-end update-path test (needs first public release).
 
 ## Build/Verification
 
@@ -96,6 +107,9 @@ Known result:
 - Settings smoke succeeds: published `Monolith.Settings.exe` opens/closes, Audio page initializes without exception, and UIAutomation can find Track 1 through Track 6 controls.
 - Runtime smoke succeeds for replay command dispatch: `20260612_191331_30s_clip.mkv` was written under `Videos\Monolith\Clips`.
 - Runtime smoke succeeds for manual recording with the current user config `recording.container=mp4`: `20260612_191451_recording.mp4` was written under `Videos\Monolith\Recordings` after a longer recording window.
+- Distribution build verified locally as of 2026-06-12: Release build with `winsparkle` from pinned vcpkg baseline succeeds; `Monolith.exe` FileVersion 0.3.0 and `Monolith.Settings.exe` 0.3.0.0; payload is self-contained (519 files, ~239MB incl. `WinSparkle.dll`, `coreclr.dll`, `hostfxr.dll`, `Microsoft.WindowsAppRuntime.dll`); runtime smoke "app shell ready".
+- Installer verified locally: Inno Setup 6.7.3 compiles `installer/monolith.iss` → `MonolithSetup-0.3.0.exe` (~65.8MB).
+- `scripts/generate-appcast.ps1` verified for both unsigned (warning) and signed paths with a throwaway Ed25519 key (64-byte signature, valid base64 edSignature).
 
 ## Next Steps
 
@@ -104,6 +118,8 @@ Known result:
 3. Runtime-test Custom mode with multiple input devices, process loopback, source removal, missing devices/processes, and save-triggered pipeline reload.
 4. Add a small integration/unit test harness for settings merge/load behavior, audio routing validation, and `ReplayBuffer::save_clip`.
 5. Continue runtime hardening: graceful shutdown, capture stop races, encoder failure UX/logs, and A/V sync checks.
+6. Complete release one-time setup per `docs/RELEASING.md` (public repo, Ed25519 keys, secrets), then push a `vX.Y.Z` tag and verify the public release + update path end to end.
+7. Test the installed build on a clean VM/user without .NET or Windows App SDK.
 
 ## Open Risks
 

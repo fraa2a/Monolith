@@ -8,10 +8,18 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Generated version header consumed by monolith.rc and the updater.
+configure_file(
+    src/version.h.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
+    @ONLY
+)
+
 add_executable(monolith WIN32
     src/main.cpp
     src/settings_config.cpp
     src/settings_window.cpp
+    src/updater.cpp
     monolith.rc
 )
 
@@ -22,6 +30,7 @@ set_target_properties(monolith PROPERTIES
 target_include_directories(monolith
     PRIVATE
         include
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 
 target_compile_definitions(monolith
@@ -32,6 +41,12 @@ target_compile_definitions(monolith
         NOMINMAX
 )
 
+# WinSparkle ships as a prebuilt DLL via vcpkg (no CMake config package).
+find_path(WINSPARKLE_INCLUDE_DIR winsparkle/winsparkle.h REQUIRED)
+find_library(WINSPARKLE_LIBRARY WinSparkle REQUIRED)
+
+target_include_directories(monolith PRIVATE "${WINSPARKLE_INCLUDE_DIR}")
+
 target_link_libraries(monolith
     PRIVATE
         capture
@@ -39,7 +54,9 @@ target_link_libraries(monolith
         encoding
         replay_buffer
         recording
+        ipc
         nlohmann_json::nlohmann_json
+        "${WINSPARKLE_LIBRARY}"
         # System libs
         d3d11
         dxgi

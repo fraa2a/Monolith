@@ -45,5 +45,8 @@
     "recording_start": "Ctrl+Shift+F9",
     "recording_stop": "Ctrl+Shift+F10",
     "pause_resume": "Ctrl+Shift+F11"
+  },
+  "update": {
+    "auto_check": true
   }
 }

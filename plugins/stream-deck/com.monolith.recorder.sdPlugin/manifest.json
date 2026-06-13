@@ -1,0 +1,44 @@
+{
+  "Name": "Monolith Recorder",
+  "Author": "Monolith",
+  "Description": "Control Monolith game recorder from your Stream Deck.",
+  "Version": "0.1.0",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.0"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "CodePathWin": "bin/plugin.js",
+  "UUID": "com.monolith.recorder",
+  "Actions": [
+    {
+      "Name": "Save Replay",
+      "UUID": "com.monolith.recorder.save-replay",
+      "Icon": "imgs/save-replay",
+      "SupportedInMultiActions": true,
+      "Controllers": ["Keypad"],
+      "Tooltip": "Save the current replay buffer to a clip file."
+    },
+    {
+      "Name": "Toggle Recording",
+      "UUID": "com.monolith.recorder.recording-toggle",
+      "Icon": "imgs/record-idle",
+      "SupportedInMultiActions": false,
+      "Controllers": ["Keypad"],
+      "Tooltip": "Start recording if idle, stop recording if active."
+    },
+    {
+      "Name": "Pause / Resume",
+      "UUID": "com.monolith.recorder.pause-resume",
+      "Icon": "imgs/pause",
+      "SupportedInMultiActions": false,
+      "Controllers": ["Keypad"],
+      "Tooltip": "Pause or resume the current recording."
+    }
+  ]
+}

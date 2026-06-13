@@ -54,6 +54,9 @@ public sealed class SettingsService
         "recording_start": "Ctrl+Shift+F9",
         "recording_stop": "Ctrl+Shift+F10",
         "pause_resume": "Ctrl+Shift+F11"
+      },
+      "update": {
+        "auto_check": true
       }
     }
     """;
@@ -332,6 +335,9 @@ public sealed class SettingsService
         SetIfMissing(hotkeys, "recording_start", "Ctrl+Shift+F9");
         SetIfMissing(hotkeys, "recording_stop", "Ctrl+Shift+F10");
         SetIfMissing(hotkeys, "pause_resume", "Ctrl+Shift+F11");
+
+        JsonObject update = ObjectAt(root, "update");
+        SetIfMissing(update, "auto_check", true);
     }
 
     private static SettingsData ToSettingsData(JsonObject root)
@@ -343,6 +349,7 @@ public sealed class SettingsService
         JsonObject videoEncoder = ObjectAt(root, "video_encoder");
         JsonObject recording = ObjectAt(root, "recording");
         JsonObject audio = ObjectAt(root, "audio");
+        JsonObject update = ObjectAt(root, "update");
 
         return new SettingsData
         {
@@ -370,6 +377,7 @@ public sealed class SettingsService
             EncoderBackend = StringAt(videoEncoder, "backend", "auto"),
             BitrateKbps = IntAt(videoEncoder, "bitrate_kbps", 20000),
             ExtraFfmpegOptions = StringAt(videoEncoder, "extra_ffmpeg_options"),
+            AutoCheckUpdates = BoolAt(update, "auto_check", true),
         };
     }
 
@@ -433,6 +441,9 @@ public sealed class SettingsService
         hotkeys["recording_start"] = settings.RecordingStartHotkey;
         hotkeys["recording_stop"] = settings.RecordingStopHotkey;
         hotkeys["pause_resume"] = settings.PauseResumeHotkey;
+
+        JsonObject update = ObjectAt(root, "update");
+        update["auto_check"] = settings.AutoCheckUpdates;
     }
 
     private static List<AudioSourceData> ReadAudioSources(JsonObject audio)

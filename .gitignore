@@ -93,10 +93,15 @@ yarn-error.log*
 .pnp/
 .pnp.js
 
+# --- Installer ---
+installer/Output/
+appcast.xml
+
 # --- Environment / Secrets ---
 .env
 .env.*
 *.local
+*.pem
 
 # --- IDE ---
 .idea/

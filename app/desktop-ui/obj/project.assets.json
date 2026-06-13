@@ -2684,7 +2684,7 @@
     "C:\\Users\\Mario\\.nuget\\packages\\": {}
   },
   "project": {
-    "version": "1.0.0",
+    "version": "0.3.0",
     "restore": {
       "projectUniqueName": "C:\\Pattumiera\\Monolith\\app\\desktop-ui\\Monolith.Settings.csproj",
       "projectName": "Monolith.Settings",
@@ -2771,13 +2771,5 @@
         "#import": []
       }
     }
-  },
-  "logs": [
-    {
-      "code": "Undefined",
-      "level": "Warning",
-      "warningLevel": 1,
-      "message": "Problem reading the cache file C:\\Pattumiera\\Monolith\\app\\desktop-ui\\obj\\project.nuget.cache : Invalid property identifier character: <. Path 'version', line 3, position 0."
-    }
-  ]
+  }
 }

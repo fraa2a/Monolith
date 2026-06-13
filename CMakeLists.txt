@@ -8,7 +8,20 @@ if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
         CACHE STRING "vcpkg toolchain file")
 endif()
 
-project(monolith LANGUAGES CXX)
+project(monolith VERSION 0.3.0 LANGUAGES CXX)
+
+# Single source of truth for the app version. CI overrides this from the git
+# tag with -DMONOLITH_VERSION=X.Y.Z; local builds fall back to project(VERSION).
+set(MONOLITH_VERSION "${PROJECT_VERSION}" CACHE STRING "Monolith app version (X.Y.Z)")
+
+# Split into numeric components for the Win32 VERSIONINFO resource.
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _monolith_ver_match "${MONOLITH_VERSION}")
+if(NOT _monolith_ver_match)
+    message(FATAL_ERROR "MONOLITH_VERSION must look like X.Y.Z, got: ${MONOLITH_VERSION}")
+endif()
+set(MONOLITH_VERSION_MAJOR "${CMAKE_MATCH_1}")
+set(MONOLITH_VERSION_MINOR "${CMAKE_MATCH_2}")
+set(MONOLITH_VERSION_PATCH "${CMAKE_MATCH_3}")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,5 +32,6 @@ add_subdirectory(libs/audio)
 add_subdirectory(libs/encoding)
 add_subdirectory(libs/replay-buffer)
 add_subdirectory(libs/recording)
+add_subdirectory(libs/ipc)
 add_subdirectory(app/recorder)
 add_subdirectory(app/desktop-ui)
