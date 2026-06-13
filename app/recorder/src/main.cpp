@@ -18,6 +18,7 @@
 #include <replay-buffer/replay_buffer.h>
 #include <recording/recording.h>
 
+#include "feedback_sounds.h"
 #include "ipc_server.h"
 #include "resource.h"
 #include "settings_config.h"
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1089,6 +1091,123 @@ static void media_stop()
 // ── System tray ───────────────────────────────────────────────────────────────
 
 static NOTIFYICONDATAW g_nid;
+static HICON g_icon_base = nullptr;
+static HICON g_icon_rec  = nullptr; // created lazily on first recording start
+
+static HICON create_rec_icon()
+{
+    int sz = GetSystemMetrics(SM_CXSMICON);
+    if (sz <= 0) sz = 16;
+
+    HICON base = static_cast<HICON>(LoadImageW(
+        GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(IDI_MONOLITH),
+        IMAGE_ICON, sz, sz, LR_DEFAULTCOLOR));
+    if (!base) return nullptr;
+
+    HDC screen = GetDC(nullptr);
+    HDC dc     = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+
+    BITMAPV4HEADER bmi{};
+    bmi.bV4Size          = sizeof(bmi);
+    bmi.bV4Width         = sz;
+    bmi.bV4Height        = -sz; // top-down
+    bmi.bV4Planes        = 1;
+    bmi.bV4BitCount      = 32;
+    bmi.bV4V4Compression = BI_BITFIELDS;
+    bmi.bV4RedMask       = 0x00FF0000;
+    bmi.bV4GreenMask     = 0x0000FF00;
+    bmi.bV4BlueMask      = 0x000000FF;
+    bmi.bV4AlphaMask     = 0xFF000000;
+
+    void* raw = nullptr;
+    HBITMAP dib = CreateDIBSection(dc,
+        reinterpret_cast<BITMAPINFO*>(&bmi),
+        DIB_RGB_COLORS, &raw, nullptr, 0);
+    if (!dib) { DestroyIcon(base); DeleteDC(dc); return nullptr; }
+
+    auto* pixels = static_cast<uint32_t*>(raw);
+    HBITMAP prev = static_cast<HBITMAP>(SelectObject(dc, dib));
+
+    DrawIconEx(dc, 0, 0, base, sz, sz, 0, nullptr, DI_NORMAL);
+    DestroyIcon(base);
+
+    // If the base icon has no alpha channel (old-style XOR icon), set opaque
+    bool has_alpha = false;
+    for (int i = 0; i < sz * sz; ++i)
+        if (pixels[i] >> 24) { has_alpha = true; break; }
+    if (!has_alpha)
+        for (int i = 0; i < sz * sz; ++i)
+            if (pixels[i] & 0x00FFFFFF) pixels[i] |= 0xFF000000u;
+
+    // Red dot: bottom-right, radius ~20% of icon size
+    float r    = sz * 0.21f;
+    float cx_f = sz - r - 0.5f;
+    float cy_f = sz - r - 0.5f;
+    float r2   = r * r;
+    float ri2  = (r - 1.4f) * (r - 1.4f); // inner radius for border
+
+    for (int py = 0; py < sz; ++py) {
+        for (int px_i = 0; px_i < sz; ++px_i) {
+            float dx = px_i + 0.5f - cx_f;
+            float dy = py  + 0.5f - cy_f;
+            float d2 = dx*dx + dy*dy;
+            if (d2 > r2) continue;
+
+            // Border (dark) vs fill (bright red)
+            uint8_t nr = (d2 > ri2) ? 40  : 220;
+            uint8_t ng = (d2 > ri2) ? 0   : 45;
+            uint8_t nb = (d2 > ri2) ? 0   : 45;
+
+            uint32_t ex  = pixels[py * sz + px_i];
+            uint8_t  ea  = static_cast<uint8_t>(ex >> 24);
+            uint8_t  er  = static_cast<uint8_t>(ex >> 16);
+            uint8_t  eg  = static_cast<uint8_t>(ex >>  8);
+            uint8_t  eb  = static_cast<uint8_t>(ex);
+
+            // Hard blend: full opacity for the dot
+            uint8_t out_a = 255;
+            uint8_t out_r = static_cast<uint8_t>((nr * 200u + er * 55u) / 255u);
+            uint8_t out_g = static_cast<uint8_t>((ng * 200u + eg * 55u) / 255u);
+            uint8_t out_b = static_cast<uint8_t>((nb * 200u + eb * 55u) / 255u);
+            (void)ea;
+
+            pixels[py * sz + px_i] =
+                (static_cast<uint32_t>(out_a) << 24) |
+                (static_cast<uint32_t>(out_r) << 16) |
+                (static_cast<uint32_t>(out_g) <<  8) |
+                 static_cast<uint32_t>(out_b);
+        }
+    }
+
+    SelectObject(dc, prev);
+    DeleteDC(dc);
+
+    HBITMAP mask = CreateBitmap(sz, sz, 1, 1, nullptr);
+    ICONINFO ii{};
+    ii.fIcon    = TRUE;
+    ii.hbmColor = dib;
+    ii.hbmMask  = mask;
+    HICON result = CreateIconIndirect(&ii);
+    DeleteObject(mask);
+    DeleteObject(dib);
+    return result;
+}
+
+static void tray_set_recording(bool recording)
+{
+    if (recording) {
+        if (!g_icon_rec) g_icon_rec = create_rec_icon();
+        if (!g_icon_rec) return;
+        g_nid.uFlags = NIF_ICON;
+        g_nid.hIcon  = g_icon_rec;
+    } else {
+        g_nid.uFlags = NIF_ICON;
+        g_nid.hIcon  = g_icon_base;
+    }
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+}
 
 static void tray_add(HWND hwnd)
 {
@@ -1102,6 +1221,7 @@ static void tray_add(HWND hwnd)
                                        MAKEINTRESOURCEW(IDI_MONOLITH));
     if (!g_nid.hIcon)
         g_nid.hIcon        = LoadIconW(nullptr, IDI_APPLICATION);
+    g_icon_base = g_nid.hIcon;
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), kAppName);
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid))
         log_msg("tray", "WARNING: Shell_NotifyIconW NIM_ADD failed");
@@ -1422,6 +1542,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
             g_replay.packet_count(),
             static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
         log_msg("replay", stats);
+        feedback::play(feedback::Sound::ClipSaved);
         g_replay.save_clip([](std::wstring path) {
             if (path.empty()) {
                 log_msg("replay", "WARNING: clip save failed or encoder not ready");
@@ -1438,6 +1559,8 @@ static void dispatch(Cmd cmd, HWND hwnd)
         }
         if (g_recording.start(g_recordings_dir, g_recording_container)) {
             log_path("recording", "recording started: ", g_recording.current_path());
+            feedback::play(feedback::Sound::RecordStart);
+            tray_set_recording(true);
         } else {
             char msg[96];
             snprintf(msg, sizeof(msg), "recording_start rejected: state=%s",
@@ -1450,6 +1573,8 @@ static void dispatch(Cmd cmd, HWND hwnd)
         if (g_recording.stop(&path)) {
             if (path.empty()) log_msg("recording", "recording stopped: no packets written");
             else log_path("recording", "recording saved: ", path);
+            feedback::play(feedback::Sound::RecordStop);
+            tray_set_recording(false);
         } else {
             log_msg("recording", "recording_stop rejected: state=idle");
         }
@@ -1519,6 +1644,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         media_stop();
         hotkeys_unregister(hwnd);
         tray_remove();
+        if (g_icon_rec) { DestroyIcon(g_icon_rec); g_icon_rec = nullptr; }
         log_msg("app", "app shell stopped");
         PostQuitMessage(0);
         return 0;
