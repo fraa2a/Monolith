@@ -71,6 +71,6 @@ if(MSVC)
     target_compile_options(monolith PRIVATE /W4 /permissive-)
     target_link_options(monolith PRIVATE
         /MANIFEST:EMBED
-        /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
+        "/MANIFESTUAC:level='asInvoker' uiAccess='false'"
     )
 endif()
