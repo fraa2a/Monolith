@@ -20,7 +20,7 @@ BEGIN
     BEGIN
         BLOCK "040904b0" // U.S. English, Unicode
         BEGIN
-            VALUE "CompanyName",      "Monolith"
+            VALUE "CompanyName",      "fraa2a"
             VALUE "FileDescription",  "Monolith Recorder"
             VALUE "FileVersion",      MONOLITH_VERSION_STRING
             VALUE "InternalName",     "Monolith"
