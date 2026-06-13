@@ -103,11 +103,13 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        run: >
-          cmake -S . -B build
-          -G "Ninja Multi-Config"
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
-          -DMONOLITH_VERSION=${{ steps.version.outputs.version }}
+        env:
+          MONOLITH_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cmake -S . -B build `
+            -G "Ninja Multi-Config" `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            "-DMONOLITH_VERSION=$env:MONOLITH_VERSION"
 
       # The CMake settings_app target runs `dotnet publish` for the WinUI
       # settings sidecar (self-contained) into the recorder output directory.
