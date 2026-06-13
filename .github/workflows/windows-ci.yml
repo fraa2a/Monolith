@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   build:
@@ -16,6 +17,9 @@ jobs:
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_EXE: ${{ github.workspace }}\vcpkg\vcpkg.exe
+      FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+      USERNAME: ${{ github.repository_owner }}
 
     steps:
       - name: Checkout
@@ -35,6 +39,24 @@ jobs:
       - name: Bootstrap vcpkg
         shell: pwsh
         run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
+
+      - name: Configure vcpkg binary cache
+        shell: pwsh
+        run: |
+          $cacheMode = if ("${{ github.event_name }}" -eq "pull_request") { "read" } else { "readwrite" }
+          "VCPKG_BINARY_SOURCES=clear;nuget,$env:FEED_URL,$cacheMode" >> $env:GITHUB_ENV
+          $nuget = (& "$env:VCPKG_EXE" fetch nuget | Select-Object -Last 1)
+          & $nuget sources remove -Name GitHubPackages -NonInteractive 2>$null
+          & $nuget sources add `
+            -Source "$env:FEED_URL" `
+            -StorePasswordInClearText `
+            -Name GitHubPackages `
+            -UserName "$env:USERNAME" `
+            -Password "${{ secrets.GITHUB_TOKEN }}" `
+            -NonInteractive
+          if ($cacheMode -eq "readwrite") {
+            & $nuget setapikey "${{ secrets.GITHUB_TOKEN }}" -Source "$env:FEED_URL" -NonInteractive
+          }
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
