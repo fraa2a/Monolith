@@ -12,7 +12,7 @@ namespace {
 // (scripts/generate-appcast.ps1). Generate the pair once with WinSparkle's
 // generate_keys tool and paste the base64 public key here.
 constexpr const char* kEdDsaPublicKey =
-    "GgyaSRupUFn5Omaa90w0H2xDTrqff2DdzRDtbeplvKA=";
+    "GKuQXXmvNYgQzSNIOTwtKmhdicDneDb7A5ZMcOTt/Bw=";
 
 constexpr const char* kAppcastUrl =
     "https://github.com/fraa2a/Monolith/releases/latest/download/appcast.xml";
