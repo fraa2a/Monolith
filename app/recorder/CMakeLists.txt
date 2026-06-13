@@ -64,6 +64,7 @@ target_link_libraries(monolith
         ole32
         shell32
         user32
+        winmm
 )
 
 if(MSVC)
