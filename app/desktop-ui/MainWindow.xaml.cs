@@ -622,6 +622,14 @@ public sealed partial class MainWindow : Window
         viewModel.BitrateKbps = (int)args.NewValue;
     }
 
+    private void OnVideoFpsValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (suppressComboBoxEvents || double.IsNaN(args.NewValue))
+            return;
+
+        viewModel.VideoFps = (int)args.NewValue;
+    }
+
     // ── Capture border toggle ─────────────────────────────────────────────────
 
     private void OnCaptureBorderToggled(object sender, RoutedEventArgs e)

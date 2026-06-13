@@ -1,7 +1,7 @@
 import { action, KeyUpEvent, SingletonAction, WillAppearEvent } from '@elgato/streamdeck';
 import { ipc } from '../plugin.js';
 
-@action({ UUID: 'com.monolith.recorder.pause-resume' })
+@action({ UUID: 'top.fraa2a.monolith.pause-resume' })
 export class PauseResume extends SingletonAction {
     override async onWillAppear(ev: WillAppearEvent): Promise<void> {
         if (ev.action.isKey()) {

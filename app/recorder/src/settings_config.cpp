@@ -55,6 +55,7 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   },
   "video_encoder": {
     "backend": "auto",
+    "fps": 60,
     "bitrate_kbps": 20000,
     "extra_ffmpeg_options": ""
   },
@@ -366,6 +367,7 @@ void write_runtime_fields(json& doc, const Config& config)
     if (doc.contains("recording") && doc["recording"].is_object())
         doc["recording"].erase("pause_behavior");
     doc["video_encoder"]["backend"] = config.encoder_backend;
+    doc["video_encoder"]["fps"] = config.video_fps;
     doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
     doc["audio"]["mode"] = config.audio_mode;
@@ -470,6 +472,10 @@ Config config_from_json(
     config.video_bitrate_kbps = int_at(doc, "video_encoder", "bitrate_kbps", 20000);
     if (config.video_bitrate_kbps < 1000 || config.video_bitrate_kbps > 100000)
         config.video_bitrate_kbps = 20000;
+
+    config.video_fps = int_at(doc, "video_encoder", "fps", 60);
+    if (config.video_fps < 15 || config.video_fps > 120)
+        config.video_fps = 60;
 
     config.extra_ffmpeg_options = utf8_at(doc, "video_encoder", "extra_ffmpeg_options", "");
 

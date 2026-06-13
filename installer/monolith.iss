@@ -16,7 +16,7 @@
 #define MonolithName "Monolith"
 #define MonolithExe "Monolith.exe"
 #define MonolithPublisher "Monolith"
-#define MonolithRepoUrl "https://github.com/fraa2a/Monolith-releases"
+#define MonolithRepoUrl "https://github.com/fraa2a/Monolith"
 #define PayloadDir "..\build\app\recorder\Release"
 
 [Setup]

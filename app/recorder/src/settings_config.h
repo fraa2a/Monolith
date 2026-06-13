@@ -44,6 +44,7 @@ struct Config {
 
     // Encoder (capture/encoder restart when no manual recording is active).
     std::string encoder_backend = "auto"; // auto | h264_* | hevc_* | libx264 | libx265
+    int video_fps = 60;                   // clamped 15-120
     int video_bitrate_kbps = 20000;       // clamped 1000–100000
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
 

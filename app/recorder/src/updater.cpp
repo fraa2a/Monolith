@@ -11,10 +11,11 @@ namespace {
 // the CI secret WINSPARKLE_ED_PRIVATE_KEY and signs each released installer
 // (scripts/generate-appcast.ps1). Generate the pair once with WinSparkle's
 // generate_keys tool and paste the base64 public key here.
-constexpr const char* kEdDsaPublicKey = "";
+constexpr const char* kEdDsaPublicKey =
+    "GgyaSRupUFn5Omaa90w0H2xDTrqff2DdzRDtbeplvKA=";
 
 constexpr const char* kAppcastUrl =
-    "https://github.com/fraa2a/Monolith-releases/releases/latest/download/appcast.xml";
+    "https://github.com/fraa2a/Monolith/releases/latest/download/appcast.xml";
 
 bool g_initialized = false;
 

@@ -23,9 +23,9 @@ setInterval(async () => {
     for (const action of streamDeck.actions) {
         if (!action.isKey()) continue;
         try {
-            if (action.manifestId === 'com.monolith.recorder.recording-toggle') {
+            if (action.manifestId === 'top.fraa2a.monolith.recording-toggle') {
                 await action.setTitle(status.recording ? '⏹ STOP' : '⏺ REC');
-            } else if (action.manifestId === 'com.monolith.recorder.pause-resume') {
+            } else if (action.manifestId === 'top.fraa2a.monolith.pause-resume') {
                 await action.setTitle(status.paused ? '▶ Resume' : '⏸ Pause');
             }
         } catch {

@@ -1,12 +1,13 @@
 {
-  "name": "monolith-streamdeck-plugin",
+  "name": "MonolithIntegration",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "package": "powershell -ExecutionPolicy Bypass -File ./scripts/package-plugin.ps1",
     "watch": "tsc --watch",
-    "link": "streamdeck link com.monolith.recorder.sdPlugin"
+    "link": "streamdeck link .build/top.fraa2a.monolith.sdPlugin"
   },
   "dependencies": {
     "@elgato/streamdeck": "^2.1.0"

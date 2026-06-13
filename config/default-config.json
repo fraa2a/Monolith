@@ -32,6 +32,7 @@
   },
   "video_encoder": {
     "backend": "auto",
+    "fps": 60,
     "bitrate_kbps": 20000,
     "extra_ffmpeg_options": ""
   },
