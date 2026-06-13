@@ -25,6 +25,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private bool replayBufferEnabled = true;
     private string recordingContainer = "mkv";
     private bool recordingEnabled = true;
+    private bool autoCheckUpdates = true;
     private string audioMode = "default";
     private string primaryMicrophoneDeviceId = "";
     private List<AudioSourceData> audioSources = new();
@@ -129,6 +130,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     {
         get => recordingEnabled;
         set => SetField(ref recordingEnabled, value);
+    }
+
+    public bool AutoCheckUpdates
+    {
+        get => autoCheckUpdates;
+        set => SetField(ref autoCheckUpdates, value);
     }
 
     public string AudioMode
@@ -317,6 +324,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         replayBufferEnabled = data.ReplayBufferEnabled;
         RecordingContainer = data.RecordingContainer == "mp4" ? "mp4" : "mkv";
         recordingEnabled = data.RecordingEnabled;
+        autoCheckUpdates = data.AutoCheckUpdates;
         SaveReplayHotkey = data.SaveReplayHotkey;
         RecordingStartHotkey = data.RecordingStartHotkey;
         RecordingStopHotkey = data.RecordingStopHotkey;
@@ -408,6 +416,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             ReplayBufferEnabled = ReplayBufferEnabled,
             RecordingContainer = RecordingContainer,
             RecordingEnabled = RecordingEnabled,
+            AutoCheckUpdates = AutoCheckUpdates,
             SaveReplayHotkey = SaveReplayHotkey,
             RecordingStartHotkey = RecordingStartHotkey,
             RecordingStopHotkey = RecordingStopHotkey,
@@ -934,6 +943,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(RecordingContainer));
         OnPropertyChanged(nameof(ReplayBufferEnabled));
         OnPropertyChanged(nameof(RecordingEnabled));
+        OnPropertyChanged(nameof(AutoCheckUpdates));
         OnPropertyChanged(nameof(SaveReplayHotkey));
         OnPropertyChanged(nameof(RecordingStartHotkey));
         OnPropertyChanged(nameof(RecordingStopHotkey));

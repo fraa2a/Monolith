@@ -113,6 +113,7 @@ public sealed partial class MainWindow : Window
         appWindow = AppWindow.GetFromWindowId(windowId);
         appWindow.Title = "Monolith Settings";
         appWindow.Resize(new Windows.Graphics.SizeInt32(1160, 760));
+        EnforceMinWindowSize(hwnd, 900, 620);
         appWindow.Closing += OnAppWindowClosing;
 
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Monolith.ico");
@@ -640,6 +641,7 @@ public sealed partial class MainWindow : Window
     {
         RecordingEnabledToggle.IsOn = viewModel.RecordingEnabled;
         ReplayBufferEnabledToggle.IsOn = viewModel.ReplayBufferEnabled;
+        AutoCheckUpdatesToggle.IsOn = viewModel.AutoCheckUpdates;
     }
 
     private void OnRecordingEnabledToggled(object sender, RoutedEventArgs e)
@@ -650,6 +652,11 @@ public sealed partial class MainWindow : Window
     private void OnReplayBufferEnabledToggled(object sender, RoutedEventArgs e)
     {
         viewModel.ReplayBufferEnabled = ReplayBufferEnabledToggle.IsOn;
+    }
+
+    private void OnAutoCheckUpdatesToggled(object sender, RoutedEventArgs e)
+    {
+        viewModel.AutoCheckUpdates = AutoCheckUpdatesToggle.IsOn;
     }
 
     // ── Corrupt config InfoBar ────────────────────────────────────────────────
@@ -1017,5 +1024,45 @@ public sealed partial class MainWindow : Window
         };
 
         return await dialog.ShowAsync();
+    }
+
+    // ── Minimum window size (Win32 WM_GETMINMAXINFO subclass) ─────────────────
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MINMAXINFO
+    {
+        public POINT ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize;
+    }
+
+    private delegate nint SubclassProc(nint hWnd, uint uMsg, nint wParam, nint lParam, nuint uIdSubclass, nuint dwRefData);
+
+    [DllImport("comctl32.dll")] private static extern bool SetWindowSubclass(nint hWnd, SubclassProc pfnSubclass, nuint uIdSubclass, nuint dwRefData);
+    [DllImport("comctl32.dll")] private static extern nint DefSubclassProc(nint hWnd, uint uMsg, nint wParam, nint lParam);
+
+    // Keep a static reference so the delegate isn't collected by GC.
+    private static readonly SubclassProc s_minSizeProc = MinSizeSubclassProc;
+    private static int s_minW, s_minH;
+
+    private static void EnforceMinWindowSize(nint hwnd, int minW, int minH)
+    {
+        s_minW = minW;
+        s_minH = minH;
+        SetWindowSubclass(hwnd, s_minSizeProc, 1u, 0u);
+    }
+
+    private static nint MinSizeSubclassProc(nint hWnd, uint uMsg, nint wParam, nint lParam, nuint uIdSubclass, nuint dwRefData)
+    {
+        if (uMsg == 0x0024 /* WM_GETMINMAXINFO */)
+        {
+            var info = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+            if (info.ptMinTrackSize.X < s_minW) info.ptMinTrackSize.X = s_minW;
+            if (info.ptMinTrackSize.Y < s_minH) info.ptMinTrackSize.Y = s_minH;
+            Marshal.StructureToPtr(info, lParam, false);
+            return 0;
+        }
+        return DefSubclassProc(hWnd, uMsg, wParam, lParam);
     }
 }

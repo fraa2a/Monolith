@@ -33,6 +33,7 @@ public sealed class SettingsData
     public string RecordingContainer { get; set; } = "mkv";
     public bool RecordingEnabled { get; set; } = true;
     public bool ReplayBufferEnabled { get; set; } = true;
+    public bool AutoCheckUpdates { get; set; } = true;
 
     // audio
     public string AudioMode { get; set; } = "default";

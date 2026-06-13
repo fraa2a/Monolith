@@ -13,6 +13,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <WindowsSdkPackageVersion>10.0.26100.56</WindowsSdkPackageVersion>
+    <!-- App version: overridden by CMake publish via -p:Version=X.Y.Z. -->
+    <Version>0.3.0</Version>
+    <!-- Self-contained: bundle .NET + Windows App SDK runtimes so installed
+         machines need no prerequisites. WinUI 3 is not trim-safe. -->
+    <SelfContained>true</SelfContained>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
 
   <ItemGroup>

@@ -2,8 +2,8 @@
 #
 # The recorder's tray "Settings…" entry launches Monolith.Settings.exe from
 # its own directory, so the published output is dropped next to Monolith.exe.
-# Framework-dependent publish: needs the .NET 8 Desktop Runtime plus the
-# Windows App SDK 2.2 runtime on the target machine.
+# Self-contained publish: bundles the .NET runtime and the Windows App SDK
+# runtime, so target machines need no preinstalled prerequisites.
 
 find_program(DOTNET_EXECUTABLE
     NAMES dotnet dotnet.exe
@@ -15,9 +15,10 @@ if(DOTNET_EXECUTABLE)
             "${CMAKE_CURRENT_SOURCE_DIR}/Monolith.Settings.csproj"
             -c $<IF:$<CONFIG:Debug>,Debug,Release>
             -r win-x64
-            --self-contained false
+            --self-contained true
+            -p:Version=${MONOLITH_VERSION}
             -o "$<TARGET_FILE_DIR:monolith>"
-        COMMENT "Publishing Monolith.Settings (WinUI 3) next to Monolith.exe"
+        COMMENT "Publishing Monolith.Settings (WinUI 3, self-contained) next to Monolith.exe"
         VERBATIM)
     add_dependencies(settings_app monolith)
 else()

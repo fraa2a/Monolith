@@ -21,9 +21,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Clone vcpkg
+      # Pinned to the builtin-baseline commit in vcpkg.json so dependency
+      # versions (FFmpeg DLL ABIs etc.) are reproducible across CI runs.
+      - name: Clone vcpkg (pinned)
         shell: pwsh
-        run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+        run: |
+          $sha = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          git init "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" remote add origin https://github.com/microsoft/vcpkg.git
+          git -C "$env:VCPKG_ROOT" fetch --depth 1 origin $sha
+          git -C "$env:VCPKG_ROOT" checkout FETCH_HEAD
 
       - name: Bootstrap vcpkg
         shell: pwsh

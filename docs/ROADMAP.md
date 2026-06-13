@@ -146,3 +146,25 @@ Status: foundation implemented; mixer/runtime validation remains.
   - missing devices/processes do not crash recording or corrupt config. Implemented by fail-closed source startup and saved-source availability display.
   - assignments outside tracks 1-6 are rejected or sanitized. Implemented.
   - current limitations of per-app capture, active-game detection, multi-track muxing, and A/V sync are documented. Implemented in handover/architecture.
+
+## Milestone 7: Distribution — Installer + Auto-Update
+
+Status: implemented and verified locally; one-time release setup and first public release pending.
+
+- Goal:
+  - Ship Monolith to general users as a single per-user installer with zero prerequisites and working auto-update, while the code repo stays private.
+- Deliverables:
+  - version source of truth: git tag → CMake `MONOLITH_VERSION` → generated `version.h` (exe VERSIONINFO + updater) + csproj `Version`. Implemented.
+  - self-contained Settings sidecar (.NET 8 + Windows App SDK bundled, no trimming). Implemented.
+  - WinSparkle auto-update: `updater` module, tray "Check for Updates…", `update.auto_check` setting with Settings toggle, EdDSA-signed appcast. Implemented (public key pending one-time keygen).
+  - per-user Inno Setup installer (`installer/monolith.iss`): no UAC, stable AppId, GPLv3 license page, full payload, user config preserved on uninstall/update. Implemented and compiled locally.
+  - appcast generation script (`scripts/generate-appcast.ps1`) with Ed25519 signing via openssl. Implemented and tested.
+  - release CI (`version-tag.yml`): tag → versioned build → installer → signed appcast → GPLv3 source zip → publish to public `fraa2a/Monolith-releases`. Implemented.
+  - one-time setup + release process documented in `docs/RELEASING.md`. Implemented.
+- Acceptance criteria:
+  - pushing tag `vX.Y.Z` produces a public release with installer, appcast, and source zip downloadable without authentication. Pending (needs one-time setup).
+  - installer works per-user without admin and the app runs on a machine without .NET/WinAppSDK. Local install verified; clean-VM test pending.
+  - an older installed version detects, downloads, verifies, and applies the new release; user config survives. Pending first public release.
+  - vcpkg dependencies pinned for reproducible release builds. Implemented (`builtin-baseline`).
+- Next action:
+  - complete the one-time setup in `docs/RELEASING.md`, then publish and verify the first public release.

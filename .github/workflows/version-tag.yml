@@ -15,15 +15,33 @@ jobs:
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      RELEASE_ASSET_GLOB: build/app/recorder/Release/*
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Clone vcpkg
+      - name: Extract version from tag
+        id: version
         shell: pwsh
-        run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart("v")
+          if ($ver -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Error "Tag must look like vX.Y.Z, got: $tag"
+            exit 1
+          }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      # Pinned to the builtin-baseline commit in vcpkg.json so dependency
+      # versions (FFmpeg DLL ABIs etc.) are reproducible across CI runs.
+      - name: Clone vcpkg (pinned)
+        shell: pwsh
+        run: |
+          $sha = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          git init "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" remote add origin https://github.com/microsoft/vcpkg.git
+          git -C "$env:VCPKG_ROOT" fetch --depth 1 origin $sha
+          git -C "$env:VCPKG_ROOT" checkout FETCH_HEAD
 
       - name: Bootstrap vcpkg
         shell: pwsh
@@ -41,38 +59,79 @@ jobs:
           -G "Visual Studio 17 2022"
           -A x64
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+          -DMONOLITH_VERSION=${{ steps.version.outputs.version }}
 
       # The CMake settings_app target runs `dotnet publish` for the WinUI
-      # settings sidecar into the recorder output directory.
+      # settings sidecar (self-contained) into the recorder output directory.
       - name: Build Release
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
-      - name: Verify release asset
+      - name: Verify build output
         shell: pwsh
         run: |
-          if (-not (Test-Path "build/app/recorder/Release/Monolith.exe")) {
-            Write-Error "Release asset not found: build/app/recorder/Release/Monolith.exe"
-            exit 1
+          foreach ($f in @(
+            "build/app/recorder/Release/Monolith.exe",
+            "build/app/recorder/Release/Monolith.Settings.exe",
+            "build/app/recorder/Release/WinSparkle.dll"
+          )) {
+            if (-not (Test-Path $f)) {
+              Write-Error "Build output not found: $f"
+              exit 1
+            }
           }
-          if (-not (Test-Path "build/app/recorder/Release/Monolith.Settings.exe")) {
-            Write-Error "Release asset not found: build/app/recorder/Release/Monolith.Settings.exe"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMonolithVersion=$ver installer\monolith.iss
+          if (-not (Test-Path "installer/Output/MonolithSetup-$ver.exe")) {
+            Write-Error "Installer was not produced"
             exit 1
           }
 
-      - name: Publish GitHub release
+      - name: Sign installer and generate appcast
+        shell: pwsh
+        env:
+          WINSPARKLE_ED_PRIVATE_KEY: ${{ secrets.WINSPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          ./scripts/generate-appcast.ps1 `
+            -Version $ver `
+            -InstallerPath "installer/Output/MonolithSetup-$ver.exe" `
+            -InstallerUrl "https://github.com/fraa2a/Monolith-releases/releases/download/v$ver/MonolithSetup-$ver.exe" `
+            -ReleaseNotesUrl "https://github.com/fraa2a/Monolith-releases/releases/tag/v$ver" `
+            -PrivateKeyPem $env:WINSPARKLE_ED_PRIVATE_KEY `
+            -OutputPath appcast.xml
+
+      # GPLv3: the public release must offer the corresponding source.
+      - name: Create source archive
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          git archive --format=zip --output "monolith-src-$ver.zip" HEAD
+
+      - name: Publish release on public repo
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: false
+          repository: fraa2a/Monolith-releases
+          token: ${{ secrets.RELEASES_REPO_PAT }}
+          tag_name: ${{ github.ref_name }}
+          name: Monolith ${{ steps.version.outputs.version }}
           fail_on_unmatched_files: true
-          files: ${{ env.RELEASE_ASSET_GLOB }}
+          files: |
+            installer/Output/MonolithSetup-*.exe
+            appcast.xml
+            monolith-src-*.zip
           body: |
-            New Monolith version released.
+            Monolith ${{ steps.version.outputs.version }}
 
-            Included in this release:
-            - Windows recorder executable
-            - WinUI Settings sidecar executable and runtime files
+            **Install:** download and run `MonolithSetup-${{ steps.version.outputs.version }}.exe` (per-user, no admin needed, no prerequisites).
+            Existing installs update automatically via the in-app updater.
 
-            Notes:
-            - This changelog is intentionally minimal for now.
-            - The attached asset will be switched to the installer `.exe` once packaging is ready.
+            **Source:** `monolith-src-${{ steps.version.outputs.version }}.zip` (GPLv3 corresponding source).

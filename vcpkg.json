@@ -1,6 +1,8 @@
 {
+  "builtin-baseline": "9432c416e5c543eded0b4df35a4d347b2e669208",
   "dependencies": [
     "nlohmann-json",
+    "winsparkle",
     {
       "name": "ffmpeg",
       "features": ["avcodec", "avformat", "swscale", "swresample", "amf", "nvcodec", "qsv", "x264", "x265", "gpl"]
