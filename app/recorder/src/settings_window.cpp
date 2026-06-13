@@ -1,10 +1,9 @@
 #include "settings_window.h"
 
-#include <shellapi.h>
-
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace settings_window {
 namespace {
@@ -73,6 +72,7 @@ std::filesystem::path settings_exe_path()
 {
     const std::filesystem::path base = module_dir();
     const std::filesystem::path candidates[] = {
+        base / "settings" / "Monolith.Settings.exe",
         base / "Monolith.Settings.exe",
         base / ".." / ".." / ".." / "desktop-ui" / "bin" / "Release"
             / "net8.0-windows10.0.19041.0" / "win-x64" / "Monolith.Settings.exe",
@@ -95,15 +95,30 @@ void show(HWND owner, UINT reload_message)
 
     std::filesystem::path exe = settings_exe_path();
 
-    SHELLEXECUTEINFOW info{};
-    info.cbSize = sizeof(info);
-    info.fMask = SEE_MASK_NOCLOSEPROCESS;
-    info.hwnd = owner;
-    info.lpVerb = L"open";
-    info.lpFile = exe.c_str();
-    info.nShow = SW_SHOWNORMAL;
+    std::wstring command_line = L"\"" + exe.wstring() + L"\"";
+    std::vector<wchar_t> mutable_command_line(command_line.begin(), command_line.end());
+    mutable_command_line.push_back(L'\0');
 
-    if (!ShellExecuteExW(&info) || !info.hProcess) {
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_SHOWNORMAL;
+
+    PROCESS_INFORMATION process_info{};
+    std::wstring working_dir = exe.parent_path().wstring();
+    BOOL started = CreateProcessW(
+        exe.c_str(),
+        mutable_command_line.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        working_dir.empty() ? nullptr : working_dir.c_str(),
+        &startup,
+        &process_info);
+
+    if (!started || !process_info.hProcess) {
         std::wstring message =
             L"Monolith.Settings.exe was not found or could not be started.\n\n"
             L"Expected location:\n" + exe.wstring() +
@@ -112,12 +127,13 @@ void show(HWND owner, UINT reload_message)
         MessageBoxW(owner, message.c_str(), L"Monolith Settings", MB_ICONERROR);
         return;
     }
+    CloseHandle(process_info.hThread);
 
     // The reload-watcher thread owns one handle; the duplicate-launch guard
     // keeps another.  If duplication fails, skip the guard rather than share.
-    HANDLE process = info.hProcess;
+    HANDLE process = process_info.hProcess;
     HANDLE guard = nullptr;
-    DuplicateHandle(GetCurrentProcess(), info.hProcess,
+    DuplicateHandle(GetCurrentProcess(), process_info.hProcess,
                     GetCurrentProcess(), &guard,
                     0, FALSE, DUPLICATE_SAME_ACCESS);
     g_settings_process = guard;

@@ -125,7 +125,18 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string RecordingContainer
     {
         get => recordingContainer;
-        set => SetField(ref recordingContainer, value);
+        set
+        {
+            string normalized = value == "mp4" ? "mp4" : "mkv";
+            if (recordingContainer == normalized && clipContainer == normalized)
+                return;
+
+            recordingContainer = normalized;
+            clipContainer = normalized;
+            OnPropertyChanged(nameof(RecordingContainer));
+            OnPropertyChanged(nameof(ClipContainer));
+            MarkDirty();
+        }
     }
 
     public bool RecordingEnabled
@@ -328,9 +339,10 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         tempDirectory = data.TempDirectory;
         ReplayDurationSeconds = data.ReplayDurationSeconds;
         ReplayMemoryBudgetMb = data.ReplayMemoryBudgetMb;
-        ClipContainer = data.ClipContainer == "mp4" ? "mp4" : "mkv";
+        string outputContainer = data.RecordingContainer == "mp4" || data.ClipContainer == "mp4" ? "mp4" : "mkv";
+        ClipContainer = outputContainer;
         replayBufferEnabled = data.ReplayBufferEnabled;
-        RecordingContainer = data.RecordingContainer == "mp4" ? "mp4" : "mkv";
+        RecordingContainer = outputContainer;
         recordingEnabled = data.RecordingEnabled;
         autoCheckUpdates = data.AutoCheckUpdates;
         SaveReplayHotkey = data.SaveReplayHotkey;
@@ -422,7 +434,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             TempDirectory = tempDirectory,
             ReplayDurationSeconds = ReplayDurationSeconds,
             ReplayMemoryBudgetMb = ReplayMemoryBudgetMb,
-            ClipContainer = ClipContainer,
+            ClipContainer = RecordingContainer,
             ReplayBufferEnabled = ReplayBufferEnabled,
             RecordingContainer = RecordingContainer,
             RecordingEnabled = RecordingEnabled,
@@ -714,15 +726,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             return false;
         }
 
-        if (ClipContainer != "mkv" && ClipContainer != "mp4")
-        {
-            error = "Clip format must be MKV or MP4.";
-            return false;
-        }
-
         if (RecordingContainer != "mkv" && RecordingContainer != "mp4")
         {
-            error = "Recording format must be MKV or MP4.";
+            error = "Output format must be MKV or MP4.";
             return false;
         }
 

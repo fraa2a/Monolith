@@ -10,15 +10,23 @@ find_program(DOTNET_EXECUTABLE
     PATHS "$ENV{ProgramFiles}/dotnet")
 
 if(DOTNET_EXECUTABLE)
+    set(SETTINGS_PUBLISH_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/publish")
+    set(SETTINGS_INSTALL_DIR "$<TARGET_FILE_DIR:monolith>/settings")
+
     add_custom_target(settings_app ALL
+        COMMAND "${CMAKE_COMMAND}" -E remove_directory "${SETTINGS_PUBLISH_DIR}"
         COMMAND "${DOTNET_EXECUTABLE}" publish
             "${CMAKE_CURRENT_SOURCE_DIR}/Monolith.Settings.csproj"
             -c $<IF:$<CONFIG:Debug>,Debug,Release>
             -r win-x64
             --self-contained true
             -p:Version=${MONOLITH_VERSION}
-            -o "$<TARGET_FILE_DIR:monolith>"
-        COMMENT "Publishing Monolith.Settings (WinUI 3, self-contained) next to Monolith.exe"
+            -o "${SETTINGS_PUBLISH_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E remove_directory "${SETTINGS_INSTALL_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${SETTINGS_PUBLISH_DIR}"
+            "${SETTINGS_INSTALL_DIR}"
+        COMMENT "Publishing Monolith.Settings (WinUI 3, self-contained) under the recorder output directory"
         VERBATIM)
     add_dependencies(settings_app monolith)
 else()

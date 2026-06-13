@@ -2,15 +2,15 @@
 ;
 ; Build:  iscc /DMonolithVersion=X.Y.Z monolith.iss
 ; CI passes MonolithVersion from the git tag (.github/workflows/version-tag.yml).
-; The payload is the flat self-contained build output: native Monolith.exe,
-; FFmpeg/codec DLLs, WinSparkle.dll, and the self-contained WinUI 3 settings
-; sidecar — no runtime prerequisites on the target machine.
+; The payload is native Monolith.exe plus codec/updater DLLs at the root and
+; the self-contained WinUI 3 settings sidecar under .\settings — no runtime
+; prerequisites on the target machine.
 ;
 ; Per-user by design: installs under {localappdata}\Programs\Monolith with
 ; PrivilegesRequired=lowest so WinSparkle can run the updater without UAC.
 
 #ifndef MonolithVersion
-  #define MonolithVersion "0.0.0"
+  #define MonolithVersion "0.4.3"
 #endif
 
 #define MonolithName "Monolith"
@@ -56,8 +56,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startupicon"; Description: "Start {#MonolithName} when you sign in"; GroupDescription: "Startup:"
 
 [Files]
-; Entire flat self-contained payload (recorder + settings sidecar + DLLs).
-Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+; Native recorder payload. Keep this explicit so stale WinUI/.NET publish files
+; in the root output directory cannot be bundled accidentally.
+Source: "{#PayloadDir}\Monolith.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\WinSparkle.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\av*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\sw*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\lib*.dll"; DestDir: "{app}"; Flags: ignoreversion
+; WinUI settings sidecar and its self-contained runtime live in a subfolder.
+Source: "{#PayloadDir}\settings\*"; DestDir: "{app}\settings"; Flags: recursesubdirs ignoreversion
 ; Default config is resolved from <exe dir>\config\default-config.json.
 Source: "..\config\default-config.json"; DestDir: "{app}\config"; Flags: ignoreversion
 

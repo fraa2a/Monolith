@@ -2,7 +2,7 @@
   "Name": "Monolith Recorder",
   "Author": "Monolith",
   "Description": "Control Monolith game recorder from your Stream Deck.",
-  "Version": "0.1.0.0",
+  "Version": "0.4.3.0",
   "SDKVersion": 2,
   "Software": {
     "MinimumVersion": "6.4"

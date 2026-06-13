@@ -48,6 +48,22 @@ jobs:
           cache: npm
           cache-dependency-path: plugins/stream-deck/package-lock.json
 
+      - name: Ensure Visual Studio Build Tools
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = if (Test-Path $vswhere) {
+            & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          }
+          if ([string]::IsNullOrWhiteSpace($vs)) {
+            choco install visualstudio2022buildtools --no-progress -y --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart"
+          }
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure
         shell: pwsh
         run: >
@@ -79,8 +95,14 @@ jobs:
             Write-Error "Build output not found: build/app/recorder/Release/Monolith.exe"
             exit 1
           }
-          if (-not (Test-Path "build/app/recorder/Release/Monolith.Settings.exe")) {
-            Write-Error "Build output not found: build/app/recorder/Release/Monolith.Settings.exe"
+          if (-not (Test-Path "build/app/recorder/Release/settings/Monolith.Settings.exe")) {
+            Write-Error "Build output not found: build/app/recorder/Release/settings/Monolith.Settings.exe"
+            exit 1
+          }
+          $forbidden = Get-ChildItem "build/app/recorder/Release/settings" -Recurse -File |
+            Where-Object { $_.Name -match '^(Microsoft\.Windows\.AI\.|onnxruntime|DirectML|Microsoft\.Windows\.Widgets|Microsoft\.Windows\.Workloads|NPU)' }
+          if ($forbidden) {
+            Write-Error "Unexpected AI/ML/Widgets files in Settings bundle: $($forbidden.Name -join ', ')"
             exit 1
           }
           $plugin = Get-ChildItem "plugins/stream-deck/dist/*.streamDeckPlugin" -ErrorAction SilentlyContinue
