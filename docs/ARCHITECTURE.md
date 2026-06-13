@@ -73,3 +73,13 @@ long-term target; the split is deferred to reduce early IPC complexity.
 - Current limitation: multiple sources assigned to the same track are not mixed yet; the runtime logs and skips the later source for that track to avoid corrupt timing.
 - The muxer/encoder layer owns encoded stream creation; Settings only exposes controls that are wired, read-only, or explicitly marked with an apply scope.
 
+## Active Game Detection (v0.5.1)
+
+- `audio::detect_active_game(DetectConfig)` in `libs/audio/audio.cpp` scores candidate windows with explicit bonuses (+4 fullscreen, +4 foreground, +2 active audio session, +8 whitelist/manual). Blacklisted exes are rejected before scoring. Returns `ActiveGameResult` with process info, score, confidence (0–100), reason string, session/fullscreen flags.
+- Config-driven blacklist/whitelist/manual_games loaded from the `active_game` JSON block, clamped in `settings_config.cpp`. Default poll 30 s; switch debounce 3 s; min_confidence 50.
+- `poll_active_game()` in `main.cpp` is the single decision point called by both the WM_TIMER (30 s) and WM_FAST_SCAN (foreground change, rate-limited ≥1 s). It re-evaluates every tick, applies debounce, and swaps **only** the Active Game WasapiCapture when a switch is confirmed. Replay buffer and other sources are never restarted.
+- Fast scan: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT)` installed on the UI thread; callback posts `WM_FAST_SCAN` to the main HWND with coalescing via `g_fast_scan_pending`. Rate limit enforced in the WM_FAST_SCAN handler.
+- Runtime status: `settings::ActiveGameStatus` (extended from `RuntimeAudioSession`) includes confidence, reason, capture_mode, process_loopback_available, last_switch_time, poll_interval_ms, fast_scan_enabled. Written to `runtime-status.json` and read by Settings.
+- Settings: Custom Sources panel hidden in Default mode. Default → Custom confirmation dialog. Active Game status panel in Custom mode shows live detection info.
+- Honest limitations: detection is heuristic; process-loopback requires Windows 10 21H2+; no OS mute/volume mutation; no claiming perfect detection in docs or UI.
+

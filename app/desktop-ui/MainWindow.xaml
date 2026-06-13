@@ -345,8 +345,8 @@
                                             Header="Audio mode"
                                             HorizontalAlignment="Stretch"
                                             SelectionChanged="OnAudioModeSelectionChanged">
-                                            <ComboBoxItem Content="Default: desktop track 1, microphone track 2" Tag="default" />
-                                            <ComboBoxItem Content="Custom: route sources to tracks 1-6" Tag="custom" />
+                                            <ComboBoxItem Content="Default: All Windows audio + microphone" Tag="default" />
+                                            <ComboBoxItem Content="Custom: Per-channel audio setup" Tag="custom" />
                                         </ComboBox>
                                         <ComboBox
                                             x:Name="PrimaryMicComboBox"
@@ -356,7 +356,15 @@
                                     </StackPanel>
                                 </Border>
 
-                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
+                                <Border x:Name="ActiveGameStatusPanel" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22" Visibility="Collapsed">
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="Active Game Status" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <TextBlock x:Name="ActiveGameNameText" Text="Not detected" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock x:Name="ActiveGameDetailsText" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border x:Name="CustomSourcesPanel" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22" Visibility="Collapsed">
                                     <StackPanel Spacing="14">
                                         <TextBlock Text="Custom Sources" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <Grid ColumnSpacing="10">

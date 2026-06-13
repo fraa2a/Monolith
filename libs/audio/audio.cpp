@@ -322,20 +322,25 @@ bool process_alive(uint32_t process_id)
 
 // ── Active-game detection ─────────────────────────────────────────────────────
 
-static bool is_shell_process(const std::wstring& process_name)
+// Built-in shell/system process names that are always excluded regardless of user config.
+static bool is_builtin_shell_process(const std::wstring& lower_name)
 {
-    static const wchar_t* kShellNames[] = {
+    static const wchar_t* kBuiltinShell[] = {
         L"explorer.exe", L"searchhost.exe", L"startmenuexperiencehost.exe",
         L"shellexperiencehost.exe", L"textinputhost.exe", L"taskmgr.exe",
         L"systemsettings.exe", L"lockapp.exe", L"dwm.exe",
         L"monolith.exe", L"monolith.settings.exe",
     };
-    std::wstring lower = process_name;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
-    for (const wchar_t* name : kShellNames) {
-        if (lower == name) return true;
+    for (const wchar_t* name : kBuiltinShell) {
+        if (lower_name == name) return true;
     }
     return false;
+}
+
+static std::wstring to_lower(std::wstring s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+    return s;
 }
 
 // Visible, unowned, non-tool top-level window of plausible app size.
@@ -366,9 +371,10 @@ static bool window_fills_monitor(HWND hwnd)
 }
 
 struct GameCandidate {
-    uint32_t pid   = 0;
-    int      score = 0;
-    int64_t  area  = 0;
+    uint32_t pid        = 0;
+    int      score      = 0;
+    int64_t  area       = 0;
+    bool     fullscreen = false;
 };
 
 static BOOL CALLBACK game_window_enum_proc(HWND hwnd, LPARAM lp)
@@ -383,20 +389,26 @@ static BOOL CALLBACK game_window_enum_proc(HWND hwnd, LPARAM lp)
     RECT rc{};
     GetWindowRect(hwnd, &rc);
     GameCandidate cand;
-    cand.pid   = pid;
-    cand.area  = static_cast<int64_t>(rc.right - rc.left) * (rc.bottom - rc.top);
-    cand.score = window_fills_monitor(hwnd) ? 2 : 0;
+    cand.pid       = pid;
+    cand.area      = static_cast<int64_t>(rc.right - rc.left) * (rc.bottom - rc.top);
+    cand.fullscreen = window_fills_monitor(hwnd);
     candidates->push_back(cand);
     return TRUE;
 }
 
-ProcessInfo detect_active_game()
+// Scoring constants (raw points, converted to confidence 0–100 as min(100, score*10)).
+// Max natural score without whitelist: 4(fullscreen) + 4(foreground) + 2(session) = 10 → 100%
+static constexpr int kScoreFullscreen = 4;
+static constexpr int kScoreForeground = 4;
+static constexpr int kScoreSession    = 2;
+static constexpr int kScoreWhitelist  = 8; // user-explicit: guaranteed to win over heuristic
+
+ActiveGameResult detect_active_game(const DetectConfig& cfg)
 {
     auto sessions = enumerate_render_sessions();
-    auto has_session = [&sessions](uint32_t pid) {
-        for (const auto& session : sessions) {
-            if (session.process_id == pid) return true;
-        }
+    auto has_audio_session = [&sessions](uint32_t pid) -> bool {
+        for (const auto& s : sessions)
+            if (s.process_id == pid) return true;
         return false;
     };
 
@@ -404,34 +416,100 @@ ProcessInfo detect_active_game()
     DWORD fg_pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &fg_pid);
 
-    // Score every plausible top-level window:
-    //   +2 fullscreen-sized, +2 foreground, +1 owns a render audio session.
-    // Shell/system processes are excluded entirely.
-    std::vector<GameCandidate> candidates;
-    EnumWindows(game_window_enum_proc, reinterpret_cast<LPARAM>(&candidates));
+    // Enumerate plausible top-level windows.
+    std::vector<GameCandidate> raw_candidates;
+    EnumWindows(game_window_enum_proc, reinterpret_cast<LPARAM>(&raw_candidates));
 
-    GameCandidate best;
-    ProcessInfo best_info;
-    for (auto& cand : candidates) {
+    ActiveGameResult best;
+    int64_t best_area = 0;
+    for (auto& cand : raw_candidates) {
         ProcessInfo info = process_info(cand.pid);
-        if (info.process_name.empty() || is_shell_process(info.process_name))
-            continue;
-        if (cand.pid == fg_pid) cand.score += 2;
-        if (has_session(cand.pid)) cand.score += 1;
-        if (cand.score > best.score ||
-            (cand.score == best.score && cand.area > best.area)) {
-            best = cand;
-            best_info = std::move(info);
+        if (info.process_name.empty()) continue;
+
+        std::wstring lower_name = to_lower(info.process_name);
+
+        // Always reject built-in shell/system processes.
+        if (is_builtin_shell_process(lower_name)) continue;
+
+        // Reject user-configured blacklist (case-insensitive).
+        bool blacklisted = false;
+        for (const auto& bl : cfg.blacklist) {
+            if (lower_name == to_lower(bl)) { blacklisted = true; break; }
+        }
+        if (blacklisted) continue;
+
+        // Compute score with explicit bonuses.
+        int score = 0;
+        std::string reason_parts;
+        bool is_session  = has_audio_session(cand.pid);
+        bool is_fg       = (cand.pid == fg_pid);
+
+        if (cand.fullscreen) { score += kScoreFullscreen; reason_parts += "fullscreen+"; }
+        if (is_fg)           { score += kScoreForeground; reason_parts += "foreground+"; }
+        if (is_session)      { score += kScoreSession;    reason_parts += "session+"; }
+
+        // Whitelist/manual bonus: explicit user choice wins over pure heuristic.
+        bool user_explicit = false;
+        for (const auto& wl : cfg.whitelist) {
+            if (lower_name == to_lower(wl)) { user_explicit = true; break; }
+        }
+        if (!user_explicit) {
+            for (const auto& mg : cfg.manual_games) {
+                if (lower_name == to_lower(mg)) { user_explicit = true; break; }
+            }
+        }
+        if (user_explicit) { score += kScoreWhitelist; reason_parts += "whitelisted+"; }
+
+        // Must have at least one positive signal to be a candidate at all.
+        if (score <= 0) continue;
+
+        // Clean up trailing '+'.
+        if (!reason_parts.empty() && reason_parts.back() == '+')
+            reason_parts.pop_back();
+
+        int confidence = std::min(100, score * 10);
+        if (confidence < cfg.min_confidence) continue;
+
+        if (score > best.score ||
+            (score == best.score && cand.area > best_area)) {
+            best_area        = cand.area;
+            best.process     = std::move(info);
+            best.score       = score;
+            best.confidence  = confidence;
+            best.reason      = std::move(reason_parts);
+            best.has_session = is_session;
+            best.fullscreen  = cand.fullscreen;
         }
     }
-    if (best.pid != 0 && best.score > 0) return best_info;
 
-    // Legacy fallback: bare foreground process, unless it is a shell process.
-    if (fg_pid != 0 && fg_pid != GetCurrentProcessId()) {
-        ProcessInfo info = process_info(fg_pid);
-        if (!is_shell_process(info.process_name)) return info;
+    // If nothing passed confidence with window scoring, try bare foreground process
+    // (only when min_confidence is low enough to accept it — score would be foreground only = 40).
+    if (best.process.process_id == 0 && fg_pid != 0 && fg_pid != GetCurrentProcessId()) {
+        ProcessInfo fg_info = process_info(fg_pid);
+        if (!fg_info.process_name.empty()) {
+            std::wstring lower_name = to_lower(fg_info.process_name);
+            bool blacklisted = is_builtin_shell_process(lower_name);
+            if (!blacklisted) {
+                for (const auto& bl : cfg.blacklist)
+                    if (lower_name == to_lower(bl)) { blacklisted = true; break; }
+            }
+            if (!blacklisted) {
+                int score = kScoreForeground;
+                if (has_audio_session(fg_pid)) score += kScoreSession;
+                int confidence = std::min(100, score * 10);
+                if (confidence >= cfg.min_confidence) {
+                    best.process    = std::move(fg_info);
+                    best.score      = score;
+                    best.confidence = confidence;
+                    best.reason     = "foreground-fallback";
+                    best.has_session = has_audio_session(fg_pid);
+                    best.fullscreen  = false;
+                }
+            }
+        }
     }
-    return {};
+
+    return best;
 }
 
 // ── WasapiCapture ─────────────────────────────────────────────────────────────

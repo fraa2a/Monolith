@@ -6,6 +6,7 @@ using Monolith.Settings.Models;
 using Monolith.Settings.Services;
 using Monolith.Settings.ViewModels;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -299,6 +300,47 @@ public sealed partial class MainWindow : Window
         PopulatePrimaryMicCombo();
         PopulateAddAudioSourceCombo();
         suppressAudioEvents = false;
+        UpdateCustomSourcesVisibility();
+        UpdateActiveGameStatusPanel();
+    }
+
+    private void UpdateCustomSourcesVisibility()
+    {
+        bool isCustom = viewModel.IsCustomAudioMode;
+        CustomSourcesPanel.Visibility = isCustom ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateActiveGameStatusPanel()
+    {
+        RuntimeStatus? status = viewModel.RuntimeStatus;
+        bool hasActiveGameSource = viewModel.IsCustomAudioMode &&
+            viewModel.AudioSources.Any(s => s.Type == "active_game" && s.Enabled);
+
+        ActiveGameStatusPanel.Visibility = hasActiveGameSource ? Visibility.Visible : Visibility.Collapsed;
+        if (!hasActiveGameSource) return;
+
+        ActiveGameStatus? ag = status?.ActiveGame;
+        if (ag is null || ag.ProcessId == 0)
+        {
+            ActiveGameNameText.Text = "No game detected";
+            ActiveGameDetailsText.Text = "";
+            return;
+        }
+
+        string name = string.IsNullOrWhiteSpace(ag.DisplayName) ? ag.ProcessName : ag.DisplayName;
+        ActiveGameNameText.Text = $"{name} (PID {ag.ProcessId}) — confidence {ag.Confidence}%";
+
+        string captureInfo = ag.CaptureMode switch
+        {
+            "process_loopback" => "Per-process capture active",
+            "unavailable"      => "Per-process capture unavailable (system loopback fallback not active)",
+            _                  => "No capture",
+        };
+        string pollInfo = $"Poll: every {ag.PollIntervalMs / 1000}s" +
+                          (ag.FastScanEnabled ? " + fast scan on foreground change" : "");
+        string switchInfo = string.IsNullOrEmpty(ag.LastSwitchTime) ? "" : $"  ·  Last switch: {ag.LastSwitchTime}";
+        string reason = string.IsNullOrEmpty(ag.Reason) ? "" : $"  ·  Signals: {ag.Reason}";
+        ActiveGameDetailsText.Text = $"{captureInfo}  ·  {pollInfo}{switchInfo}{reason}";
     }
 
     private void PopulatePrimaryMicCombo()
@@ -681,13 +723,51 @@ public sealed partial class MainWindow : Window
             viewModel.RecordingContainer = container;
     }
 
-    private void OnAudioModeSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void OnAudioModeSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (suppressAudioEvents)
             return;
 
-        if (AudioModeComboBox.SelectedItem is ComboBoxItem item && item.Tag is string mode)
-            viewModel.AudioMode = mode;
+        if (AudioModeComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string mode)
+            return;
+
+        // Confirm when switching from Default → Custom (not needed for Custom → Default).
+        if (mode == "custom" && viewModel.AudioMode != "custom")
+        {
+            ContentDialogResult result = await ConfirmSwitchToCustom();
+            if (result != ContentDialogResult.Primary)
+            {
+                // User cancelled — revert the combo back to "default" without firing events.
+                suppressAudioEvents = true;
+                SelectComboBoxByTag(AudioModeComboBox, "default");
+                suppressAudioEvents = false;
+                return;
+            }
+        }
+
+        viewModel.AudioMode = mode;
+        UpdateCustomSourcesVisibility();
+        UpdateActiveGameStatusPanel();
+    }
+
+    private async Task<ContentDialogResult> ConfirmSwitchToCustom()
+    {
+        ContentDialog dialog = new()
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Switch to Custom audio?",
+            Content = "Custom audio lets you route apps, microphones, and the Active Game source " +
+                      "to specific tracks/channels. If configured incorrectly, your recordings may " +
+                      "have missing audio, duplicated audio, or audio on the wrong track.\n\n" +
+                      "Default mode is recommended for most users:\n" +
+                      "Default: All Windows audio + microphone.\n\n" +
+                      "Are you sure you want to switch to Custom audio?",
+            PrimaryButtonText   = "Switch to Custom",
+            CloseButtonText     = "Cancel",
+            DefaultButton       = ContentDialogButton.Close,
+        };
+
+        return await dialog.ShowAsync();
     }
 
     private void OnPrimaryMicSelectionChanged(object sender, SelectionChangedEventArgs e)

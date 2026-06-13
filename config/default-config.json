@@ -49,5 +49,29 @@
   },
   "update": {
     "auto_check": true
+  },
+  "active_game": {
+    "detection_enabled": true,
+    "poll_interval_ms": 30000,
+    "switch_debounce_ms": 3000,
+    "min_confidence": 50,
+    "fast_scan_enabled": true,
+    "fast_scan_min_interval_ms": 1000,
+    "blacklist_processes": [
+      "Monolith.exe",
+      "Monolith.Settings.exe",
+      "Discord.exe",
+      "chrome.exe",
+      "msedge.exe",
+      "firefox.exe",
+      "obs64.exe",
+      "explorer.exe",
+      "dwm.exe",
+      "SearchHost.exe",
+      "StartMenuExperienceHost.exe",
+      "ShellExperienceHost.exe"
+    ],
+    "whitelist_processes": [],
+    "manual_games": []
   }
 }

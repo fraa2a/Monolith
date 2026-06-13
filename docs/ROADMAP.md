@@ -128,9 +128,9 @@ Status: complete.
 - Not implemented:
   - Stream Deck settings
 
-## Milestone 6: Audio V2
+## Milestone 6: Audio V2 (v0.5.1 update)
 
-Status: foundation implemented; mixer/runtime validation remains.
+Status: foundation + dynamic Active Game detection implemented; mixer/runtime validation remains.
 
 - Goal:
   - Add reliable default system+microphone output and a custom audio-routing model for up to six tracks.
@@ -139,8 +139,16 @@ Status: foundation implemented; mixer/runtime validation remains.
   - Custom mode: add/configure/disable/remove sources and assign each source to tracks 1-6. Implemented in Settings/config.
   - Multiple microphone/input devices as independent configurable sources. Implemented.
   - Per-process/application session listing with readable names and saved routing assignments. Implemented with Windows process-loopback best effort.
-  - Best-effort Active Game source that never breaks recording if no game is detected. Implemented as foreground-process best effort.
+  - Best-effort Active Game source that never breaks recording if no game is detected. Implemented: dynamic detection with 30 s poll + foreground-change fast scan, debounce-based switching, blacklist/whitelist/manual-game config, process-loopback with fallback reporting.
   - Encoder/muxer support for the required audio tracks, with resampling/mixing as needed. Implemented for independent tracks; same-track multi-source mixing remains pending.
+- v0.5.1 additions:
+  - Active Game detection re-evaluates every poll tick instead of locking onto the first process.
+  - Default poll interval changed to 30 s; foreground-change WinEvent hook provides sub-1-s detection latency.
+  - Debounce (3 s default) prevents spurious switches on alt-tab.
+  - Audio Mode labels simplified; Custom Sources hidden in Default mode.
+  - Default → Custom confirmation dialog added.
+  - Active Game runtime status panel shows detected game, confidence, signals, capture mode.
+  - Runtime-status.json extended with confidence/reason/capture_mode/process_loopback_available/last_switch_time/poll_interval_ms/fast_scan_enabled.
 - Acceptance criteria:
   - replay save, manual recording, Settings launch, and output paths still work. Build and Settings launch smoke verified; runtime audio tests still needed.
   - missing devices/processes do not crash recording or corrupt config. Implemented by fail-closed source startup and saved-source availability display.

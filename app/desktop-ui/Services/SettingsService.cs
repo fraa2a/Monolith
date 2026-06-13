@@ -179,12 +179,19 @@ public sealed class SettingsService
 
             if (obj["active_game"] is JsonObject game)
             {
-                status.ActiveGame = new AudioSessionInfo
+                status.ActiveGame = new ActiveGameStatus
                 {
-                    ProcessId = UIntAt(game, "process_id", 0),
-                    ProcessName = StringAt(game, "process_name"),
-                    DisplayName = StringAt(game, "display_name"),
-                    ExecutablePath = StringAt(game, "executable_path"),
+                    ProcessId                = UIntAt(game, "process_id", 0),
+                    ProcessName              = StringAt(game, "process_name"),
+                    DisplayName              = StringAt(game, "display_name"),
+                    ExecutablePath           = StringAt(game, "executable_path"),
+                    Confidence               = IntAt(game, "confidence", 0),
+                    Reason                   = StringAt(game, "reason"),
+                    CaptureMode              = StringAt(game, "capture_mode"),
+                    ProcessLoopbackAvailable = BoolAt(game, "process_loopback_available"),
+                    LastSwitchTime           = StringAt(game, "last_switch_time"),
+                    PollIntervalMs           = IntAt(game, "poll_interval_ms", 30000),
+                    FastScanEnabled          = BoolAt(game, "fast_scan_enabled"),
                 };
             }
 

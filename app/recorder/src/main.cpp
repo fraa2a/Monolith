@@ -44,8 +44,9 @@
 static constexpr WCHAR kWindowClass[] = L"MonolithMsgWnd";
 static constexpr WCHAR kAppName[]     = L"Monolith";
 static constexpr WCHAR kMutexName[]   = L"Monolith_SingleInstance";
-static constexpr UINT  WM_TRAYICON   = WM_APP + 1;
+static constexpr UINT  WM_TRAYICON        = WM_APP + 1;
 static constexpr UINT  WM_SETTINGS_RELOAD = WM_APP + 2;
+static constexpr UINT  WM_FAST_SCAN       = WM_APP + 3; // posted by the WinEvent fg hook
 
 enum Cmd : UINT {
     CMD_SAVE_REPLAY     = 1001,
@@ -259,13 +260,24 @@ static std::atomic<bool> g_replay_enabled{ true };
 static std::atomic<bool> g_recording_enabled{ true };
 static settings::Config g_settings;
 
-// Active-game audio source: re-acquired by a UI-thread timer so a game
-// launched after Monolith (or after the previous game exited) is picked up.
-static constexpr UINT_PTR kActiveGameTimerId  = 1;
-static constexpr UINT     kActiveGamePollMs   = 5000;
-static std::vector<int> g_active_game_tracks;
-static uint32_t g_active_game_pid = 0;
-static audio::WasapiCapture* g_active_game_capture = nullptr;
+// Active-game audio source: re-evaluated every poll_interval_ms by a UI-thread timer
+// and also on foreground-window changes (fast scan, rate-limited).
+static constexpr UINT_PTR kActiveGameTimerId = 1;
+
+static std::vector<int>          g_active_game_tracks;
+static uint32_t                  g_active_game_pid     = 0;
+static audio::WasapiCapture*     g_active_game_capture = nullptr;
+static std::string               g_active_game_capture_mode; // "process_loopback"|"unavailable"|"none"
+
+// Debounce state: pending switch candidate and when it was first seen.
+static uint32_t g_pending_game_pid       = 0;
+static DWORD    g_pending_game_first_ms  = 0;
+
+// Fast-scan state (UI thread only).
+static HWINEVENTHOOK g_fg_hook           = nullptr;
+static HWND          g_main_hwnd         = nullptr; // set in WM_CREATE for the hook callback
+static bool          g_fast_scan_pending = false;
+static DWORD         g_last_fast_scan_ms = 0;
 
 static std::mutex g_status_mutex;
 static settings::RuntimeStatus g_runtime_status;
@@ -588,7 +600,18 @@ static void refresh_audio_runtime_status()
     for (const auto& session : sessions)
         g_runtime_status.audio_sessions.push_back(runtime_audio_session(session));
 
-    g_runtime_status.active_game = runtime_audio_session(active);
+    {
+        settings::ActiveGameStatus ag_status;
+        ag_status.process_id      = active.process_id;
+        ag_status.process_name    = active.process_name;
+        ag_status.display_name    = active.display_name;
+        ag_status.executable_path = active.executable_path;
+        ag_status.capture_mode    = g_active_game_capture_mode.empty() ? "none" : g_active_game_capture_mode;
+        ag_status.process_loopback_available = (g_active_game_capture_mode == "process_loopback");
+        ag_status.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
+        ag_status.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
+        g_runtime_status.active_game = ag_status;
+    }
 }
 
 static std::vector<int> valid_tracks(const std::vector<int>& tracks)
@@ -769,8 +792,11 @@ static void stop_audio_system()
     for (auto& encoder : g_audio_encoders)
         encoder.close();
     g_active_game_tracks.clear();
-    g_active_game_pid = 0;
-    g_active_game_capture = nullptr;
+    g_active_game_pid           = 0;
+    g_active_game_capture       = nullptr;
+    g_active_game_capture_mode  = "none";
+    g_pending_game_pid          = 0;
+    g_pending_game_first_ms     = 0;
 }
 
 static void start_default_audio_system()
@@ -837,14 +863,10 @@ static void start_custom_audio_system()
             }
         } else if (source.type == "active_game") {
             g_active_game_tracks = tracks;
-            auto active = audio::detect_active_game();
-            if (start_process_source(active.process_id, tracks, "audio.game",
-                                     "active game audio started")) {
-                g_active_game_pid = active.process_id;
-                g_active_game_capture = g_audio_captures.back().get();
-            } else {
-                log_msg("audio.game", "no active game detected yet; watching for one");
-            }
+            // Initial acquire: call poll_active_game() inline after audio start to pick
+            // up any game already running.  poll_active_game() uses the configured
+            // blacklist/whitelist and will set g_active_game_pid/capture/mode.
+            // If nothing is found yet the timer/hook will handle acquisition.
         }
     }
 }
@@ -872,16 +894,145 @@ static bool active_game_source_configured()
     return false;
 }
 
-// Timer-driven (UI thread, every kActiveGamePollMs): acquires the active-game
-// capture when none exists yet, and re-acquires after the captured game exits.
-// A live capture is never switched just because focus moved — alt-tabbing must
-// not cut game audio mid-session.
+// Build an audio::DetectConfig from the currently loaded settings.
+static audio::DetectConfig build_detect_config()
+{
+    audio::DetectConfig cfg;
+    cfg.min_confidence = g_settings.active_game.min_confidence;
+    for (const auto& s : g_settings.active_game.blacklist_processes)
+        cfg.blacklist.push_back(utf8_to_wide(s));
+    for (const auto& s : g_settings.active_game.whitelist_processes)
+        cfg.whitelist.push_back(utf8_to_wide(s));
+    for (const auto& s : g_settings.active_game.manual_games)
+        cfg.manual_games.push_back(utf8_to_wide(s));
+    return cfg;
+}
+
+// Drop the active-game capture if it is present (does NOT clear g_active_game_tracks).
+static void drop_active_game_capture(const char* reason_msg)
+{
+    if (g_active_game_capture == nullptr) return;
+    for (auto it = g_audio_captures.begin(); it != g_audio_captures.end(); ++it) {
+        if (it->get() == g_active_game_capture) {
+            (*it)->stop();
+            g_audio_captures.erase(it);
+            break;
+        }
+    }
+    g_active_game_capture      = nullptr;
+    g_active_game_pid          = 0;
+    g_active_game_capture_mode = "none";
+    g_pending_game_pid         = 0;
+    g_pending_game_first_ms    = 0;
+    log_msg("audio.game", reason_msg);
+}
+
+// Called from the UI thread (via WM_TIMER or WM_FAST_SCAN) to evaluate whether
+// the Active Game source should be acquired, retained, or switched to a new process.
+//
+// Hysteresis: a new candidate must remain the best choice for switch_debounce_ms
+// before the capture is swapped.  Only the Active Game capture is touched; other
+// captures, encoders, and the replay buffer are never restarted.
 static void poll_active_game()
 {
     if (g_active_game_tracks.empty()) return;
+    if (!g_settings.active_game.detection_enabled) return;
 
-    if (g_active_game_pid != 0) {
-        if (audio::process_alive(g_active_game_pid)) return;
+    // Drop current capture if the process has exited.
+    if (g_active_game_pid != 0 && !audio::process_alive(g_active_game_pid))
+        drop_active_game_capture("active game exited; watching for a new one");
+
+    // Detect best candidate with config-driven blacklist/whitelist.
+    audio::ActiveGameResult result = audio::detect_active_game(build_detect_config());
+    uint32_t best_pid = result.process.process_id;
+
+    // ── No valid candidate ────────────────────────────────────────────────────
+    if (best_pid == 0) {
+        g_pending_game_pid      = 0;
+        g_pending_game_first_ms = 0;
+        return;
+    }
+
+    // ── Same as current live capture: refresh status, no change ───────────────
+    if (best_pid == g_active_game_pid) {
+        g_pending_game_pid      = 0;
+        g_pending_game_first_ms = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_status_mutex);
+            g_runtime_status.active_game.confidence   = result.confidence;
+            g_runtime_status.active_game.reason       = result.reason;
+            g_runtime_status.active_game.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
+            g_runtime_status.active_game.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
+        }
+        return;
+    }
+
+    // ── No current capture and a valid candidate: acquire immediately ──────────
+    if (g_active_game_pid == 0) {
+        bool ok = start_process_source(best_pid, g_active_game_tracks,
+                                       "audio.game", "active game audio started");
+        if (ok) {
+            g_active_game_pid          = best_pid;
+            g_active_game_capture      = g_audio_captures.back().get();
+            g_active_game_capture_mode = "process_loopback";
+        } else {
+            g_active_game_capture_mode = "unavailable";
+            log_msg("audio.game", "process-loopback unavailable for active game candidate");
+        }
+        g_pending_game_pid      = 0;
+        g_pending_game_first_ms = 0;
+        publish_audio_params();
+        {
+            SYSTEMTIME st; GetLocalTime(&st);
+            char ts[32]; snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02d",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+            std::lock_guard<std::mutex> lk(g_status_mutex);
+            g_runtime_status.active_game.process_id      = ok ? best_pid : 0;
+            g_runtime_status.active_game.process_name    = result.process.process_name;
+            g_runtime_status.active_game.display_name    = result.process.display_name;
+            g_runtime_status.active_game.executable_path = result.process.executable_path;
+            g_runtime_status.active_game.confidence      = result.confidence;
+            g_runtime_status.active_game.reason          = result.reason;
+            g_runtime_status.active_game.capture_mode    = g_active_game_capture_mode;
+            g_runtime_status.active_game.process_loopback_available = ok;
+            g_runtime_status.active_game.last_switch_time = ts;
+            g_runtime_status.active_game.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
+            g_runtime_status.active_game.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
+        }
+        publish_runtime_status();
+        return;
+    }
+
+    // ── Different candidate: debounce before switching ────────────────────────
+    DWORD now_ms = GetTickCount();
+    if (g_pending_game_pid != best_pid) {
+        // New pending candidate; reset the debounce timer.
+        g_pending_game_pid      = best_pid;
+        g_pending_game_first_ms = now_ms;
+        return;
+    }
+
+    // Same pending candidate — check whether debounce period has elapsed.
+    DWORD elapsed = now_ms - g_pending_game_first_ms;
+    if (elapsed < static_cast<DWORD>(g_settings.active_game.switch_debounce_ms))
+        return; // Not yet; keep waiting.
+
+    // Debounce passed → swap the Active Game capture.
+    // Start the new capture first (so there is minimal gap), then stop the old one.
+    bool ok = start_process_source(best_pid, g_active_game_tracks,
+                                   "audio.game", "active game switched");
+    if (!ok) {
+        g_active_game_capture_mode = "unavailable";
+        log_msg("audio.game", "process-loopback unavailable for new game; switch aborted");
+        g_pending_game_pid      = 0;
+        g_pending_game_first_ms = 0;
+        return;
+    }
+
+    audio::WasapiCapture* new_capture = g_audio_captures.back().get();
+
+    // Remove old capture — only the Active Game source, nothing else.
+    if (g_active_game_capture != nullptr) {
         for (auto it = g_audio_captures.begin(); it != g_audio_captures.end(); ++it) {
             if (it->get() == g_active_game_capture) {
                 (*it)->stop();
@@ -889,24 +1040,64 @@ static void poll_active_game()
                 break;
             }
         }
-        g_active_game_capture = nullptr;
-        g_active_game_pid = 0;
-        log_msg("audio.game", "active game exited; watching for a new one");
     }
 
-    auto active = audio::detect_active_game();
-    if (active.process_id == 0) return;
-    if (start_process_source(active.process_id, g_active_game_tracks, "audio.game",
-                             "active game audio started")) {
-        g_active_game_pid = active.process_id;
-        g_active_game_capture = g_audio_captures.back().get();
-        publish_audio_params();
-        {
-            std::lock_guard<std::mutex> lk(g_status_mutex);
-            g_runtime_status.active_game = runtime_audio_session(active);
-        }
-        publish_runtime_status();
+    g_active_game_pid          = best_pid;
+    g_active_game_capture      = new_capture;
+    g_active_game_capture_mode = "process_loopback";
+    g_pending_game_pid         = 0;
+    g_pending_game_first_ms    = 0;
+
+    publish_audio_params();
+    {
+        SYSTEMTIME st; GetLocalTime(&st);
+        char ts[32]; snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02d",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        std::lock_guard<std::mutex> lk(g_status_mutex);
+        g_runtime_status.active_game.process_id      = best_pid;
+        g_runtime_status.active_game.process_name    = result.process.process_name;
+        g_runtime_status.active_game.display_name    = result.process.display_name;
+        g_runtime_status.active_game.executable_path = result.process.executable_path;
+        g_runtime_status.active_game.confidence      = result.confidence;
+        g_runtime_status.active_game.reason          = result.reason;
+        g_runtime_status.active_game.capture_mode    = "process_loopback";
+        g_runtime_status.active_game.process_loopback_available = true;
+        g_runtime_status.active_game.last_switch_time = ts;
+        g_runtime_status.active_game.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
+        g_runtime_status.active_game.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
     }
+    publish_runtime_status();
+}
+
+// WinEvent hook callback — called on the UI thread when the foreground window changes.
+// Rate-limited fast scan: coalesces rapid events by checking g_fast_scan_pending,
+// then posts WM_FAST_SCAN so poll_active_game() runs on the next message-loop turn.
+static void CALLBACK active_game_fg_hook(
+    HWINEVENTHOOK /*hWinEventHook*/, DWORD /*event*/, HWND /*hwnd*/,
+    LONG /*idObject*/, LONG /*idChild*/, DWORD /*dwEventThread*/, DWORD /*dwmsEventTime*/)
+{
+    if (g_fast_scan_pending) return; // already queued; coalesce
+    g_fast_scan_pending = true;
+    PostMessageW(g_main_hwnd, WM_FAST_SCAN, 0, 0);
+}
+
+// Install / uninstall the foreground-change WinEvent hook for fast scan.
+static void install_fg_hook()
+{
+    if (g_fg_hook) return;
+    g_fg_hook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+        nullptr,               // no DLL — out-of-context callback
+        active_game_fg_hook,
+        0, 0,                  // all processes/threads
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+}
+
+static void uninstall_fg_hook()
+{
+    if (!g_fg_hook) return;
+    UnhookWinEvent(g_fg_hook);
+    g_fg_hook = nullptr;
 }
 
 // ── Media start / stop ────────────────────────────────────────────────────────
@@ -954,9 +1145,17 @@ static void media_start(HWND hwnd)
     }
 
     // ── Audio capture/routing ──────────────────────────────────────────────────
+    g_main_hwnd = hwnd;
     start_audio_system();
-    if (active_game_source_configured())
-        SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
+    if (active_game_source_configured()) {
+        UINT poll_ms = static_cast<UINT>(
+            std::max(3000, std::min(30000, g_settings.active_game.poll_interval_ms)));
+        SetTimer(hwnd, kActiveGameTimerId, poll_ms, nullptr);
+        if (g_settings.active_game.fast_scan_enabled)
+            install_fg_hook();
+        // Initial detection pass (doesn't wait for first timer tick).
+        poll_active_game();
+    }
 
     // ── WGC display capture ───────────────────────────────────────────────────
     if (capture::is_supported()) {
@@ -1636,9 +1835,24 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
 
+    case WM_FAST_SCAN:
+        // Foreground-change fast scan: rate-limited by fast_scan_min_interval_ms.
+        g_fast_scan_pending = false;
+        if (g_settings.active_game.fast_scan_enabled) {
+            DWORD now_ms = GetTickCount();
+            DWORD min_gap = static_cast<DWORD>(
+                std::max(500, std::min(5000, g_settings.active_game.fast_scan_min_interval_ms)));
+            if ((now_ms - g_last_fast_scan_ms) >= min_gap) {
+                g_last_fast_scan_ms = now_ms;
+                poll_active_game();
+            }
+        }
+        return 0;
+
     case WM_DESTROY:
         settings_window::close_running();
         KillTimer(hwnd, kActiveGameTimerId);
+        uninstall_fg_hook();
         updater::shutdown();
         ipc::stop();
         media_stop();

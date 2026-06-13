@@ -72,6 +72,30 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   },
   "update": {
     "auto_check": true
+  },
+  "active_game": {
+    "detection_enabled": true,
+    "poll_interval_ms": 30000,
+    "switch_debounce_ms": 3000,
+    "min_confidence": 50,
+    "fast_scan_enabled": true,
+    "fast_scan_min_interval_ms": 1000,
+    "blacklist_processes": [
+      "Monolith.exe",
+      "Monolith.Settings.exe",
+      "Discord.exe",
+      "chrome.exe",
+      "msedge.exe",
+      "firefox.exe",
+      "obs64.exe",
+      "explorer.exe",
+      "dwm.exe",
+      "SearchHost.exe",
+      "StartMenuExperienceHost.exe",
+      "ShellExperienceHost.exe"
+    ],
+    "whitelist_processes": [],
+    "manual_games": []
   }
 }
 )json";
@@ -484,6 +508,47 @@ Config config_from_json(
     config.hotkey_recording_stop = utf8_at(doc, "hotkeys", "recording_stop", "Ctrl+Shift+F10");
     config.hotkey_pause_resume = utf8_at(doc, "hotkeys", "pause_resume", "Ctrl+Shift+F11");
 
+    // ── active_game detection settings ───────────────────────────────────────────
+    {
+        auto ag_it = doc.find("active_game");
+        const json* ag = (ag_it != doc.end() && ag_it->is_object()) ? &(*ag_it) : nullptr;
+        auto ag_bool  = [&](const char* key, bool fallback) -> bool {
+            if (!ag) return fallback;
+            auto it = ag->find(key); return (it != ag->end() && it->is_boolean()) ? it->get<bool>() : fallback;
+        };
+        auto ag_int   = [&](const char* key, int fallback) -> int {
+            if (!ag) return fallback;
+            auto it = ag->find(key); return (it != ag->end() && it->is_number_integer()) ? it->get<int>() : fallback;
+        };
+        config.active_game.detection_enabled         = ag_bool("detection_enabled",         true);
+        config.active_game.fast_scan_enabled         = ag_bool("fast_scan_enabled",         true);
+        config.active_game.poll_interval_ms          = ag_int ("poll_interval_ms",          30000);
+        config.active_game.switch_debounce_ms        = ag_int ("switch_debounce_ms",        3000);
+        config.active_game.min_confidence            = ag_int ("min_confidence",            50);
+        config.active_game.fast_scan_min_interval_ms = ag_int ("fast_scan_min_interval_ms", 1000);
+
+        // Clamp to safe ranges.
+        if (config.active_game.poll_interval_ms < 3000 || config.active_game.poll_interval_ms > 30000)
+            config.active_game.poll_interval_ms = 30000;
+        if (config.active_game.switch_debounce_ms < 1000 || config.active_game.switch_debounce_ms > 15000)
+            config.active_game.switch_debounce_ms = 3000;
+        if (config.active_game.min_confidence < 0 || config.active_game.min_confidence > 100)
+            config.active_game.min_confidence = 50;
+        if (config.active_game.fast_scan_min_interval_ms < 500 || config.active_game.fast_scan_min_interval_ms > 5000)
+            config.active_game.fast_scan_min_interval_ms = 1000;
+
+        auto parse_string_array = [&](const char* key, std::vector<std::string>& dest) {
+            if (!ag) return;
+            auto it = ag->find(key);
+            if (it == ag->end() || !it->is_array()) return;
+            for (const auto& item : *it)
+                if (item.is_string()) dest.push_back(item.get<std::string>());
+        };
+        parse_string_array("blacklist_processes",  config.active_game.blacklist_processes);
+        parse_string_array("whitelist_processes",  config.active_game.whitelist_processes);
+        parse_string_array("manual_games",         config.active_game.manual_games);
+    }
+
     json sanitized = doc;
     write_runtime_fields(sanitized, config);
     config.merged_json = sanitized.dump(2);
@@ -596,10 +661,17 @@ bool write_runtime_status(
         });
     }
     doc["active_game"] = {
-        {"process_id", status.active_game.process_id},
-        {"process_name", wide_to_utf8(status.active_game.process_name)},
-        {"display_name", wide_to_utf8(status.active_game.display_name)},
-        {"executable_path", wide_to_utf8(status.active_game.executable_path)},
+        {"process_id",                status.active_game.process_id},
+        {"process_name",              wide_to_utf8(status.active_game.process_name)},
+        {"display_name",              wide_to_utf8(status.active_game.display_name)},
+        {"executable_path",           wide_to_utf8(status.active_game.executable_path)},
+        {"confidence",                status.active_game.confidence},
+        {"reason",                    status.active_game.reason},
+        {"capture_mode",              status.active_game.capture_mode},
+        {"process_loopback_available",status.active_game.process_loopback_available},
+        {"last_switch_time",          status.active_game.last_switch_time},
+        {"poll_interval_ms",          status.active_game.poll_interval_ms},
+        {"fast_scan_enabled",         status.active_game.fast_scan_enabled},
     };
     doc["available_encoders"] = status.available_encoders;
     doc["active_encoder"] = status.active_encoder;

@@ -51,13 +51,38 @@ std::vector<DeviceInfo> enumerate_input_devices();
 std::vector<ProcessAudioSessionInfo> enumerate_render_sessions();
 ProcessInfo active_foreground_process();
 
-// Best-effort "active game" detection. Scores candidates instead of blindly
-// taking the foreground process: shell/system processes are skipped, and a
-// process with a fullscreen-sized top-level window and a live render audio
-// session wins over a bare foreground window. Falls back to the foreground
-// process when nothing scores higher. Returns a default ProcessInfo
-// (process_id == 0) when no plausible candidate exists.
-ProcessInfo detect_active_game();
+// Config passed to detect_active_game() to drive blacklist/whitelist/confidence.
+// All exe names in blacklist/whitelist/manual_games are compared case-insensitively.
+struct DetectConfig {
+    std::vector<std::wstring> blacklist;    // processes to reject unconditionally
+    std::vector<std::wstring> whitelist;    // processes that receive a strong bonus
+    std::vector<std::wstring> manual_games; // user-explicitly-chosen games (strong bonus)
+    int min_confidence = 50;               // 0–100; candidates below this are discarded
+};
+
+// Extended result returned by the config-driven detect_active_game overload.
+// confidence 0–100; reason is a human-readable string of applied scoring factors.
+struct ActiveGameResult {
+    ProcessInfo process;         // process_id == 0 when nothing qualifies
+    int  score       = 0;
+    int  confidence  = 0;        // 0–100
+    std::string reason;
+    bool has_session = false;
+    bool fullscreen  = false;
+};
+
+// Config-driven active-game detection. Applies the blacklist/whitelist from cfg,
+// scores candidates with explicit bonuses (fullscreen, foreground, audio session,
+// whitelist/manual), and discards candidates below cfg.min_confidence.
+// Returns an ActiveGameResult with process_id == 0 when nothing qualifies.
+ActiveGameResult detect_active_game(const DetectConfig& cfg);
+
+// Convenience overload: uses built-in defaults (shell/Monolith blacklisted,
+// min_confidence = 0 so any candidate is returned).
+inline ProcessInfo detect_active_game()
+{
+    return detect_active_game(DetectConfig{}).process;
+}
 
 // True while the process can be opened and has not exited.
 bool process_alive(uint32_t process_id);

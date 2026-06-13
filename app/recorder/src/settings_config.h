@@ -18,6 +18,21 @@ struct AudioSourceConfig {
     std::vector<int> tracks;
 };
 
+// Configuration for the dynamic Active Game detection subsystem.
+struct ActiveGameSettings {
+    bool detection_enabled         = true;
+    int  poll_interval_ms          = 30000;  // clamped 3000–30000
+    int  switch_debounce_ms        = 3000;   // clamped 1000–15000
+    int  min_confidence            = 50;     // clamped 0–100
+    bool fast_scan_enabled         = true;
+    int  fast_scan_min_interval_ms = 1000;   // clamped 500–5000
+
+    // Exe names (UTF-8, compared case-insensitively) to reject or boost.
+    std::vector<std::string> blacklist_processes;
+    std::vector<std::string> whitelist_processes;
+    std::vector<std::string> manual_games;
+};
+
 struct Config {
     std::wstring user_config_path;
     std::wstring clips_directory;
@@ -34,6 +49,9 @@ struct Config {
     std::string audio_mode = "default"; // "default" | "custom"
     std::wstring primary_microphone_device_id;
     std::vector<AudioSourceConfig> audio_sources;
+
+    // Active game detection settings.
+    ActiveGameSettings active_game;
 
     // Capture (capture/encoder restart when no manual recording is active).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
@@ -96,11 +114,26 @@ struct RuntimeAudioSession {
     std::wstring executable_path;
 };
 
+// Extended runtime status for the Active Game virtual source.
+struct ActiveGameStatus {
+    uint32_t process_id = 0;
+    std::wstring process_name;
+    std::wstring display_name;
+    std::wstring executable_path;
+    int confidence = 0;
+    std::string reason;
+    std::string capture_mode;               // "process_loopback" | "unavailable" | "none"
+    bool process_loopback_available = false;
+    std::string last_switch_time;           // ISO-8601 local time of last switch
+    int poll_interval_ms = 30000;
+    bool fast_scan_enabled = true;
+};
+
 struct RuntimeStatus {
     std::vector<RuntimeMonitor> monitors;
     std::vector<RuntimeAudioDevice> input_devices;
     std::vector<RuntimeAudioSession> audio_sessions;
-    RuntimeAudioSession active_game;
+    ActiveGameStatus active_game;           // extended; was RuntimeAudioSession
     std::vector<std::string> available_encoders;
     std::string active_encoder;        // "" until the encoder opens
     std::wstring active_monitor_device;

@@ -13,6 +13,7 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 - Milestone 5 complete: WinUI 3 Settings opens from the tray, saves config, persists across restarts, lazy-loads expensive runtime data, and reports realistic apply scopes instead of defaulting to full-app restart.
 - Milestone 6 foundation implemented: Default audio mode, Custom routing config/UI, source enumeration, source removal, multiple input devices, and up to six encoded audio tracks are wired. Mixer/A/V soak testing remains open.
 - Distribution milestone implemented: versioned builds, self-contained Settings sidecar, per-user Inno Setup installer, WinSparkle auto-update, and a tag-driven release pipeline publishing to a public release-only repo. One-time release setup (key generation, public repo, CI secrets) is documented in `docs/RELEASING.md` and still pending.
+- v0.5.1: Active Game dynamic detection and Audio Mode UX improvements. See "v0.5.1 Changes" below.
 
 ## Locked Architecture
 
@@ -24,6 +25,40 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 - FFmpeg/libav for encode and mux/remux.
 - Stream Deck IPC: localhost WebSocket/TCP JSON-RPC at `127.0.0.1:45991`.
 - Stream Deck plugin is a remote controller only; no recording logic in plugin.
+
+## v0.5.1 Changes
+
+### Active Game — dynamic detection and switching (root cause fixed)
+
+**Root cause:** `poll_active_game()` previously returned early whenever the captured PID was still alive, so the first game grabbed at startup was locked for the entire session. The new implementation re-evaluates every poll tick and uses debounce-based switching.
+
+**New detection architecture:**
+- `audio::detect_active_game(DetectConfig)` in `libs/audio/audio.cpp` scores candidates with explicit bonuses: +4 fullscreen, +4 foreground, +2 active audio session, +8 whitelisted/manual-game. Candidates below `min_confidence` (default 50, mapped as `score*10`) are discarded. Blacklisted executables are rejected before scoring.
+- Default poll interval: **30 seconds** (configurable 3000–30000 ms). The 30 s baseline is combined with event-triggered fast scans for responsiveness.
+- **Fast scan:** `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT)` triggers a rate-limited immediate rescan (minimum 1 s gap, default) when the foreground window changes. Debounce (default 3 s) still applies before any capture swap — fast scan only shortens *detection* latency, not the switch hysteresis.
+- **Switch hysteresis:** the new candidate must remain the top scorer for `switch_debounce_ms` (default 3 s) before the capture is swapped. The new capture is started first (minimising gap to this source only), then the old one is stopped. Replay buffer and other sources are never restarted.
+- **First acquire:** no debounce — if no game is captured and a valid candidate appears (including at startup), capture begins immediately.
+- **Process-loopback fallback:** if `start_process_loopback` returns false, the failure is logged and `capture_mode = "unavailable"` is reported in runtime status. Default mode is never affected.
+- Blacklist/whitelist/manual_games are loaded from `config/default-config.json` (`active_game` block) and clamped/defaulted in `settings_config.cpp`.
+
+**Config keys** (in `active_game` JSON block):
+- `detection_enabled`, `poll_interval_ms` (3000–30000, default 30000), `switch_debounce_ms` (1000–15000, default 3000), `min_confidence` (0–100, default 50), `fast_scan_enabled`, `fast_scan_min_interval_ms` (500–5000, default 1000), `blacklist_processes`, `whitelist_processes`, `manual_games`.
+
+### Audio Mode UX
+
+- Mode labels simplified: "Default: All Windows audio + microphone" / "Custom: Per-channel audio setup".
+- Custom Sources panel hidden while Audio Mode is Default; config preserved internally.
+- Switching Default → Custom shows a confirmation dialog; Cancel reverts to Default without saving.
+- Active Game status panel (in Custom mode when Active Game source is active): shows detected game name/PID, confidence, signals, capture mode, poll interval, fast-scan state, and last switch time. Updated from runtime-status.json.
+- No fake UI controls; no OS session mute/volume mutation.
+
+### Runtime status extensions
+
+`runtime-status.json` active_game object now includes: `confidence`, `reason`, `capture_mode`, `process_loopback_available`, `last_switch_time`, `poll_interval_ms`, `fast_scan_enabled`.
+
+### Version
+
+Bumped to 0.5.1 in `VERSION`, `CMakeLists.txt`, `installer/monolith.iss`.
 
 ## Implemented
 
@@ -80,8 +115,8 @@ This project is Monolith, a lightweight native Windows 11 clipping and recording
 
 - PCM mixer for multiple simultaneous sources sharing the same output track.
 - Long-session A/V sync soak tests for the new multi-track audio path.
-- Strong game detection; Active Game uses heuristic window scoring, still best effort.
-- True live audio re-route without restarting the audio pipeline.
+- Game detection is heuristic/best-effort; confidence scoring reduces false positives but is not infallible. Process-loopback requires Windows 10 21H2+ and is not guaranteed for all games/launchers.
+- True live audio re-route without restarting the audio pipeline (Active Game source swaps its own capture only; other sources still require a pipeline restart).
 - Real IPC server/client.
 - Stream Deck plugin code.
 - Desktop Duplication fallback.
