@@ -11,7 +11,9 @@ $bundleDir = Join-Path $stagingDir "top.fraa2a.monolith.sdPlugin"
 $manifestTemplatePath = Join-Path $pluginRoot "manifest.json"
 $manifestPath = Join-Path $bundleDir "manifest.json"
 $packageJsonPath = Join-Path $pluginRoot "package.json"
+$bundlePackageJsonPath = Join-Path $bundleDir "package.json"
 $tscPath = Join-Path $pluginRoot "node_modules\.bin\tsc.cmd"
+$nodeModulesPath = Join-Path $pluginRoot "node_modules"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $pluginRoot "..\.."))
 $logoPath = Join-Path $repoRoot "MONOLITH.png"
 $imgDir = Join-Path $bundleDir "imgs"
@@ -26,6 +28,10 @@ if (-not (Test-Path $packageJsonPath)) {
 
 if (-not (Test-Path $tscPath)) {
     throw "TypeScript compiler not found: $tscPath"
+}
+
+if (-not (Test-Path $nodeModulesPath)) {
+    throw "node_modules not found: $nodeModulesPath"
 }
 
 if (-not (Test-Path $logoPath)) {
@@ -46,6 +52,16 @@ $manifestJson = $manifest | ConvertTo-Json -Depth 10
 
 New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
 $manifestJson | Set-Content $manifestPath
+
+@{
+    name = "monolith-stream-deck"
+    version = $Version
+    private = $true
+    type = "module"
+    dependencies = @{
+        "@elgato/streamdeck" = $packageJson.dependencies."@elgato/streamdeck"
+    }
+} | ConvertTo-Json -Depth 5 | Set-Content $bundlePackageJsonPath
 
 New-Item -ItemType Directory -Force -Path $imgDir | Out-Null
 
@@ -109,6 +125,23 @@ try {
     }
 } finally {
     Pop-Location
+}
+
+$bundleNodeModules = Join-Path $bundleDir "node_modules"
+foreach ($runtimePackage in @(
+    "@elgato\schemas",
+    "@elgato\streamdeck",
+    "@elgato\utils",
+    "ws",
+    "zod"
+)) {
+    $source = Join-Path $nodeModulesPath $runtimePackage
+    if (-not (Test-Path $source)) {
+        throw "Runtime dependency not found: $source"
+    }
+    $destination = Join-Path $bundleNodeModules $runtimePackage
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+    Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
 }
 
 $distDir = Join-Path $pluginRoot $OutputDir

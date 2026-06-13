@@ -94,12 +94,18 @@ jobs:
         with:
           arch: x64
 
+      - name: Ensure Ninja
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja --no-progress -y
+          }
+
       - name: Configure
         shell: pwsh
         run: >
           cmake -S . -B build
-          -G "Visual Studio 17 2022"
-          -A x64
+          -G "Ninja Multi-Config"
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
           -DMONOLITH_VERSION=${{ steps.version.outputs.version }}
 
