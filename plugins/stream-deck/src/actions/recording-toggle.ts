@@ -1,7 +1,7 @@
 import { action, KeyUpEvent, SingletonAction, WillAppearEvent } from '@elgato/streamdeck';
 import { ipc } from '../plugin.js';
 
-@action({ UUID: 'com.monolith.recorder.recording-toggle' })
+@action({ UUID: 'top.fraa2a.monolith.recording-toggle' })
 export class RecordingToggle extends SingletonAction {
     override async onWillAppear(ev: WillAppearEvent): Promise<void> {
         if (ev.action.isKey()) {

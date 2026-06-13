@@ -43,6 +43,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     // video encoder pipeline fields
     private string encoderBackend = "auto";
+    private int videoFps = 60;
     private int bitrateKbps = 20000;
     private string extraFfmpegOptions = "";
 
@@ -59,6 +60,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private int loadedResolutionHeight = 0;
     private bool loadedShowCaptureBorder = false;
     private string loadedEncoderBackend = "auto";
+    private int loadedVideoFps = 60;
     private int loadedBitrateKbps = 20000;
     private string loadedExtraFfmpegOptions = "";
     private string loadedAudioFingerprint = "";
@@ -208,6 +210,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         set => SetField(ref encoderBackend, value);
     }
 
+    public int VideoFps
+    {
+        get => videoFps;
+        set => SetField(ref videoFps, value);
+    }
+
     public int BitrateKbps
     {
         get => bitrateKbps;
@@ -338,6 +346,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         resolutionHeight = data.ResolutionHeight;
         showCaptureBorder = data.ShowCaptureBorder;
         encoderBackend = data.EncoderBackend;
+        videoFps = data.VideoFps;
         bitrateKbps = data.BitrateKbps;
         extraFfmpegOptions = data.ExtraFfmpegOptions;
 
@@ -348,6 +357,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedResolutionHeight = resolutionHeight;
         loadedShowCaptureBorder = showCaptureBorder;
         loadedEncoderBackend = encoderBackend;
+        loadedVideoFps = videoFps;
         loadedBitrateKbps = bitrateKbps;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
         loadedAudioFingerprint = AudioFingerprint();
@@ -430,6 +440,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             ResolutionHeight = ResolutionHeight,
             ShowCaptureBorder = ShowCaptureBorder,
             EncoderBackend = EncoderBackend,
+            VideoFps = VideoFps,
             BitrateKbps = BitrateKbps,
             ExtraFfmpegOptions = ExtraFfmpegOptions,
         });
@@ -444,6 +455,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedResolutionHeight = resolutionHeight;
         loadedShowCaptureBorder = showCaptureBorder;
         loadedEncoderBackend = encoderBackend;
+        loadedVideoFps = videoFps;
         loadedBitrateKbps = bitrateKbps;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
         loadedAudioFingerprint = AudioFingerprint();
@@ -654,6 +666,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             resolutionHeight != loadedResolutionHeight ||
             showCaptureBorder != loadedShowCaptureBorder ||
             encoderBackend != loadedEncoderBackend ||
+            videoFps != loadedVideoFps ||
             bitrateKbps != loadedBitrateKbps ||
             extraFfmpegOptions != loadedExtraFfmpegOptions)
             scopes.Add("Capture/encoder restarts when no recording is active.");
@@ -737,6 +750,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         if (!IsIntInRange(BitrateKbps.ToString(), 1000, 100000))
         {
             error = "Video bitrate must be 1000 to 100000 kbps.";
+            return false;
+        }
+
+        if (VideoFps < 15 || VideoFps > 120)
+        {
+            error = "Recording FPS must be 15 to 120.";
             return false;
         }
 
@@ -959,6 +978,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ShowCaptureBorder));
         OnPropertyChanged(nameof(IsCustomResolution));
         OnPropertyChanged(nameof(EncoderBackend));
+        OnPropertyChanged(nameof(VideoFps));
         OnPropertyChanged(nameof(BitrateKbps));
         OnPropertyChanged(nameof(BitrateMbps));
         OnPropertyChanged(nameof(ExtraFfmpegOptions));

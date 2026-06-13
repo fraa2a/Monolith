@@ -293,6 +293,18 @@
                                             SelectionChanged="OnEncoderSelectionChanged" />
                                         <StackPanel Spacing="4">
                                             <NumberBox
+                                                x:Name="VideoFpsBox"
+                                                Header="Recording FPS"
+                                                Minimum="15"
+                                                Maximum="120"
+                                                SpinButtonPlacementMode="Compact"
+                                                SmallChange="1"
+                                                LargeChange="30"
+                                                Value="{Binding VideoFps, Mode=TwoWay}"
+                                                ValueChanged="OnVideoFpsValueChanged"
+                                                Width="240"
+                                                HorizontalAlignment="Left" />
+                                            <NumberBox
                                                 x:Name="BitrateBox"
                                                 Header="Video bitrate (kbps)"
                                                 Minimum="1000"

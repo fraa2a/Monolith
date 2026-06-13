@@ -249,6 +249,8 @@ static recording::ManualRecorder    g_recording;
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
+static std::atomic<int64_t> g_next_video_frame_qpc{ 0 };
+static int64_t g_video_frame_interval_qpc = 0;
 static std::wstring g_recordings_dir;
 static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
@@ -278,6 +280,44 @@ static void publish_runtime_status()
     std::string error;
     if (!settings::write_runtime_status(app_data_dir(), snapshot, &error))
         log_msg("settings", ("runtime-status write failed: " + error).c_str());
+}
+
+// Video frame pacing for the fixed-FPS encoder timebase.
+static int video_frame_copies_for_timestamp(int64_t timestamp_qpc)
+{
+    if (timestamp_qpc <= 0 || g_video_frame_interval_qpc <= 0)
+        return 1;
+
+    int64_t expected = g_next_video_frame_qpc.load(std::memory_order_relaxed);
+    for (;;) {
+        if (expected == 0) {
+            if (g_next_video_frame_qpc.compare_exchange_weak(
+                    expected,
+                    timestamp_qpc + g_video_frame_interval_qpc,
+                    std::memory_order_acq_rel,
+                    std::memory_order_relaxed)) {
+                return 1;
+            }
+            continue;
+        }
+
+        if (timestamp_qpc < expected)
+            return 0;
+
+        int copies = 0;
+        int64_t next = expected;
+        do {
+            ++copies;
+            next += g_video_frame_interval_qpc;
+        } while (copies < 8 && timestamp_qpc >= next);
+
+        if (g_next_video_frame_qpc.compare_exchange_weak(
+                expected, next,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+            return copies;
+        }
+    }
 }
 
 // ── Monitor enumeration / selection ──────────────────────────────────────────
@@ -358,13 +398,14 @@ static void apply_runtime_settings()
 
     char msg[192];
     snprintf(msg, sizeof(msg),
-             "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s",
+             "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s fps=%d",
              g_settings.replay_duration_seconds,
              static_cast<long long>(g_settings.replay_memory_budget_mb),
              g_settings.replay_clip_container.c_str(),
              g_settings.replay_buffer_enabled ? "" : " (DISABLED)",
              g_recording_container.c_str(),
-             g_settings.recording_enabled ? "" : " (DISABLED)");
+             g_settings.recording_enabled ? "" : " (DISABLED)",
+             g_settings.video_fps);
     log_msg("settings", msg);
     log_path("replay", "clips dir: ", g_settings.clips_directory);
     log_path("recording", "recordings dir: ", g_recordings_dir);
@@ -444,6 +485,7 @@ static bool capture_encoder_config_changed(const settings::Config& a,
         || a.output_height != b.output_height
         || a.show_capture_border != b.show_capture_border
         || a.encoder_backend != b.encoder_backend
+        || a.video_fps != b.video_fps
         || a.video_bitrate_kbps != b.video_bitrate_kbps
         || a.extra_ffmpeg_options != b.extra_ffmpeg_options;
 }
@@ -888,6 +930,10 @@ static void media_start(HWND hwnd)
     }
 
     g_video_enc_open_attempted.store(false, std::memory_order_release);
+    g_next_video_frame_qpc.store(0, std::memory_order_release);
+    LARGE_INTEGER qpc_frequency{};
+    QueryPerformanceFrequency(&qpc_frequency);
+    g_video_frame_interval_qpc = qpc_frequency.QuadPart / g_settings.video_fps;
     g_enc_w = 0;
     g_enc_h = 0;
 
@@ -923,13 +969,15 @@ static void media_start(HWND hwnd)
                     static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
                 log_msg("capture", buf);
             }
-            // Encode every 2nd frame → 30fps effective for software encoder.
-            if (f.seq % 2 != 0 || f.bgra_data == nullptr) return;
+            // Throttle or duplicate capture frames to match configured FPS.
+            if (f.bgra_data == nullptr) return;
             // Replay buffer disabled: encode only while a manual recording
             // is running, so an idle tray app costs no encoder CPU.
             if (!g_replay_enabled.load(std::memory_order_relaxed) &&
                 g_recording.state() == recording::RecordingState::Idle)
                 return;
+            int frame_copies = video_frame_copies_for_timestamp(f.timestamp_qpc);
+            if (frame_copies <= 0) return;
             if (!g_video_enc.is_open()) {
                 bool expected = false;
                 if (!g_video_enc_open_attempted.compare_exchange_strong(
@@ -950,7 +998,7 @@ static void media_start(HWND hwnd)
                 encoding::VideoEncoder::Config vcfg;
                 vcfg.width             = g_enc_w;
                 vcfg.height            = g_enc_h;
-                vcfg.fps               = 30;
+                vcfg.fps               = g_settings.video_fps;
                 vcfg.bitrate           = static_cast<int64_t>(g_settings.video_bitrate_kbps) * 1000;
                 vcfg.preferred_encoder = g_settings.encoder_backend;
                 vcfg.extra_options     = g_settings.extra_ffmpeg_options;
@@ -966,8 +1014,9 @@ static void media_start(HWND hwnd)
                 if (enc_ok) {
                     char enc_msg[256];
                     snprintf(enc_msg, sizeof(enc_msg),
-                        "%s %dx%d @30fps bitrate=%dkbps%s%s",
+                        "%s %dx%d @%dfps bitrate=%dkbps%s%s",
                         g_video_enc.encoder_name().c_str(), g_enc_w, g_enc_h,
+                        g_settings.video_fps,
                         g_settings.video_bitrate_kbps,
                         g_settings.extra_ffmpeg_options.empty() ? "" :
                             (g_video_enc.extra_options_rejected()
@@ -996,11 +1045,13 @@ static void media_start(HWND hwnd)
                     return;
                 }
             }
-            g_video_enc.push_bgra(
-                f.bgra_data,
-                static_cast<int>(f.bgra_stride),
-                static_cast<int>(f.width),
-                static_cast<int>(f.height));
+            for (int i = 0; i < frame_copies; ++i) {
+                g_video_enc.push_bgra(
+                    f.bgra_data,
+                    static_cast<int>(f.bgra_stride),
+                    static_cast<int>(f.width),
+                    static_cast<int>(f.height));
+            }
         }, g_settings.show_capture_border);
         log_msg("capture", ok ? "WGC display capture started"
                                : "WARNING: WGC display capture failed");

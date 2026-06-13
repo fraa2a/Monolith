@@ -52,6 +52,13 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: plugins/stream-deck/package-lock.json
+
       - name: Configure
         shell: pwsh
         run: >
@@ -67,13 +74,24 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
+      - name: Install Stream Deck plugin dependencies
+        shell: pwsh
+        working-directory: plugins/stream-deck
+        run: npm ci
+
+      - name: Build Stream Deck plugin package
+        shell: pwsh
+        working-directory: plugins/stream-deck
+        run: .\scripts\package-plugin.ps1 -Version "${{ steps.version.outputs.version }}"
+
       - name: Verify build output
         shell: pwsh
         run: |
           foreach ($f in @(
             "build/app/recorder/Release/Monolith.exe",
             "build/app/recorder/Release/Monolith.Settings.exe",
-            "build/app/recorder/Release/WinSparkle.dll"
+            "build/app/recorder/Release/WinSparkle.dll",
+            "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin"
           )) {
             if (-not (Test-Path $f)) {
               Write-Error "Build output not found: $f"
@@ -104,8 +122,8 @@ jobs:
           ./scripts/generate-appcast.ps1 `
             -Version $ver `
             -InstallerPath "installer/Output/MonolithSetup-$ver.exe" `
-            -InstallerUrl "https://github.com/fraa2a/Monolith-releases/releases/download/v$ver/MonolithSetup-$ver.exe" `
-            -ReleaseNotesUrl "https://github.com/fraa2a/Monolith-releases/releases/tag/v$ver" `
+            -InstallerUrl "https://github.com/${{ github.repository }}/releases/download/v$ver/MonolithSetup-$ver.exe" `
+            -ReleaseNotesUrl "https://github.com/${{ github.repository }}/releases/tag/v$ver" `
             -PrivateKeyPem $env:WINSPARKLE_ED_PRIVATE_KEY `
             -OutputPath appcast.xml
 
@@ -116,22 +134,24 @@ jobs:
           $ver = "${{ steps.version.outputs.version }}"
           git archive --format=zip --output "monolith-src-$ver.zip" HEAD
 
-      - name: Publish release on public repo
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          repository: fraa2a/Monolith-releases
-          token: ${{ secrets.RELEASES_REPO_PAT }}
           tag_name: ${{ github.ref_name }}
           name: Monolith ${{ steps.version.outputs.version }}
+          make_latest: true
           fail_on_unmatched_files: true
           files: |
             installer/Output/MonolithSetup-*.exe
             appcast.xml
             monolith-src-*.zip
+            plugins/stream-deck/dist/*.streamDeckPlugin
           body: |
             Monolith ${{ steps.version.outputs.version }}
 
             **Install:** download and run `MonolithSetup-${{ steps.version.outputs.version }}.exe` (per-user, no admin needed, no prerequisites).
             Existing installs update automatically via the in-app updater.
+
+            **Stream Deck:** `Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin`
 
             **Source:** `monolith-src-${{ steps.version.outputs.version }}.zip` (GPLv3 corresponding source).

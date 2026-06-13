@@ -1,2 +1,4 @@
 node_modules/
-com.monolith.recorder.sdPlugin/bin/
+.build/
+dist/
+dist-*/

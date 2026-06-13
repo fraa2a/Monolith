@@ -1,0 +1,74 @@
+{
+  "Name": "Monolith Recorder",
+  "Author": "Monolith",
+  "Description": "Control Monolith game recorder from your Stream Deck.",
+  "Version": "0.1.0.0",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.4"
+  },
+  "Nodejs": {
+    "Version": "20"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "CodePath": "bin/plugin.js",
+  "Icon": "imgs/plugin",
+  "Category": "Monolith",
+  "CategoryIcon": "imgs/category",
+  "UUID": "top.fraa2a.monolith",
+  "Actions": [
+    {
+      "Name": "Save Replay",
+      "UUID": "top.fraa2a.monolith.save-replay",
+      "Icon": "imgs/save-replay",
+      "States": [
+        {
+          "Image": "imgs/save-replay-key",
+          "Title": "Save"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Controllers": [
+        "Keypad"
+      ],
+      "Tooltip": "Save the current replay buffer to a clip file."
+    },
+    {
+      "Name": "Toggle Recording",
+      "UUID": "top.fraa2a.monolith.recording-toggle",
+      "Icon": "imgs/record-idle",
+      "States": [
+        {
+          "Image": "imgs/record-idle-key",
+          "Title": "REC"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad"
+      ],
+      "Tooltip": "Start recording if idle, stop recording if active."
+    },
+    {
+      "Name": "Pause / Resume",
+      "UUID": "top.fraa2a.monolith.pause-resume",
+      "Icon": "imgs/pause",
+      "States": [
+        {
+          "Image": "imgs/pause-key",
+          "Title": "Pause"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad"
+      ],
+      "Tooltip": "Pause or resume the current recording."
+    }
+  ]
+}

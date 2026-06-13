@@ -1,7 +1,7 @@
 #pragma once
 
 // WinSparkle-based auto-update for the recorder process.
-// The appcast is hosted on the public release repo (fraa2a/Monolith-releases);
+// The appcast is hosted on the default public Monolith repo releases page;
 // WinSparkle compares the running FileVersion against the feed, downloads the
 // signed installer, and relaunches it.
 namespace updater {

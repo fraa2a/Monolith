@@ -6,7 +6,7 @@ sign the installer with the EdDSA (Ed25519) private key.
 .DESCRIPTION
 Produces a Sparkle-format RSS appcast consumed by the recorder's WinSparkle
 integration (app/recorder/src/updater.cpp). The appcast and the installer are
-published as assets on the public release repo (fraa2a/Monolith-releases), so
+published as assets on the default public repo release page, so
 `releases/latest/download/appcast.xml` is a stable unauthenticated URL.
 
 Signing uses openssl (pure Ed25519 over the installer bytes, Sparkle format).
@@ -22,7 +22,7 @@ Keep the private PEM only in the CI secret WINSPARKLE_ED_PRIVATE_KEY.
 .EXAMPLE
 ./generate-appcast.ps1 -Version 0.4.0 `
     -InstallerPath installer/Output/MonolithSetup-0.4.0.exe `
-    -InstallerUrl  https://github.com/fraa2a/Monolith-releases/releases/download/v0.4.0/MonolithSetup-0.4.0.exe `
+    -InstallerUrl  https://github.com/fraa2a/Monolith/releases/download/v0.4.0/MonolithSetup-0.4.0.exe `
     -PrivateKeyPem $env:WINSPARKLE_ED_PRIVATE_KEY `
     -OutputPath appcast.xml
 #>
@@ -90,7 +90,7 @@ $xml = @"
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Monolith</title>
-    <link>https://github.com/fraa2a/Monolith-releases</link>
+    <link>https://github.com/fraa2a/Monolith</link>
     <description>Monolith release feed</description>
     <language>en</language>
     <item>

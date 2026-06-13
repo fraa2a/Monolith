@@ -102,6 +102,8 @@ appcast.xml
 .env.*
 *.local
 *.pem
+.pgp/
+*.pgp/
 
 # --- IDE ---
 .idea/

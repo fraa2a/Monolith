@@ -41,6 +41,7 @@ public sealed class SettingsService
       },
       "video_encoder": {
         "backend": "auto",
+        "fps": 60,
         "bitrate_kbps": 20000,
         "extra_ffmpeg_options": ""
       },
@@ -304,6 +305,7 @@ public sealed class SettingsService
 
         JsonObject videoEncoder = ObjectAt(root, "video_encoder");
         SetIfMissing(videoEncoder, "backend", "auto");
+        SetIfMissing(videoEncoder, "fps", 60);
         SetIfMissing(videoEncoder, "bitrate_kbps", 20000);
         SetIfMissing(videoEncoder, "extra_ffmpeg_options", "");
 
@@ -375,6 +377,7 @@ public sealed class SettingsService
             ResolutionHeight = IntAt(capture, "resolution_height", 0),
             ShowCaptureBorder = BoolAt(capture, "show_capture_border"),
             EncoderBackend = StringAt(videoEncoder, "backend", "auto"),
+            VideoFps = Math.Clamp(IntAt(videoEncoder, "fps", 60), 15, 120),
             BitrateKbps = IntAt(videoEncoder, "bitrate_kbps", 20000),
             ExtraFfmpegOptions = StringAt(videoEncoder, "extra_ffmpeg_options"),
             AutoCheckUpdates = BoolAt(update, "auto_check", true),
@@ -403,6 +406,7 @@ public sealed class SettingsService
 
         JsonObject videoEncoder = ObjectAt(root, "video_encoder");
         videoEncoder["backend"] = settings.EncoderBackend;
+        videoEncoder["fps"] = Math.Clamp(settings.VideoFps, 15, 120);
         videoEncoder["bitrate_kbps"] = Math.Clamp(settings.BitrateKbps, 1000, 100000);
         videoEncoder["extra_ffmpeg_options"] = settings.ExtraFfmpegOptions;
 
