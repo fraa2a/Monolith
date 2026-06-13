@@ -33,6 +33,14 @@
    - Paste the base64 **public** key into `kEdDsaPublicKey` in
      `app/recorder/src/updater.cpp`.
    - Store the **private** PEM text as repo secret `WINSPARKLE_ED_PRIVATE_KEY`.
+     The secret must contain the full file contents including the `BEGIN`/`END`
+     marker lines and the line breaks between them. On Windows, copy with
+     newlines preserved:
+     ```powershell
+     Get-Content monolith-ed25519-priv.pem -Raw | Set-Clipboard
+     ```
+     Then paste into the GitHub secret field. The CI script can also recover
+     from a newline-stripped value, but storing the PEM verbatim is preferred.
    - Never commit the private key. Losing it means shipped clients will reject
      future updates (they pin the public key), so back it up securely.
 

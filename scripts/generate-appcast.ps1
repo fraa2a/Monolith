@@ -38,6 +38,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Reconstruct canonical PEM from a potentially whitespace-mangled value.
+# GitHub secrets pasted as a single line lose their newlines; openssl's PEM
+# parser requires the BEGIN/END markers each on their own line.
+function Format-Pem([string] $raw) {
+    $t = $raw.Trim()
+    if ($t -match '(?s)-----BEGIN ([A-Z0-9 ]+?)-----(.*?)-----END \1-----') {
+        $label = $matches[1].Trim()
+        $body  = ($matches[2] -replace '\s', '')
+        $lines = [regex]::Matches($body, '.{1,64}') | ForEach-Object { $_.Value }
+        return "-----BEGIN $label-----`n" + ($lines -join "`n") + "`n-----END $label-----`n"
+    }
+    # No recognizable markers — pass through unchanged (openssl will report the real error).
+    return $t + "`n"
+}
+
 if (-not (Test-Path $InstallerPath)) {
     throw "Installer not found: $InstallerPath"
 }
@@ -60,8 +75,14 @@ if ($PrivateKeyPem -ne "") {
     $keyFile = New-TemporaryFile
     $sigFile = New-TemporaryFile
     try {
-        # PEM must end with a newline or openssl rejects it.
-        [System.IO.File]::WriteAllText($keyFile.FullName, $PrivateKeyPem.TrimEnd() + "`n")
+        # Normalise the PEM: GitHub secrets pasted as a single line lose newlines,
+        # which causes openssl to report "Could not find private key".
+        [System.IO.File]::WriteAllText($keyFile.FullName, (Format-Pem $PrivateKeyPem))
+        & $openssl pkey -in $keyFile.FullName -noout 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "WINSPARKLE_ED_PRIVATE_KEY is not a valid PEM private key. " +
+                  "Store the full PEM text (BEGIN line + base64 body + END line) as the secret."
+        }
         & $openssl pkeyutl -sign -inkey $keyFile.FullName -rawin `
             -in $installerItem.FullName -out $sigFile.FullName
         if ($LASTEXITCODE -ne 0) { throw "openssl signing failed (exit $LASTEXITCODE)" }
