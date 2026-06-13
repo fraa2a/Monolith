@@ -101,6 +101,26 @@ jobs:
             choco install ninja --no-progress -y
           }
 
+      - name: Locate mt.exe (manifest tool)
+        shell: pwsh
+        run: |
+          $mt = Get-ChildItem "$env:VCINSTALLDIR\..\..\..\..\..\Windows Kits\*\bin\*\x64\mt.exe" `
+                 -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $mt) {
+            $mt = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\*\bin\*\x64\mt.exe" `
+                   -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $mt) {
+            $mt = Get-ChildItem "$env:ProgramFiles\*\bin\*\x64\mt.exe" `
+                   -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if ($mt) {
+            "CMAKE_MT=$($mt.FullName)" >> $env:GITHUB_ENV
+            Write-Host "Found mt.exe at $($mt.FullName)"
+          } else {
+            Write-Warning "mt.exe not found -- manifest will be broken!"
+          }
+
       - name: Configure
         shell: pwsh
         env:
@@ -109,7 +129,8 @@ jobs:
           cmake -S . -B build `
             -G "Ninja Multi-Config" `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            "-DMONOLITH_VERSION=$env:MONOLITH_VERSION"
+            "-DMONOLITH_VERSION=$env:MONOLITH_VERSION" `
+            "-DCMAKE_MT:FILEPATH=$env:CMAKE_MT"
 
       # The CMake settings_app target runs `dotnet publish` for the WinUI
       # settings sidecar (self-contained) into the recorder output directory.
