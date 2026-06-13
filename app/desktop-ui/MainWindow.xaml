@@ -484,6 +484,21 @@
                                 </Border>
 
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="Startup" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <ToggleSwitch
+                                            x:Name="AutoStartToggle"
+                                            Header="Start Monolith when you sign in"
+                                            Toggled="OnAutoStartToggled" />
+                                        <TextBlock
+                                            Text="Monolith runs in the background and can be controlled from the system tray."
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            TextWrapping="Wrap"
+                                            FontSize="12" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
                                         <TextBlock Text="Diagnostics" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                         <Grid ColumnSpacing="16" RowSpacing="10">

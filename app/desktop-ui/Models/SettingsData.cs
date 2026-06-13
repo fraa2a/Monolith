@@ -35,6 +35,9 @@ public sealed class SettingsData
     public bool ReplayBufferEnabled { get; set; } = true;
     public bool AutoCheckUpdates { get; set; } = true;
 
+    // startup
+    public bool AutoStart { get; set; } = false;
+
     // audio
     public string AudioMode { get; set; } = "default";
     public string PrimaryMicrophoneDeviceId { get; set; } = "";

@@ -642,6 +642,7 @@ public sealed partial class MainWindow : Window
         RecordingEnabledToggle.IsOn = viewModel.RecordingEnabled;
         ReplayBufferEnabledToggle.IsOn = viewModel.ReplayBufferEnabled;
         AutoCheckUpdatesToggle.IsOn = viewModel.AutoCheckUpdates;
+        AutoStartToggle.IsOn = viewModel.AutoStart;
     }
 
     private void OnRecordingEnabledToggled(object sender, RoutedEventArgs e)
@@ -657,6 +658,11 @@ public sealed partial class MainWindow : Window
     private void OnAutoCheckUpdatesToggled(object sender, RoutedEventArgs e)
     {
         viewModel.AutoCheckUpdates = AutoCheckUpdatesToggle.IsOn;
+    }
+
+    private void OnAutoStartToggled(object sender, RoutedEventArgs e)
+    {
+        viewModel.AutoStart = AutoStartToggle.IsOn;
     }
 
     // ── Corrupt config InfoBar ────────────────────────────────────────────────

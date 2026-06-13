@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Win32;
 using Monolith.Settings.Models;
 
 namespace Monolith.Settings.Services;
@@ -615,5 +616,48 @@ public sealed class SettingsService
     {
         if (!string.IsNullOrWhiteSpace(path))
             Directory.CreateDirectory(path);
+    }
+
+    // ── Autostart registry ─────────────────────────────────────────────
+
+    private const string AutoStartKey =
+        @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string AutoStartValueName = "Monolith";
+
+    public static bool ReadAutoStartFromRegistry()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(AutoStartKey);
+            if (key is null) return false;
+            var value = key.GetValue(AutoStartValueName);
+            return value is string s && !string.IsNullOrWhiteSpace(s);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static void WriteAutoStartToRegistry(bool enable)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(AutoStartKey, writable: true)
+                         ?? Registry.CurrentUser.CreateSubKey(AutoStartKey);
+            if (key is null) return;
+
+            if (enable)
+            {
+                var exePath = Environment.ProcessPath;
+                if (!string.IsNullOrWhiteSpace(exePath))
+                    key.SetValue(AutoStartValueName, exePath);
+            }
+            else
+            {
+                key.DeleteValue(AutoStartValueName, throwOnMissingValue: false);
+            }
+        }
+        catch { }
     }
 }

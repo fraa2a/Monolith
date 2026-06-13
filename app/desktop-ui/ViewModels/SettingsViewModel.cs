@@ -26,6 +26,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string recordingContainer = "mkv";
     private bool recordingEnabled = true;
     private bool autoCheckUpdates = true;
+    private bool autoStart;
     private string audioMode = "default";
     private string primaryMicrophoneDeviceId = "";
     private List<AudioSourceData> audioSources = new();
@@ -149,6 +150,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     {
         get => autoCheckUpdates;
         set => SetField(ref autoCheckUpdates, value);
+    }
+
+    public bool AutoStart
+    {
+        get => autoStart;
+        set => SetField(ref autoStart, value);
     }
 
     public string AudioMode
@@ -345,6 +352,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         RecordingContainer = outputContainer;
         recordingEnabled = data.RecordingEnabled;
         autoCheckUpdates = data.AutoCheckUpdates;
+        autoStart = SettingsService.ReadAutoStartFromRegistry();
         SaveReplayHotkey = data.SaveReplayHotkey;
         RecordingStartHotkey = data.RecordingStartHotkey;
         RecordingStopHotkey = data.RecordingStopHotkey;
@@ -456,6 +464,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             BitrateKbps = BitrateKbps,
             ExtraFfmpegOptions = ExtraFfmpegOptions,
         });
+
+        SettingsService.WriteAutoStartToRegistry(AutoStart);
 
         string applyMessage = BuildApplyMessage();
         bool notifiedRecorder = RecorderReloadNotifier.NotifySettingsSaved();
