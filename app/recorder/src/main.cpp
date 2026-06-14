@@ -506,6 +506,7 @@ static void stop_audio_system();
 static void start_audio_system();
 static void media_start(HWND hwnd);
 static void media_stop();
+static void poll_active_game();
 static std::vector<int> valid_tracks(const std::vector<int>& tracks);
 
 static bool same_tracks(const std::vector<int>& a, const std::vector<int>& b)
@@ -611,6 +612,7 @@ static void reload_settings_from_disk(HWND hwnd)
         stop_audio_system();
         g_replay.clear();
         start_audio_system();
+        poll_active_game();
         publish_runtime_status();
     }
 }
