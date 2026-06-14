@@ -463,14 +463,15 @@ static void apply_runtime_settings()
 
     char msg[192];
     snprintf(msg, sizeof(msg),
-             "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s fps=%d",
+             "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s fps=%d quality=%d",
              g_settings.replay_duration_seconds,
              static_cast<long long>(g_settings.replay_memory_budget_mb),
              g_settings.replay_clip_container.c_str(),
              g_settings.replay_buffer_enabled ? "" : " (DISABLED)",
              g_recording_container.c_str(),
              g_settings.recording_enabled ? "" : " (DISABLED)",
-             g_settings.video_fps);
+             g_settings.video_fps,
+             g_settings.video_quality);
     log_msg("settings", msg);
     log_path("replay", "clips dir: ", g_settings.clips_directory);
     log_path("recording", "recordings dir: ", g_recordings_dir);
@@ -551,7 +552,7 @@ static bool capture_encoder_config_changed(const settings::Config& a,
         || a.show_capture_border != b.show_capture_border
         || a.encoder_backend != b.encoder_backend
         || a.video_fps != b.video_fps
-        || a.video_bitrate_kbps != b.video_bitrate_kbps
+        || a.video_quality != b.video_quality
         || a.extra_ffmpeg_options != b.extra_ffmpeg_options;
 }
 
@@ -1248,7 +1249,7 @@ static void media_start(HWND hwnd)
                 vcfg.width             = g_enc_w;
                 vcfg.height            = g_enc_h;
                 vcfg.fps               = g_settings.video_fps;
-                vcfg.bitrate           = static_cast<int64_t>(g_settings.video_bitrate_kbps) * 1000;
+                vcfg.quality           = g_settings.video_quality;
                 vcfg.preferred_encoder = g_settings.encoder_backend;
                 vcfg.extra_options     = g_settings.extra_ffmpeg_options;
 
@@ -1263,10 +1264,10 @@ static void media_start(HWND hwnd)
                 if (enc_ok) {
                     char enc_msg[256];
                     snprintf(enc_msg, sizeof(enc_msg),
-                        "%s %dx%d @%dfps bitrate=%dkbps%s%s",
+                        "%s %dx%d @%dfps quality=%d%s%s",
                         g_video_enc.encoder_name().c_str(), g_enc_w, g_enc_h,
                         g_settings.video_fps,
-                        g_settings.video_bitrate_kbps,
+                        g_settings.video_quality,
                         g_settings.extra_ffmpeg_options.empty() ? "" :
                             (g_video_enc.extra_options_rejected()
                                 ? "  extra_options=REJECTED (opened without them)"

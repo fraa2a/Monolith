@@ -130,8 +130,16 @@ bool VideoEncoder::extra_options_rejected() const
 
 bool VideoEncoder::open(Config const& cfg, PacketSink sink)
 {
-    if (cfg.width <= 0 || cfg.height <= 0 || cfg.fps <= 0 || cfg.bitrate <= 0)
+    if (cfg.width <= 0 || cfg.height <= 0 || cfg.fps <= 0)
         return false;
+    if (cfg.bitrate <= 0 && cfg.quality <= 0)
+        return false;
+    if (cfg.quality > 0) {
+        int clamped = cfg.quality;
+        if (clamped < 10) clamped = 10;
+        if (clamped > 30) clamped = 30;
+        const_cast<Config&>(cfg).quality = clamped;
+    }
 
     close();
     std::lock_guard lk(impl_->mutex);
@@ -176,24 +184,45 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         ctx->time_base = {1, cfg.fps};
         ctx->framerate = {cfg.fps, 1};
         ctx->gop_size  = cfg.fps * 2;  // keyframe every 2 s
-        ctx->bit_rate  = cfg.bitrate;
         ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
         ctx->flags    |= AV_CODEC_FLAG_GLOBAL_HEADER; // SPS/PPS in extradata
 
         AVDictionary* opts = nullptr;
-        if (name == "libx264") {
+
+        bool is_hw = (name.find("nvenc") != std::string::npos ||
+                      name.find("amf")   != std::string::npos ||
+                      name.find("qsv")   != std::string::npos);
+        bool is_sw = (name == "libx264" || name == "libx265");
+
+        if (cfg.quality > 0 && (is_hw || is_sw)) {
+            // Rate control: CQP for HW, CRF for SW (OBS-style).
+            if (is_hw) {
+                if (name.find("nvenc") != std::string::npos) {
+                    av_dict_set(&opts, "rc",  "constqp", 0);
+                    av_dict_set_int(&opts, "qp", cfg.quality, 0);
+                } else if (name.find("amf") != std::string::npos) {
+                    av_dict_set(&opts, "rc",     "cqp", 0);
+                    av_dict_set_int(&opts, "qp_i", cfg.quality, 0);
+                    av_dict_set_int(&opts, "qp_p", cfg.quality, 0);
+                    av_dict_set_int(&opts, "qp_b", cfg.quality, 0);
+                } else if (name.find("qsv") != std::string::npos) {
+                    av_dict_set(&opts, "rc", "CQP", 0);
+                    av_dict_set_int(&opts, "qp", cfg.quality, 0);
+                }
+            } else {
+                av_dict_set_int(&opts, "crf", cfg.quality, 0);
+            }
+        } else {
+            ctx->bit_rate = cfg.bitrate;
+        }
+
+        if (is_sw) {
             av_dict_set(&opts, "preset", "fast", 0);
             av_dict_set(&opts, "tune",   "zerolatency", 0);
-        } else if (name == "libx265") {
-            av_dict_set(&opts, "preset", "fast", 0);
-            av_dict_set(&opts, "tune",   "zerolatency", 0);
-        } else if (name == "h264_nvenc") {
-            av_dict_set(&opts, "preset", "p4", 0);
-        } else if (name == "hevc_nvenc") {
+        } else if (name.find("nvenc") != std::string::npos) {
             av_dict_set(&opts, "preset", "p4", 0);
         }
         if (use_extras && !cfg.extra_options.empty()) {
-            // User-supplied AVOptions override the built-in defaults above.
             av_dict_parse_string(&opts, cfg.extra_options.c_str(), "=", ":, ", 0);
         }
 

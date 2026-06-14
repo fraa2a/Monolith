@@ -647,14 +647,14 @@ public sealed partial class MainWindow : Window
             viewModel.EncoderBackend = backend;
     }
 
-    // ── Bitrate NumberBox ─────────────────────────────────────────────────────
+    // ── Quality NumberBox ─────────────────────────────────────────────────────
 
-    private void OnBitrateValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    private void OnVideoQualityValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (suppressComboBoxEvents || double.IsNaN(args.NewValue))
             return;
 
-        viewModel.BitrateKbps = (int)args.NewValue;
+        viewModel.VideoQuality = (int)args.NewValue;
     }
 
     private void OnVideoFpsValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)

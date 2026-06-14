@@ -46,7 +46,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     // video encoder pipeline fields
     private string encoderBackend = "auto";
     private int videoFps = 60;
-    private int bitrateKbps = 20000;
+    private int videoQuality = 20;
     private string extraFfmpegOptions = "";
 
     // page UI
@@ -63,7 +63,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private bool loadedShowCaptureBorder = false;
     private string loadedEncoderBackend = "auto";
     private int loadedVideoFps = 60;
-    private int loadedBitrateKbps = 20000;
+    private int loadedVideoQuality = 20;
     private string loadedExtraFfmpegOptions = "";
     private string loadedAudioFingerprint = "";
     private string loadedClipsDirectory = "";
@@ -235,17 +235,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         set => SetField(ref videoFps, value);
     }
 
-    public int BitrateKbps
+    public int VideoQuality
     {
-        get => bitrateKbps;
-        set
-        {
-            SetField(ref bitrateKbps, value);
-            OnPropertyChanged(nameof(BitrateMbps));
-        }
+        get => videoQuality;
+        set => SetField(ref videoQuality, value);
     }
-
-    public string BitrateMbps => $"{bitrateKbps / 1000.0:F1} Mbps";
 
     public string ExtraFfmpegOptions
     {
@@ -368,7 +362,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         showCaptureBorder = data.ShowCaptureBorder;
         encoderBackend = data.EncoderBackend;
         videoFps = data.VideoFps;
-        bitrateKbps = data.BitrateKbps;
+        videoQuality = data.VideoQuality;
         extraFfmpegOptions = data.ExtraFfmpegOptions;
 
         // snapshot loaded baseline
@@ -379,7 +373,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedShowCaptureBorder = showCaptureBorder;
         loadedEncoderBackend = encoderBackend;
         loadedVideoFps = videoFps;
-        loadedBitrateKbps = bitrateKbps;
+        loadedVideoQuality = videoQuality;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
         loadedAudioFingerprint = AudioFingerprint();
         loadedClipsDirectory = clipsDirectory;
@@ -462,7 +456,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             ShowCaptureBorder = ShowCaptureBorder,
             EncoderBackend = EncoderBackend,
             VideoFps = VideoFps,
-            BitrateKbps = BitrateKbps,
+            VideoQuality = VideoQuality,
             ExtraFfmpegOptions = ExtraFfmpegOptions,
         });
 
@@ -479,7 +473,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedShowCaptureBorder = showCaptureBorder;
         loadedEncoderBackend = encoderBackend;
         loadedVideoFps = videoFps;
-        loadedBitrateKbps = bitrateKbps;
+        loadedVideoQuality = videoQuality;
         loadedExtraFfmpegOptions = extraFfmpegOptions;
         loadedAudioFingerprint = AudioFingerprint();
         loadedClipsDirectory = clipsDirectory;
@@ -696,7 +690,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             showCaptureBorder != loadedShowCaptureBorder ||
             encoderBackend != loadedEncoderBackend ||
             videoFps != loadedVideoFps ||
-            bitrateKbps != loadedBitrateKbps ||
+            videoQuality != loadedVideoQuality ||
             extraFfmpegOptions != loadedExtraFfmpegOptions)
             scopes.Add("Capture/encoder restarts when no recording is active.");
 
@@ -770,9 +764,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             }
         }
 
-        if (!IsIntInRange(BitrateKbps.ToString(), 1000, 100000))
+        if (VideoQuality < 10 || VideoQuality > 30)
         {
-            error = "Video bitrate must be 1000 to 100000 kbps.";
+            error = "Video quality must be 10 to 30.";
             return false;
         }
 
@@ -1065,8 +1059,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsCustomResolution));
         OnPropertyChanged(nameof(EncoderBackend));
         OnPropertyChanged(nameof(VideoFps));
-        OnPropertyChanged(nameof(BitrateKbps));
-        OnPropertyChanged(nameof(BitrateMbps));
+        OnPropertyChanged(nameof(VideoQuality));
         OnPropertyChanged(nameof(ExtraFfmpegOptions));
     }
 

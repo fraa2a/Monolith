@@ -252,7 +252,7 @@
                                     </StackPanel>
                                 </Border>
 
-                                <!-- Video encoder / bitrate -->
+                                <!-- Video encoder / quality -->
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
                                         <TextBlock Text="Video Encoder" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -275,22 +275,17 @@
                                                 Width="240"
                                                 HorizontalAlignment="Left" />
                                             <NumberBox
-                                                x:Name="BitrateBox"
-                                                Header="Video bitrate (kbps)"
-                                                Minimum="1000"
-                                                Maximum="100000"
+                                                x:Name="QualityBox"
+                                                Header="Video quality (10–30, lower = better)"
+                                                Minimum="10"
+                                                Maximum="30"
                                                 SpinButtonPlacementMode="Compact"
-                                                SmallChange="1000"
-                                                LargeChange="5000"
-                                                Value="{Binding BitrateKbps, Mode=TwoWay}"
-                                                ValueChanged="OnBitrateValueChanged"
+                                                SmallChange="1"
+                                                LargeChange="5"
+                                                Value="{Binding VideoQuality, Mode=TwoWay}"
+                                                ValueChanged="OnVideoQualityValueChanged"
                                                 Width="240"
                                                 HorizontalAlignment="Left" />
-                                            <TextBlock
-                                                x:Name="BitrateMbpsLabel"
-                                                Text="{Binding BitrateMbps}"
-                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                FontSize="12" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>

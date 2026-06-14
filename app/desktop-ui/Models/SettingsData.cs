@@ -53,6 +53,6 @@ public sealed class SettingsData
     // video_encoder
     public string EncoderBackend { get; set; } = "auto";
     public int VideoFps { get; set; } = 60;
-    public int BitrateKbps { get; set; } = 20000;
+    public int VideoQuality { get; set; } = 20;
     public string ExtraFfmpegOptions { get; set; } = "";
 }
