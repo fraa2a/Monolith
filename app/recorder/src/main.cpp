@@ -252,8 +252,23 @@ static recording::ManualRecorder    g_recording;
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
-static std::atomic<int64_t> g_next_video_frame_qpc{ 0 };
-static int64_t g_video_frame_interval_qpc = 0;
+// ── OBS-style video pacer: fixed-rate thread feeds encoder ──────────────
+static HANDLE               g_pacer_thread       = nullptr;
+static HANDLE               g_pacer_stop_event   = nullptr;
+static std::mutex           g_pacer_mutex;
+
+struct PacerFrame {
+    std::vector<uint8_t> bgra;
+    int stride = 0;
+    int width  = 0;
+    int height = 0;
+    uint64_t frame_id = 0;
+};
+
+static PacerFrame           g_pacer_shared;
+static uint64_t             g_pacer_last_read_id = 0;
+static int                  g_pacer_interval_ms  = 0;
+static std::atomic<bool>    g_pacer_running{ false };
 static std::wstring g_recordings_dir;
 static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
@@ -296,41 +311,77 @@ static void publish_runtime_status()
         log_msg("settings", ("runtime-status write failed: " + error).c_str());
 }
 
-// Video frame pacing for the fixed-FPS encoder timebase.
-static int video_frame_copies_for_timestamp(int64_t timestamp_qpc)
+// ── OBS-style video pacer ──────────────────────────────────────────────
+// Fixed-rate video thread feeds encoder exactly like OBS video_output.
+// Producer (WGC callback): copies BGRA to g_pacer_shared under mutex.
+// Consumer (pacer thread): reads latest frame each tick, pushes to encoder.
+
+static void pacer_push_frame(const uint8_t* bgra, int stride, int width, int height)
 {
-    if (timestamp_qpc <= 0 || g_video_frame_interval_qpc <= 0)
-        return 1;
+    std::lock_guard<std::mutex> lock(g_pacer_mutex);
+    size_t size = static_cast<size_t>(height) * static_cast<size_t>(stride);
+    g_pacer_shared.bgra.resize(size);
+    memcpy(g_pacer_shared.bgra.data(), bgra, size);
+    g_pacer_shared.stride   = stride;
+    g_pacer_shared.width    = width;
+    g_pacer_shared.height   = height;
+    g_pacer_shared.frame_id++;
+}
 
-    int64_t expected = g_next_video_frame_qpc.load(std::memory_order_relaxed);
-    for (;;) {
-        if (expected == 0) {
-            if (g_next_video_frame_qpc.compare_exchange_weak(
-                    expected,
-                    timestamp_qpc + g_video_frame_interval_qpc,
-                    std::memory_order_acq_rel,
-                    std::memory_order_relaxed)) {
-                return 1;
+static DWORD WINAPI pacer_thread_proc(LPVOID)
+{
+    std::vector<uint8_t> local_bgra;
+    int local_stride = 0, local_width = 0, local_height = 0;
+    uint64_t local_last_id = 0;
+
+    while (true) {
+        DWORD wait = WaitForSingleObject(g_pacer_stop_event,
+                                         static_cast<DWORD>(g_pacer_interval_ms));
+        if (wait == WAIT_OBJECT_0)
+            break;
+
+        {
+            std::lock_guard<std::mutex> lock(g_pacer_mutex);
+            if (g_pacer_shared.frame_id != local_last_id) {
+                local_bgra    = g_pacer_shared.bgra;
+                local_stride  = g_pacer_shared.stride;
+                local_width   = g_pacer_shared.width;
+                local_height  = g_pacer_shared.height;
+                local_last_id = g_pacer_shared.frame_id;
             }
-            continue;
         }
 
-        if (timestamp_qpc < expected)
-            return 0;
-
-        int copies = 0;
-        int64_t next = expected;
-        do {
-            ++copies;
-            next += g_video_frame_interval_qpc;
-        } while (copies < 8 && timestamp_qpc >= next);
-
-        if (g_next_video_frame_qpc.compare_exchange_weak(
-                expected, next,
-                std::memory_order_acq_rel,
-                std::memory_order_relaxed)) {
-            return copies;
+        if (g_video_enc.is_open() && !local_bgra.empty()) {
+            g_video_enc.push_bgra(local_bgra.data(), local_stride,
+                                  local_width, local_height);
         }
+    }
+
+    g_pacer_running = false;
+    return 0;
+}
+
+static void pacer_start()
+{
+    if (g_settings.video_fps <= 0) return;
+    g_pacer_interval_ms = 1000 / g_settings.video_fps;
+    if (g_pacer_interval_ms < 1) g_pacer_interval_ms = 1;
+    g_pacer_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_pacer_running = true;
+    g_pacer_thread = CreateThread(nullptr, 0, pacer_thread_proc, nullptr, 0, nullptr);
+}
+
+static void pacer_stop()
+{
+    if (g_pacer_stop_event) {
+        SetEvent(g_pacer_stop_event);
+        if (g_pacer_thread) {
+            WaitForSingleObject(g_pacer_thread, 3000);
+            CloseHandle(g_pacer_thread);
+            g_pacer_thread = nullptr;
+        }
+        CloseHandle(g_pacer_stop_event);
+        g_pacer_stop_event = nullptr;
     }
 }
 
@@ -1123,15 +1174,14 @@ static void media_start(HWND hwnd)
     }
 
     g_video_enc_open_attempted.store(false, std::memory_order_release);
-    g_next_video_frame_qpc.store(0, std::memory_order_release);
-    LARGE_INTEGER qpc_frequency{};
-    QueryPerformanceFrequency(&qpc_frequency);
-    g_video_frame_interval_qpc = qpc_frequency.QuadPart / g_settings.video_fps;
     g_enc_w = 0;
     g_enc_h = 0;
 
     // ── Video encoder ─────────────────────────────────────────────────────────
     log_msg("encoding", "video encoder deferred until first WGC frame");
+
+    // ── Start pacer thread (OBS-style fixed-rate encoder feed) ────────────────
+    pacer_start();
 
     // ── Replay buffer config ───────────────────────────────────────────────────
     {
@@ -1170,15 +1220,13 @@ static void media_start(HWND hwnd)
                     static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
                 log_msg("capture", buf);
             }
-            // Throttle or duplicate capture frames to match configured FPS.
+            // Push BGRA frame to pacer. Pacer thread drives encoder at fixed FPS.
             if (f.bgra_data == nullptr) return;
             // Replay buffer disabled: encode only while a manual recording
             // is running, so an idle tray app costs no encoder CPU.
             if (!g_replay_enabled.load(std::memory_order_relaxed) &&
                 g_recording.state() == recording::RecordingState::Idle)
                 return;
-            int frame_copies = video_frame_copies_for_timestamp(f.timestamp_qpc);
-            if (frame_copies <= 0) return;
             if (!g_video_enc.is_open()) {
                 bool expected = false;
                 if (!g_video_enc_open_attempted.compare_exchange_strong(
@@ -1246,13 +1294,10 @@ static void media_start(HWND hwnd)
                     return;
                 }
             }
-            for (int i = 0; i < frame_copies; ++i) {
-                g_video_enc.push_bgra(
-                    f.bgra_data,
-                    static_cast<int>(f.bgra_stride),
-                    static_cast<int>(f.width),
-                    static_cast<int>(f.height));
-            }
+            pacer_push_frame(f.bgra_data,
+                             static_cast<int>(f.bgra_stride),
+                             static_cast<int>(f.width),
+                             static_cast<int>(f.height));
         }, g_settings.show_capture_border);
         log_msg("capture", ok ? "WGC display capture started"
                                : "WARNING: WGC display capture failed");
@@ -1275,6 +1320,7 @@ static void media_start(HWND hwnd)
 
 static void media_stop()
 {
+    pacer_stop();   // stop video thread before capture/encoder
     g_video.stop();
     stop_audio_system();
     g_video_enc.close(); // flushes + frees encoder
@@ -1911,6 +1957,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     log_msg("app", "initializing (Monolith: replay + manual recording)");
     load_app_settings();
     updater::init(g_settings.update_auto_check);
+    if (g_settings.update_auto_check)
+        updater::check_silent(); // immediate check at startup
 
     WNDCLASSEXW wc   = {};
     wc.cbSize        = sizeof(wc);

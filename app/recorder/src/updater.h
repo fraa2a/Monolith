@@ -16,6 +16,9 @@ void set_auto_check(bool enabled);
 // Manual "Check for updates…" with UI (tray menu).
 void check_now();
 
+// Silent check at startup (no UI unless an update is found).
+void check_silent();
+
 // Must be called before process exit (WM_DESTROY).
 void shutdown();
 

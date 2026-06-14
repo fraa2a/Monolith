@@ -51,6 +51,12 @@ void check_now()
     win_sparkle_check_update_with_ui();
 }
 
+void check_silent()
+{
+    if (!g_initialized) return;
+    win_sparkle_check_update_without_ui();
+}
+
 void shutdown()
 {
     if (!g_initialized) return;
