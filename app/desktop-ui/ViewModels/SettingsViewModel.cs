@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml.Controls;
 using Monolith.Settings.Models;
@@ -500,6 +501,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         return true;
     }
 
+    public void ShowHotkeyConflictError(string conflictName)
+    {
+        StatusSeverity = InfoBarSeverity.Error;
+        StatusMessage = $"This hotkey is already used by \"{conflictName}\".";
+    }
+
     public void SetPage(string page)
     {
         switch (page)
@@ -842,6 +849,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         if (string.IsNullOrWhiteSpace(text))
             return false;
 
+        if (string.Equals(text, "NONE", StringComparison.OrdinalIgnoreCase))
+            return true;
+
         string[] parts = text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length < 1)
             return false;
@@ -900,6 +910,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     private static string NormalizeHotkey(string text)
     {
+        if (string.Equals(text, "NONE", StringComparison.OrdinalIgnoreCase))
+            return "NONE";
+
         string[] parts = text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         List<string> modifiers = new();
         List<string> keys = new();
@@ -913,8 +926,65 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 keys.Add(NormalizeHotkeyKey(part));
         }
 
+        modifiers = modifiers.OrderBy(m => m switch
+        {
+            "Ctrl" => 0,
+            "Shift" => 1,
+            "Alt" => 2,
+            "Win" => 3,
+            _ => 4,
+        }).ToList();
+
         modifiers.AddRange(keys);
         return string.Join("+", modifiers);
+    }
+
+    public string? FindHotkeyConflict(string hotkey, string? excludePropertyName)
+    {
+        string normalized = NormalizeHotkey(hotkey);
+        if (normalized == "NONE")
+            return null;
+
+        (string Name, string Property, string Value)[] hotkeys =
+        {
+            ("Save replay", "SaveReplayHotkey", SaveReplayHotkey),
+            ("Start recording", "RecordingStartHotkey", RecordingStartHotkey),
+            ("Stop recording", "RecordingStopHotkey", RecordingStopHotkey),
+            ("Pause / resume", "PauseResumeHotkey", PauseResumeHotkey),
+        };
+
+        foreach ((string name, string property, string value) in hotkeys)
+        {
+            if (property == excludePropertyName)
+                continue;
+
+            if (string.Equals(value, "NONE", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (NormalizeHotkey(value) == normalized)
+                return name;
+        }
+
+        return null;
+    }
+
+    public void ResetHotkeyToDefault(string propertyName)
+    {
+        switch (propertyName)
+        {
+            case "SaveReplayHotkey":
+                SaveReplayHotkey = "Ctrl+Shift+F8";
+                break;
+            case "RecordingStartHotkey":
+                RecordingStartHotkey = "Ctrl+Shift+F9";
+                break;
+            case "RecordingStopHotkey":
+                RecordingStopHotkey = "Ctrl+Shift+F10";
+                break;
+            case "PauseResumeHotkey":
+                PauseResumeHotkey = "Ctrl+Shift+F11";
+                break;
+        }
     }
 
     private static string? NormalizeHotkeyModifier(string token)

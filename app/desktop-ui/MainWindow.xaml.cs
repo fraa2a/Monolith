@@ -47,6 +47,7 @@ public sealed partial class MainWindow : Window
     private const int WM_SYSKEYDOWN = 0x0104;
     private const int WM_KEYUP = 0x0101;
     private const int WM_SYSKEYUP = 0x0105;
+    private const int VK_ESCAPE = 0x1B;
 
     // Preset resolutions by tag
     private static readonly (string Tag, int Width, int Height)[] ResolutionPresets =
@@ -917,6 +918,13 @@ public sealed partial class MainWindow : Window
             return 1;
         }
 
+        if (triggerKey == VK_ESCAPE)
+        {
+            hotkeyCaptureDownKeys.Clear();
+            DispatcherQueue.TryEnqueue(() => ApplyCapturedHotkey("NONE"));
+            return 1;
+        }
+
         hotkeyCaptureDownKeys.Add(triggerKey);
         string? hotkey = BuildHotkey(hotkeyCaptureDownKeys);
         if (hotkey is null)
@@ -930,6 +938,13 @@ public sealed partial class MainWindow : Window
     {
         if (hotkeyCaptureTarget is null)
             return;
+
+        string? conflict = viewModel.FindHotkeyConflict(hotkey, hotkeyCaptureTarget);
+        if (conflict is not null)
+        {
+            viewModel.ShowHotkeyConflictError(conflict);
+            return;
+        }
 
         switch (hotkeyCaptureTarget)
         {
@@ -946,6 +961,13 @@ public sealed partial class MainWindow : Window
                 viewModel.PauseResumeHotkey = hotkey;
                 break;
         }
+    }
+
+    private void OnResetHotkeyClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string propertyName)
+            return;
+        viewModel.ResetHotkeyToDefault(propertyName);
     }
 
     private static string? BuildHotkey(IReadOnlySet<int> downKeys)

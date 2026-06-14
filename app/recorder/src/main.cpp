@@ -1607,6 +1607,14 @@ static void register_one_hotkey(
     const char* fallback)
 {
     (void)hwnd;
+
+    // "NONE" means the hotkey is disabled — skip registration entirely
+    std::string upper_configured = upper_ascii(configured);
+    if (upper_configured == "NONE") {
+        log_msg("hotkey", (std::string(name) + " disabled (NONE)").c_str());
+        return;
+    }
+
     std::string label = hotkey_or_default(configured, fallback);
     HotkeySpec spec;
     if (!parse_hotkey(label, &spec)) {

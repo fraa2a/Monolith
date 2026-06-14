@@ -423,10 +423,11 @@
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
                                         <TextBlock Text="Global Hotkeys" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                                        <Grid ColumnSpacing="16" RowSpacing="12">
+                                        <Grid ColumnSpacing="12" RowSpacing="12">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
@@ -434,14 +435,18 @@
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
-                                            <TextBlock Grid.Row="0" Text="Save replay" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Save replay" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                             <TextBox Grid.Row="0" Grid.Column="1" MaxWidth="280" Tag="SaveReplayHotkey" Text="{Binding SaveReplayHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
-                                            <TextBlock Grid.Row="1" Text="Start recording" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <Button Grid.Row="0" Grid.Column="2" Content="↺" Tag="SaveReplayHotkey" Click="OnResetHotkeyClick" ToolTipService.ToolTip="Reset to default" MinWidth="0" Padding="12,4" />
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Start recording" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                             <TextBox Grid.Row="1" Grid.Column="1" MaxWidth="280" Tag="RecordingStartHotkey" Text="{Binding RecordingStartHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
-                                            <TextBlock Grid.Row="2" Text="Stop recording" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <Button Grid.Row="1" Grid.Column="2" Content="↺" Tag="RecordingStartHotkey" Click="OnResetHotkeyClick" ToolTipService.ToolTip="Reset to default" MinWidth="0" Padding="12,4" />
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Stop recording" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                             <TextBox Grid.Row="2" Grid.Column="1" MaxWidth="280" Tag="RecordingStopHotkey" Text="{Binding RecordingStopHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
-                                            <TextBlock Grid.Row="3" Text="Pause / resume" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <Button Grid.Row="2" Grid.Column="2" Content="↺" Tag="RecordingStopHotkey" Click="OnResetHotkeyClick" ToolTipService.ToolTip="Reset to default" MinWidth="0" Padding="12,4" />
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Pause / resume" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                             <TextBox Grid.Row="3" Grid.Column="1" MaxWidth="280" Tag="PauseResumeHotkey" Text="{Binding PauseResumeHotkey}" IsReadOnly="True" GotFocus="OnHotkeyBoxGotFocus" LostFocus="OnHotkeyBoxLostFocus" />
+                                            <Button Grid.Row="3" Grid.Column="2" Content="↺" Tag="PauseResumeHotkey" Click="OnResetHotkeyClick" ToolTipService.ToolTip="Reset to default" MinWidth="0" Padding="12,4" />
                                         </Grid>
                                         <InfoBar
                                             IsOpen="True"

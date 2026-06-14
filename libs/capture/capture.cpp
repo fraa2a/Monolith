@@ -122,6 +122,13 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, bool show_border)
             2,              // double-buffer
             impl_->last_size);
 
+        // Remove WGC's default frame-rate throttle (~15 FPS) by setting the
+        // minimum update interval to 1 ms — the application-side pacing in
+        // main.cpp handles throttling/duplication to match the configured FPS.
+        impl_->pool.MinUpdateInterval(
+            std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+                std::chrono::milliseconds(1)));
+
         impl_->active = true;
 
         impl_->frame_token = impl_->pool.FrameArrived(
