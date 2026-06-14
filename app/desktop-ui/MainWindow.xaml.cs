@@ -42,6 +42,8 @@ public sealed partial class MainWindow : Window
     private string? hotkeyCaptureTarget;
     private readonly HashSet<int> hotkeyCaptureDownKeys = new();
 
+    private DispatcherTimer? activeGameRefreshTimer;
+
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
@@ -344,6 +346,29 @@ public sealed partial class MainWindow : Window
         ActiveGameDetailsText.Text = $"{captureInfo}  ·  {pollInfo}{switchInfo}{reason}";
     }
 
+    private void StartActiveGameRefreshTimer()
+    {
+        if (activeGameRefreshTimer is not null)
+            return;
+
+        activeGameRefreshTimer = new DispatcherTimer();
+        activeGameRefreshTimer.Interval = TimeSpan.FromSeconds(5);
+        activeGameRefreshTimer.Tick += async (_, _) =>
+        {
+            await viewModel.RefreshRuntimeStatusAsync();
+            UpdateActiveGameStatusPanel();
+        };
+        activeGameRefreshTimer.Start();
+    }
+
+    private void StopActiveGameRefreshTimer()
+    {
+        if (activeGameRefreshTimer is null)
+            return;
+        activeGameRefreshTimer.Stop();
+        activeGameRefreshTimer = null;
+    }
+
     private void PopulatePrimaryMicCombo()
     {
         PrimaryMicComboBox.Items.Clear();
@@ -553,6 +578,7 @@ public sealed partial class MainWindow : Window
                     await viewModel.LoadRuntimeStatusAsync();
                     PopulateAudioControls();
                     RefreshAudioSourcesList();
+                    StartActiveGameRefreshTimer();
                     break;
             }
         }
@@ -1090,6 +1116,7 @@ public sealed partial class MainWindow : Window
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
+        StopActiveGameRefreshTimer();
         if (closeAllowed || !viewModel.HasUnsavedChanges)
         {
             StopHotkeyCapture();

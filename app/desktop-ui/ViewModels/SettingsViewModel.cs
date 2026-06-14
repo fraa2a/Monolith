@@ -416,6 +416,16 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ShowBorderSuppressedWarning));
     }
 
+    public async Task RefreshRuntimeStatusAsync()
+    {
+        RuntimeStatus? status = await Task.Run(service.LoadRuntimeStatus);
+        runtimeStatus = status;
+        OnPropertyChanged(nameof(RuntimeStatus));
+        OnPropertyChanged(nameof(HasRuntimeStatus));
+        OnPropertyChanged(nameof(RuntimeStatusLoaded));
+        OnPropertyChanged(nameof(ShowBorderSuppressedWarning));
+    }
+
     public bool Save()
     {
         if (!Validate(out string error))
