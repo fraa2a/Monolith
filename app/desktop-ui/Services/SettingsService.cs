@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Win32;
@@ -656,8 +657,27 @@ public sealed class SettingsService
 
             if (enable)
             {
-                var exePath = Environment.ProcessPath;
-                if (!string.IsNullOrWhiteSpace(exePath))
+                var dir = Path.GetDirectoryName(Environment.ProcessPath);
+                string? exePath = null;
+                if (dir is not null)
+                {
+                    var monolithExe = Path.Combine(dir, "Monolith.exe");
+                    if (File.Exists(monolithExe))
+                    {
+                        exePath = monolithExe;
+                    }
+                    else
+                    {
+                        var parent = Path.GetDirectoryName(dir);
+                        if (parent is not null)
+                        {
+                            monolithExe = Path.Combine(parent, "Monolith.exe");
+                            if (File.Exists(monolithExe))
+                                exePath = monolithExe;
+                        }
+                    }
+                }
+                if (exePath is not null)
                     key.SetValue(AutoStartValueName, exePath);
             }
             else
