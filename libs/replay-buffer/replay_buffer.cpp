@@ -15,6 +15,7 @@ extern "C" {
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -30,7 +31,11 @@ namespace replay_buffer {
 struct ReplayBuffer::Impl {
     mutable std::mutex              mutex;
     std::deque<encoding::EncodedPacket> ring;
+
+    // Tracked buffer state (OBS-style).
     size_t                          total_bytes = 0;
+    int64_t                         cur_time    = 0;  // dts_usec of oldest pkt
+    int                             keyframes   = 0;  // KF count in ring
 
     Config                          cfg;
     encoding::VideoStreamParams     vsp;
@@ -62,6 +67,8 @@ void ReplayBuffer::clear()
     std::lock_guard lk(impl_->mutex);
     impl_->ring.clear();
     impl_->total_bytes = 0;
+    impl_->cur_time    = 0;
+    impl_->keyframes   = 0;
 }
 
 void ReplayBuffer::set_video_params(encoding::VideoStreamParams const& p)
@@ -87,21 +94,59 @@ void ReplayBuffer::set_audio_params(std::vector<encoding::AudioStreamParams> con
     }
 }
 
+// ── OBS-style purge: before push, maintain memory + time caps with ≥2 KF ─────
+
 void ReplayBuffer::push(encoding::EncodedPacket pkt)
 {
-    const size_t pkt_size = pkt.data.size();
-    {
-        std::lock_guard lk(impl_->mutex);
-        impl_->total_bytes += pkt_size;
-        impl_->ring.push_back(std::move(pkt));
+    std::lock_guard lk(impl_->mutex);
 
-        // Trim oldest packets until within memory cap.
-        const size_t cap = static_cast<size_t>(impl_->cfg.memory_cap_mb) * 1024 * 1024;
-        while (impl_->total_bytes > cap && !impl_->ring.empty()) {
-            impl_->total_bytes -= impl_->ring.front().data.size();
-            impl_->ring.pop_front();
+    const size_t max_bytes = static_cast<size_t>(impl_->cfg.memory_cap_mb) * 1024 * 1024;
+    const int64_t max_time = static_cast<int64_t>(impl_->cfg.duration_sec) * 1000000;
+
+    // Guard: never purge below 2 keyframes or when ring is too small.
+    auto can_purge = [&]() -> bool {
+        return impl_->ring.size() >= 2 && impl_->keyframes > 2;
+    };
+
+    auto pop_front = [&]() {
+        auto& front = impl_->ring.front();
+        impl_->total_bytes -= front.data.size();
+        if (front.stream_index == 0 && front.is_keyframe)
+            impl_->keyframes--;
+        impl_->ring.pop_front();
+        if (!impl_->ring.empty())
+            impl_->cur_time = impl_->ring.front().dts_usec;
+        else
+            impl_->cur_time = 0;
+    };
+
+    // 1) Memory cap — purge until (total_bytes + pkt.size) ≤ max_bytes.
+    if (can_purge()) {
+        int64_t needed = static_cast<int64_t>(impl_->total_bytes)
+                       + static_cast<int64_t>(pkt.data.size())
+                       - static_cast<int64_t>(max_bytes);
+        while (needed > 0 && can_purge()) {
+            needed -= static_cast<int64_t>(impl_->ring.front().data.size());
+            pop_front();
         }
     }
+
+    // 2) Time cap — purge until (pkt.dts_usec - cur_time) ≤ max_time.
+    if (can_purge()) {
+        while (can_purge()) {
+            int64_t span = pkt.dts_usec - impl_->cur_time;
+            if (span <= max_time) break;
+            pop_front();
+        }
+    }
+
+    // 3) Push the new packet.
+    if (pkt.stream_index == 0 && pkt.is_keyframe)
+        impl_->keyframes++;
+    if (impl_->ring.empty())
+        impl_->cur_time = pkt.dts_usec;
+    impl_->total_bytes += pkt.data.size();
+    impl_->ring.push_back(std::move(pkt));
 }
 
 size_t ReplayBuffer::packet_count() const
@@ -118,42 +163,33 @@ size_t ReplayBuffer::memory_bytes() const
 
 // ── Clip save internals ───────────────────────────────────────────────────────
 
-static double pkt_seconds(const encoding::EncodedPacket& p)
-{
-    if (p.tb_den == 0) return 0.0;
-    return static_cast<double>(p.pts) * p.tb_num / p.tb_den;
-}
-
-// Returns the index of the video keyframe that begins the clip, or ring.size()
-// if no suitable keyframe exists.
-//
-// Strategy: find the *last* video keyframe at or before start_time so the
-// clip duration is >= duration_sec.  If no such keyframe exists (buffer is
-// shorter than requested), fall back to the earliest keyframe we have.
+// OBS-style: walk forward from ring start, track the last video keyframe
+// seen, stop when dts_usec >= cutoff (newest - duration_sec), and return
+// that keyframe index.  If no keyframe exists before cutoff, return the
+// first keyframe in the ring (or ring.size() if the ring is empty).
 static size_t find_clip_start(
     const std::deque<encoding::EncodedPacket>& ring,
-    double duration_sec)
+    int duration_sec)
 {
     if (ring.empty()) return ring.size();
 
-    double end_time   = pkt_seconds(ring.back());
-    double start_time = end_time - duration_sec;
+    int64_t cutoff = ring.back().dts_usec
+                   - static_cast<int64_t>(duration_sec) * 1000000;
 
-    size_t best = ring.size(); // sentinel: no suitable KF found yet
+    size_t best = ring.size(); // last KF encountered
     for (size_t i = 0; i < ring.size(); ++i) {
         const auto& p = ring[i];
-        if (p.stream_index != 0 || !p.is_keyframe) continue;
-        if (pkt_seconds(p) > start_time) break; // past the window — stop searching
-        best = i; // this KF is at or before start_time: update last-seen candidate
+        if (p.stream_index == 0 && p.is_keyframe)
+            best = i;
+        if (p.dts_usec >= cutoff)
+            break;
     }
 
-    // If no KF is at or before start_time, use the first available KF.
+    // Fallback: no KF at or before cutoff → use first KF in ring.
     if (best == ring.size()) {
         for (size_t i = 0; i < ring.size(); ++i) {
-            if (ring[i].stream_index == 0 && ring[i].is_keyframe) {
-                best = i;
-                break;
-            }
+            if (ring[i].stream_index == 0 && ring[i].is_keyframe)
+                return i;
         }
     }
 
@@ -199,12 +235,12 @@ static AVCodecID video_codec_id(encoding::VideoCodec codec)
 }
 
 static std::wstring write_clip(
-    const std::vector<encoding::EncodedPacket>& pkts,
-    const encoding::VideoStreamParams&          vsp,
+    std::vector<encoding::EncodedPacket>         pkts,
+    const encoding::VideoStreamParams&           vsp,
     const std::vector<encoding::AudioStreamParams>& audio_params,
-    const std::wstring&                         out_dir,
-    int                                         duration_sec,
-    const std::string&                          container)
+    const std::wstring&                          out_dir,
+    int                                          duration_sec,
+    const std::string&                           container)
 {
     if (pkts.empty()) return {};
     if (!vsp.tb_den) return {};
@@ -217,7 +253,13 @@ static std::wstring write_clip(
     std::string  path_utf = wcs_to_utf8(path);
     if (path_utf.empty()) return {};
 
-    // ── Open output context ──────────────────────────────────────────────────
+    // ── Reorder packets by DTS (OBS-style: B-frame safety) ──────────────────
+    std::stable_sort(pkts.begin(), pkts.end(),
+        [](const encoding::EncodedPacket& a, const encoding::EncodedPacket& b) {
+            return a.dts_usec < b.dts_usec;
+        });
+
+    // ── Open output context ─────────────────────────────────────────────────
     AVFormatContext* fmt = nullptr;
     if (avformat_alloc_output_context2(&fmt, nullptr,
                                        is_mp4 ? "mp4" : "matroska",
@@ -281,33 +323,42 @@ static std::wstring write_clip(
         return {};
     }
 
-    // ── Compute PTS offsets so the clip starts at 0 ───────────────────────────
-    int64_t v_offset = AV_NOPTS_VALUE;
-    std::array<int64_t, 7> a_offsets;
-    a_offsets.fill(AV_NOPTS_VALUE);
+    // ── Compute PTS/DTS offsets so the clip starts at 0 ──────────────────────
+    int64_t v_pts_offset = AV_NOPTS_VALUE;
+    int64_t v_dts_offset = AV_NOPTS_VALUE;
+    std::array<int64_t, 7> a_pts_offsets;
+    std::array<int64_t, 7> a_dts_offsets;
+    a_pts_offsets.fill(AV_NOPTS_VALUE);
+    a_dts_offsets.fill(AV_NOPTS_VALUE);
     for (const auto& ep : pkts) {
-        if (ep.stream_index == 0 && v_offset == AV_NOPTS_VALUE) v_offset = ep.pts;
-        if (ep.stream_index >= 1 && ep.stream_index <= 6 &&
-            audio_streams[ep.stream_index] &&
-            a_offsets[ep.stream_index] == AV_NOPTS_VALUE) {
-            a_offsets[ep.stream_index] = ep.pts;
+        if (ep.stream_index == 0) {
+            if (v_pts_offset == AV_NOPTS_VALUE) v_pts_offset = ep.pts;
+            if (v_dts_offset == AV_NOPTS_VALUE) v_dts_offset = ep.dts;
+        } else if (ep.stream_index >= 1 && ep.stream_index <= 6 &&
+                   audio_streams[ep.stream_index]) {
+            if (a_pts_offsets[ep.stream_index] == AV_NOPTS_VALUE)
+                a_pts_offsets[ep.stream_index] = ep.pts;
+            if (a_dts_offsets[ep.stream_index] == AV_NOPTS_VALUE)
+                a_dts_offsets[ep.stream_index] = ep.dts;
         }
     }
-    if (v_offset == AV_NOPTS_VALUE) v_offset = 0;
-    for (auto& offset : a_offsets) {
-        if (offset == AV_NOPTS_VALUE) offset = 0;
-    }
+    if (v_pts_offset == AV_NOPTS_VALUE) v_pts_offset = 0;
+    if (v_dts_offset == AV_NOPTS_VALUE) v_dts_offset = 0;
+    for (auto& off : a_pts_offsets) { if (off == AV_NOPTS_VALUE) off = 0; }
+    for (auto& off : a_dts_offsets) { if (off == AV_NOPTS_VALUE) off = 0; }
 
-    // ── Write packets ─────────────────────────────────────────────────────────
+    // ── Write packets (already in DTS order) ─────────────────────────────────
     for (const auto& ep : pkts) {
         AVStream* dst_stream = nullptr;
-        int64_t offset = 0;
+        int64_t pts_off = 0, dts_off = 0;
         if (ep.stream_index == 0) {
             dst_stream = vs;
-            offset = v_offset;
+            pts_off = v_pts_offset;
+            dts_off = v_dts_offset;
         } else if (ep.stream_index >= 1 && ep.stream_index <= 6) {
             dst_stream = audio_streams[ep.stream_index];
-            offset = a_offsets[ep.stream_index];
+            pts_off = a_pts_offsets[ep.stream_index];
+            dts_off = a_dts_offsets[ep.stream_index];
         }
         if (!dst_stream) continue;
 
@@ -322,11 +373,11 @@ static std::wstring write_clip(
         memcpy(pkt->data, ep.data.data(), ep.data.size());
         pkt->flags        = ep.is_keyframe ? AV_PKT_FLAG_KEY : 0;
 
-        pkt->pts = ep.pts - offset;
-        pkt->dts = ep.dts - offset;
+        pkt->pts = ep.pts - pts_off;
+        pkt->dts = ep.dts - dts_off;
 
-        // Rescale from packet timebase to stream timebase (both are set the same,
-        // so this is a no-op but guards against future divergence).
+        // Rescale to stream timebase (packet and stream use the same,
+        // but this guards against future divergence).
         AVRational src_tb = {ep.tb_num, ep.tb_den};
         AVRational dst_tb = dst_stream->time_base;
         av_packet_rescale_ts(pkt, src_tb, dst_tb);
@@ -363,7 +414,7 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
         audio_params = impl_->audio_params;
         vsp_set = impl_->vsp_set;
 
-        size_t start = find_clip_start(impl_->ring, cfg.duration_sec);
+        size_t start = find_clip_start(impl_->ring, impl_->cfg.duration_sec);
         if (start < impl_->ring.size()) {
             snapshot.reserve(impl_->ring.size() - start);
             for (size_t i = start; i < impl_->ring.size(); ++i)
@@ -381,7 +432,7 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
         {
             std::wstring result;
             if (!snapshot.empty() && vsp_set) {
-                result = write_clip(snapshot, vsp, audio_params,
+                result = write_clip(std::move(snapshot), vsp, audio_params,
                                     cfg.output_dir, cfg.duration_sec,
                                     cfg.container);
             }

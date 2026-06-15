@@ -11,6 +11,7 @@ struct EncodedPacket {
     std::vector<uint8_t> data;
     int64_t  pts;           // in packet timebase
     int64_t  dts;
+    int64_t  dts_usec;     // dts converted to microseconds (for replay buffer ordering/purge)
     int32_t  stream_index;  // 0 = video, 1..6 = audio tracks
     bool     is_keyframe;
     int32_t  tb_num;        // timebase numerator

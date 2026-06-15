@@ -5,6 +5,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/audio_fifo.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
@@ -290,6 +291,8 @@ static void drain_video(ImplT* impl)
         ep.data.assign(pkt->data, pkt->data + pkt->size);
         ep.pts          = pkt->pts;
         ep.dts          = pkt->dts;
+        ep.dts_usec     = av_rescale(pkt->dts, 1000000,
+                                     impl->ctx->time_base.den);
         ep.stream_index = 0;
         ep.is_keyframe  = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
         ep.tb_num       = impl->ctx->time_base.num;
@@ -327,8 +330,11 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
         src_slices, src_stride, 0, height,
         impl_->frame->data, impl_->frame->linesize);
 
-    impl_->frame->pts = impl_->next_pts++;
-    avcodec_send_frame(impl_->ctx, impl_->frame);
+    impl_->frame->pts = impl_->next_pts;
+    int ret = avcodec_send_frame(impl_->ctx, impl_->frame);
+    if (ret == 0) {
+        impl_->next_pts++;
+    }
     drain_video(impl_);
 }
 
@@ -466,6 +472,8 @@ static void drain_audio(ImplT* impl)
         ep.data.assign(pkt->data, pkt->data + pkt->size);
         ep.pts          = pkt->pts;
         ep.dts          = pkt->dts;
+        ep.dts_usec     = av_rescale(pkt->dts, 1000000,
+                                     impl->ctx->time_base.den);
         ep.stream_index = impl->stream_index;
         ep.is_keyframe  = true; // AAC frames are all independently decodable
         ep.tb_num       = impl->ctx->time_base.num;
@@ -561,8 +569,10 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
         impl_->frame->nb_samples = frame_size;
         av_audio_fifo_read(impl_->fifo, (void**)impl_->frame->data, frame_size);
         impl_->frame->pts = impl_->next_pts;
-        impl_->next_pts  += frame_size;
-        avcodec_send_frame(impl_->ctx, impl_->frame);
+        int ret = avcodec_send_frame(impl_->ctx, impl_->frame);
+        if (ret == 0) {
+            impl_->next_pts += frame_size;
+        }
         drain_audio(impl_);
     }
 }
@@ -579,8 +589,10 @@ void AudioEncoder::flush()
         impl_->frame->nb_samples = rem;
         av_audio_fifo_read(impl_->fifo, (void**)impl_->frame->data, rem);
         impl_->frame->pts = impl_->next_pts;
-        impl_->next_pts  += rem;
-        avcodec_send_frame(impl_->ctx, impl_->frame);
+        int ret = avcodec_send_frame(impl_->ctx, impl_->frame);
+        if (ret == 0) {
+            impl_->next_pts += rem;
+        }
         drain_audio(impl_);
     }
 
@@ -598,8 +610,10 @@ void AudioEncoder::close()
             impl_->frame->nb_samples = rem;
             av_audio_fifo_read(impl_->fifo, (void**)impl_->frame->data, rem);
             impl_->frame->pts = impl_->next_pts;
-            impl_->next_pts  += rem;
-            avcodec_send_frame(impl_->ctx, impl_->frame);
+            int ret = avcodec_send_frame(impl_->ctx, impl_->frame);
+            if (ret == 0) {
+                impl_->next_pts += rem;
+            }
             drain_audio(impl_);
         }
         avcodec_send_frame(impl_->ctx, nullptr);

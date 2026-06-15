@@ -411,7 +411,7 @@ public sealed partial class MainWindow : Window
         if (!viewModel.IsConfiguredSourceId("desktop"))
             AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "All desktop audio", Tag = "desktop" });
         if (!viewModel.IsConfiguredSourceId("active_game"))
-            AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "Active Game", Tag = "active_game" });
+            AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "Active Game (Beta experimental)", Tag = "active_game" });
 
         RuntimeStatus? status = viewModel.RuntimeStatus;
         if (status is not null)

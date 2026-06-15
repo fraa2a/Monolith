@@ -8,7 +8,7 @@ if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
         CACHE STRING "vcpkg toolchain file")
 endif()
 
-project(monolith VERSION 0.5.6 LANGUAGES CXX)
+project(monolith VERSION 1.0.0 LANGUAGES CXX)
 
 # Single source of truth for the app version. CI overrides this from the git
 # tag with -DMONOLITH_VERSION=X.Y.Z; local builds fall back to project(VERSION).

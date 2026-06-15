@@ -340,6 +340,8 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
                                          static_cast<DWORD>(g_pacer_interval_ms));
         if (wait == WAIT_OBJECT_0)
             break;
+        if (wait == WAIT_IO_COMPLETION)
+            continue; // APC queued — retry without processing a frame
 
         {
             std::lock_guard<std::mutex> lock(g_pacer_mutex);
