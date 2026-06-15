@@ -100,6 +100,7 @@ struct VideoEncoder::Impl {
     std::string     enc_name;
     bool            extra_rejected = false;
     int             sws_flags = SWS_BILINEAR;
+    int             cfg_fps  = 0;
     VideoStreamParams vsp;
 };
 
@@ -157,6 +158,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         impl_->enc_name.clear();
         impl_->vsp      = {};
         impl_->sink     = nullptr;
+        impl_->cfg_fps  = 0;
     };
 
     impl_->sink  = std::move(sink);
@@ -244,6 +246,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         }
     }
     if (opened.empty()) { cleanup(); return false; }
+    impl_->cfg_fps  = cfg.fps;
     impl_->enc_name = opened;
     if (cfg.scaling_filter == "bicubic") {
         impl_->sws_flags = SWS_BICUBIC;
@@ -273,8 +276,8 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     impl_->vsp.height  = cfg.height;
     impl_->vsp.fps_num = cfg.fps;
     impl_->vsp.fps_den = 1;
-    impl_->vsp.tb_num  = ctx->time_base.num;
-    impl_->vsp.tb_den  = ctx->time_base.den;
+    impl_->vsp.tb_num  = 1;
+    impl_->vsp.tb_den  = cfg.fps;
     if (ctx->extradata_size > 0)
         impl_->vsp.extradata.assign(ctx->extradata,
                                     ctx->extradata + ctx->extradata_size);
@@ -292,11 +295,11 @@ static void drain_video(ImplT* impl)
         ep.pts          = pkt->pts;
         ep.dts          = pkt->dts;
         ep.dts_usec     = av_rescale(pkt->dts, 1000000,
-                                     impl->ctx->time_base.den);
+                                     impl->cfg_fps);
         ep.stream_index = 0;
         ep.is_keyframe  = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-        ep.tb_num       = impl->ctx->time_base.num;
-        ep.tb_den       = impl->ctx->time_base.den;
+        ep.tb_num       = 1;
+        ep.tb_den       = impl->cfg_fps;
         if (impl->sink) impl->sink(std::move(ep));
         av_packet_unref(pkt);
     }
@@ -378,6 +381,7 @@ struct AudioEncoder::Impl {
     int             swr_src_ch   = 0;
     AVSampleFormat  swr_src_fmt  = AV_SAMPLE_FMT_NONE;
     int             stream_index = 1;
+    int             cfg_sample_rate = 0;
     AudioStreamParams asp;
 };
 
@@ -410,17 +414,19 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
         if (impl_->swr)   { swr_free(&impl_->swr);                                   }
         if (impl_->frame) { av_frame_free(&impl_->frame);                            }
         if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);                       }
-        impl_->next_pts      = 0;
-        impl_->swr_src_rate  = 0;
-        impl_->swr_src_ch    = 0;
-        impl_->swr_src_fmt   = AV_SAMPLE_FMT_NONE;
-        impl_->stream_index  = 1;
-        impl_->asp           = {};
-        impl_->sink          = nullptr;
+        impl_->next_pts        = 0;
+        impl_->swr_src_rate    = 0;
+        impl_->swr_src_ch      = 0;
+        impl_->swr_src_fmt     = AV_SAMPLE_FMT_NONE;
+        impl_->stream_index    = 1;
+        impl_->asp             = {};
+        impl_->sink            = nullptr;
+        impl_->cfg_sample_rate = 0;
     };
 
     impl_->sink = std::move(sink);
-    impl_->stream_index = cfg.stream_index;
+    impl_->stream_index    = cfg.stream_index;
+    impl_->cfg_sample_rate = cfg.sample_rate;
 
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (!codec) return false;
@@ -452,10 +458,10 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
     if (!impl_->fifo) { cleanup(); return false; }
 
     impl_->asp.stream_index = cfg.stream_index;
-    impl_->asp.sample_rate = cfg.sample_rate;
-    impl_->asp.channels    = cfg.channels;
-    impl_->asp.tb_num      = ctx->time_base.num;
-    impl_->asp.tb_den      = ctx->time_base.den;
+    impl_->asp.sample_rate  = cfg.sample_rate;
+    impl_->asp.channels     = cfg.channels;
+    impl_->asp.tb_num       = 1;
+    impl_->asp.tb_den       = cfg.sample_rate;
     if (ctx->extradata_size > 0)
         impl_->asp.extradata.assign(ctx->extradata,
                                     ctx->extradata + ctx->extradata_size);
@@ -473,11 +479,11 @@ static void drain_audio(ImplT* impl)
         ep.pts          = pkt->pts;
         ep.dts          = pkt->dts;
         ep.dts_usec     = av_rescale(pkt->dts, 1000000,
-                                     impl->ctx->time_base.den);
+                                     impl->cfg_sample_rate);
         ep.stream_index = impl->stream_index;
         ep.is_keyframe  = true; // AAC frames are all independently decodable
-        ep.tb_num       = impl->ctx->time_base.num;
-        ep.tb_den       = impl->ctx->time_base.den;
+        ep.tb_num       = 1;
+        ep.tb_den       = impl->cfg_sample_rate;
         if (impl->sink) impl->sink(std::move(ep));
         av_packet_unref(pkt);
     }
