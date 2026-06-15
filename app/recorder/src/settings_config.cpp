@@ -57,6 +57,7 @@ constexpr const char* kFallbackDefaultConfig = R"json(
     "backend": "auto",
     "fps": 60,
     "quality": 20,
+    "scaling_filter": "bilinear",
     "extra_ffmpeg_options": ""
   },
   "output": {
@@ -393,6 +394,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["video_encoder"]["backend"] = config.encoder_backend;
     doc["video_encoder"]["fps"] = config.video_fps;
     doc["video_encoder"]["quality"] = config.video_quality;
+    doc["video_encoder"]["scaling_filter"] = config.scaling_filter;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
     doc["audio"]["mode"] = config.audio_mode;
     doc["audio"]["primary_microphone_device_id"] = wide_to_utf8(config.primary_microphone_device_id);
@@ -496,6 +498,7 @@ Config config_from_json(
     config.video_quality = int_at(doc, "video_encoder", "quality", 20);
     if (config.video_quality < 10 || config.video_quality > 30)
         config.video_quality = 20;
+    config.scaling_filter = utf8_at(doc, "video_encoder", "scaling_filter", "bilinear");
 
     config.video_fps = int_at(doc, "video_encoder", "fps", 60);
     if (config.video_fps < 15 || config.video_fps > 120)

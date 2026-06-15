@@ -286,6 +286,11 @@
                                                 ValueChanged="OnVideoQualityValueChanged"
                                                 Width="240"
                                                 HorizontalAlignment="Left" />
+                                            <ComboBox
+                                                x:Name="ScalingFilterCombo"
+                                                Header="Downscale filter"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="OnScalingFilterSelectionChanged" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
@@ -353,7 +358,10 @@
 
                                 <Border x:Name="ActiveGameStatusPanel" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22" Visibility="Collapsed">
                                     <StackPanel Spacing="10">
-                                        <TextBlock Text="Active Game Status" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <StackPanel Orientation="Horizontal" Spacing="12">
+                                            <TextBlock Text="Active Game Status" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                            <Button x:Name="RefreshActiveGameButton" Content="Refresh" Click="OnRefreshActiveGameClick" />
+                                        </StackPanel>
                                         <TextBlock x:Name="ActiveGameNameText" Text="Not detected" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                         <TextBlock x:Name="ActiveGameDetailsText" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" TextWrapping="WrapWholeWords" />
                                     </StackPanel>

@@ -45,6 +45,7 @@ public sealed class SettingsService
         "backend": "auto",
         "fps": 60,
         "quality": 20,
+        "scaling_filter": "bilinear",
         "extra_ffmpeg_options": ""
       },
       "output": {
@@ -316,6 +317,7 @@ public sealed class SettingsService
         SetIfMissing(videoEncoder, "backend", "auto");
         SetIfMissing(videoEncoder, "fps", 60);
         SetIfMissing(videoEncoder, "quality", 20);
+        SetIfMissing(videoEncoder, "scaling_filter", "bilinear");
         SetIfMissing(videoEncoder, "extra_ffmpeg_options", "");
 
         JsonObject recording = ObjectAt(root, "recording");
@@ -390,6 +392,7 @@ public sealed class SettingsService
             EncoderBackend = StringAt(videoEncoder, "backend", "auto"),
             VideoFps = Math.Clamp(IntAt(videoEncoder, "fps", 60), 15, 120),
             VideoQuality = Math.Clamp(IntAt(videoEncoder, "quality", 20), 10, 30),
+            ScalingFilter = StringAt(videoEncoder, "scaling_filter", "bilinear"),
             ExtraFfmpegOptions = StringAt(videoEncoder, "extra_ffmpeg_options"),
             AutoCheckUpdates = BoolAt(update, "auto_check", true),
         };
@@ -420,6 +423,7 @@ public sealed class SettingsService
         videoEncoder["backend"] = settings.EncoderBackend;
         videoEncoder["fps"] = Math.Clamp(settings.VideoFps, 15, 120);
         videoEncoder["quality"] = Math.Clamp(settings.VideoQuality, 10, 30);
+        videoEncoder["scaling_filter"] = settings.ScalingFilter;
         videoEncoder["extra_ffmpeg_options"] = settings.ExtraFfmpegOptions;
 
         JsonObject recording = ObjectAt(root, "recording");

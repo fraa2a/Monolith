@@ -42,8 +42,6 @@ public sealed partial class MainWindow : Window
     private string? hotkeyCaptureTarget;
     private readonly HashSet<int> hotkeyCaptureDownKeys = new();
 
-    private DispatcherTimer? activeGameRefreshTimer;
-
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
@@ -148,6 +146,29 @@ public sealed partial class MainWindow : Window
         PopulateMonitorCombo();
         PopulateEncoderCombo();
         SelectResolutionFromViewModel();
+        PopulateScalingFilterCombo();
+    }
+
+    private void PopulateScalingFilterCombo()
+    {
+        suppressComboBoxEvents = true;
+        ScalingFilterCombo.Items.Clear();
+
+        (string Tag, string Label)[] filters =
+        {
+            ("bilinear", "Bilinear (fast)"),
+            ("bicubic",  "Bicubic (balanced)"),
+            ("lanczos",  "Lanczos (sharpest)"),
+        };
+
+        foreach ((string tag, string label) in filters)
+        {
+            ComboBoxItem item = new() { Content = label, Tag = tag };
+            ScalingFilterCombo.Items.Add(item);
+        }
+
+        SelectComboBoxByTag(ScalingFilterCombo, viewModel.ScalingFilter);
+        suppressComboBoxEvents = false;
     }
 
     private void PopulateMonitorCombo()
@@ -346,27 +367,10 @@ public sealed partial class MainWindow : Window
         ActiveGameDetailsText.Text = $"{captureInfo}  ·  {pollInfo}{switchInfo}{reason}";
     }
 
-    private void StartActiveGameRefreshTimer()
+    private async void OnRefreshActiveGameClick(object sender, RoutedEventArgs e)
     {
-        if (activeGameRefreshTimer is not null)
-            return;
-
-        activeGameRefreshTimer = new DispatcherTimer();
-        activeGameRefreshTimer.Interval = TimeSpan.FromSeconds(5);
-        activeGameRefreshTimer.Tick += async (_, _) =>
-        {
-            await viewModel.RefreshRuntimeStatusAsync();
-            UpdateActiveGameStatusPanel();
-        };
-        activeGameRefreshTimer.Start();
-    }
-
-    private void StopActiveGameRefreshTimer()
-    {
-        if (activeGameRefreshTimer is null)
-            return;
-        activeGameRefreshTimer.Stop();
-        activeGameRefreshTimer = null;
+        await viewModel.RefreshRuntimeStatusAsync();
+        UpdateActiveGameStatusPanel();
     }
 
     private void PopulatePrimaryMicCombo()
@@ -570,15 +574,14 @@ public sealed partial class MainWindow : Window
                     SelectRecordingFormat();
                     break;
                 case "Capture":
-                    await viewModel.LoadRuntimeStatusAsync();
+                    await viewModel.RefreshRuntimeStatusAsync();
                     PopulateCaptureCombos();
                     UpdateCaptureBorderWarning();
                     break;
                 case "Audio":
-                    await viewModel.LoadRuntimeStatusAsync();
+                    await viewModel.RefreshRuntimeStatusAsync();
                     PopulateAudioControls();
                     RefreshAudioSourcesList();
-                    StartActiveGameRefreshTimer();
                     break;
             }
         }
@@ -671,6 +674,17 @@ public sealed partial class MainWindow : Window
 
         if (EncoderComboBox.SelectedItem is ComboBoxItem item && item.Tag is string backend)
             viewModel.EncoderBackend = backend;
+    }
+
+    // ── Scaling Filter ComboBox ───────────────────────────────────────────────
+
+    private void OnScalingFilterSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressComboBoxEvents)
+            return;
+
+        if (ScalingFilterCombo.SelectedItem is ComboBoxItem item && item.Tag is string filter)
+            viewModel.ScalingFilter = filter;
     }
 
     // ── Quality NumberBox ─────────────────────────────────────────────────────
@@ -1116,7 +1130,6 @@ public sealed partial class MainWindow : Window
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        StopActiveGameRefreshTimer();
         if (closeAllowed || !viewModel.HasUnsavedChanges)
         {
             StopHotkeyCapture();

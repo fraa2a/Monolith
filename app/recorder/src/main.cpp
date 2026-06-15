@@ -8,6 +8,7 @@
 #include <knownfolders.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <shellscalingapi.h>
 #include <strsafe.h>
 
 #include <winrt/base.h>
@@ -554,6 +555,7 @@ static bool capture_encoder_config_changed(const settings::Config& a,
         || a.encoder_backend != b.encoder_backend
         || a.video_fps != b.video_fps
         || a.video_quality != b.video_quality
+        || a.scaling_filter != b.scaling_filter
         || a.extra_ffmpeg_options != b.extra_ffmpeg_options;
 }
 
@@ -1252,6 +1254,7 @@ static void media_start(HWND hwnd)
                 vcfg.height            = g_enc_h;
                 vcfg.fps               = g_settings.video_fps;
                 vcfg.quality           = g_settings.video_quality;
+                vcfg.scaling_filter    = g_settings.scaling_filter;
                 vcfg.preferred_encoder = g_settings.encoder_backend;
                 vcfg.extra_options     = g_settings.extra_ffmpeg_options;
 
@@ -1953,6 +1956,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         if (mutex) CloseHandle(mutex);
         return 0;
     }
+
+    // OBS-style: per-monitor DPI awareness so WGC returns physical pixels.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 

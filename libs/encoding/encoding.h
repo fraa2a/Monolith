@@ -63,6 +63,9 @@ public:
         int     fps     = 60;
         int64_t bitrate = 0;          // legacy: CBR bitrate (0 = use quality)
         int     quality = 20;         // 0=bitrate-mode, 10-30→CQP(HW)/CRF(SW)
+        // Scaling filter (OBS-style): "bilinear", "bicubic", "lanczos".
+        // Used by sws_scale when capture and output resolutions differ.
+        std::string scaling_filter = "bilinear";
         // "" or "auto" → probe NVENC → AMF → QSV → libx264.
         // Otherwise this encoder is tried first, then the probe order.
         std::string preferred_encoder;

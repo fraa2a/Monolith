@@ -98,6 +98,7 @@ struct VideoEncoder::Impl {
     int             src_h    = 0;
     std::string     enc_name;
     bool            extra_rejected = false;
+    int             sws_flags = SWS_BILINEAR;
     VideoStreamParams vsp;
 };
 
@@ -243,6 +244,13 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     }
     if (opened.empty()) { cleanup(); return false; }
     impl_->enc_name = opened;
+    if (cfg.scaling_filter == "bicubic") {
+        impl_->sws_flags = SWS_BICUBIC;
+    } else if (cfg.scaling_filter == "lanczos") {
+        impl_->sws_flags = SWS_LANCZOS;
+    } else {
+        impl_->sws_flags = SWS_BILINEAR;
+    }
     AVCodecContext* ctx = impl_->ctx;
 
     impl_->frame = av_frame_alloc();
@@ -305,7 +313,7 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
         impl_->sws = sws_getContext(
             width, height, AV_PIX_FMT_BGRA,
             impl_->cfg_w, impl_->cfg_h, impl_->ctx->pix_fmt,
-            SWS_BILINEAR, nullptr, nullptr, nullptr);
+            impl_->sws_flags, nullptr, nullptr, nullptr);
         if (!impl_->sws) return;
         impl_->src_w = width;
         impl_->src_h = height;

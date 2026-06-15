@@ -54,5 +54,6 @@ public sealed class SettingsData
     public string EncoderBackend { get; set; } = "auto";
     public int VideoFps { get; set; } = 60;
     public int VideoQuality { get; set; } = 20;
+    public string ScalingFilter { get; set; } = "bilinear";
     public string ExtraFfmpegOptions { get; set; } = "";
 }

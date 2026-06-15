@@ -47,6 +47,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string encoderBackend = "auto";
     private int videoFps = 60;
     private int videoQuality = 20;
+    private string scalingFilter = "bilinear";
     private string extraFfmpegOptions = "";
 
     // page UI
@@ -64,6 +65,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string loadedEncoderBackend = "auto";
     private int loadedVideoFps = 60;
     private int loadedVideoQuality = 20;
+    private string loadedScalingFilter = "bilinear";
     private string loadedExtraFfmpegOptions = "";
     private string loadedAudioFingerprint = "";
     private string loadedClipsDirectory = "";
@@ -241,6 +243,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         set => SetField(ref videoQuality, value);
     }
 
+    public string ScalingFilter
+    {
+        get => scalingFilter;
+        set => SetField(ref scalingFilter, value);
+    }
+
     public string ExtraFfmpegOptions
     {
         get => extraFfmpegOptions;
@@ -363,6 +371,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         encoderBackend = data.EncoderBackend;
         videoFps = data.VideoFps;
         videoQuality = data.VideoQuality;
+        scalingFilter = data.ScalingFilter;
         extraFfmpegOptions = data.ExtraFfmpegOptions;
 
         // snapshot loaded baseline
@@ -385,6 +394,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedRecordingStartHotkey = recordingStartHotkey;
         loadedRecordingStopHotkey = recordingStopHotkey;
         loadedPauseResumeHotkey = pauseResumeHotkey;
+
+        loadedScalingFilter = scalingFilter;
 
         loading = false;
         HasUnsavedChanges = false;
@@ -467,6 +478,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             EncoderBackend = EncoderBackend,
             VideoFps = VideoFps,
             VideoQuality = VideoQuality,
+            ScalingFilter = ScalingFilter,
             ExtraFfmpegOptions = ExtraFfmpegOptions,
         });
 
@@ -495,6 +507,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         loadedRecordingStartHotkey = recordingStartHotkey;
         loadedRecordingStopHotkey = recordingStopHotkey;
         loadedPauseResumeHotkey = pauseResumeHotkey;
+        loadedScalingFilter = scalingFilter;
 
         HasUnsavedChanges = false;
 
@@ -701,6 +714,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             encoderBackend != loadedEncoderBackend ||
             videoFps != loadedVideoFps ||
             videoQuality != loadedVideoQuality ||
+            scalingFilter != loadedScalingFilter ||
             extraFfmpegOptions != loadedExtraFfmpegOptions)
             scopes.Add("Capture/encoder restarts when no recording is active.");
 
@@ -785,6 +799,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             error = "Recording FPS must be 15 to 120.";
             return false;
         }
+
+        if (ScalingFilter != "bilinear" && ScalingFilter != "bicubic" && ScalingFilter != "lanczos")
+            ScalingFilter = "bilinear";
 
         if (EncoderBackend != "auto" &&
             EncoderBackend != "h264_nvenc" &&
@@ -1070,6 +1087,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(EncoderBackend));
         OnPropertyChanged(nameof(VideoFps));
         OnPropertyChanged(nameof(VideoQuality));
+        OnPropertyChanged(nameof(ScalingFilter));
         OnPropertyChanged(nameof(ExtraFfmpegOptions));
     }
 
