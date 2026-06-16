@@ -269,6 +269,10 @@ struct PacerFrame {
 static PacerFrame           g_pacer_shared;
 static uint64_t             g_pacer_last_read_id = 0;
 static int                  g_pacer_interval_ms  = 0;
+static int64_t              g_pacer_qpc_freq     = 0;  // QueryPerformanceFrequency
+static int64_t              g_pacer_start_qpc    = 0;  // QPC at pacer start
+static int64_t              g_pacer_frames_done  = 0;  // CFR frames emitted so far
+static int                  g_pacer_fps          = 0;
 static std::atomic<bool>    g_pacer_running{ false };
 static std::wstring g_recordings_dir;
 static std::string g_recording_container = "mkv";
@@ -335,14 +339,34 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
     int local_stride = 0, local_width = 0, local_height = 0;
     uint64_t local_last_id = 0;
 
-    while (true) {
-        DWORD wait = WaitForSingleObject(g_pacer_stop_event,
-                                         static_cast<DWORD>(g_pacer_interval_ms));
-        if (wait == WAIT_OBJECT_0)
-            break;
-        if (wait == WAIT_IO_COMPLETION)
-            continue; // APC queued — retry without processing a frame
+    // High-resolution waitable timer (Win10 1803+).  Falls back to the stop
+    // event's timeout wait if unavailable.
+    HANDLE htimer = CreateWaitableTimerExW(
+        nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 
+    // Tick at ~2x frame rate so the CFR loop has fine-grained wakeups to land
+    // each frame slot near its real deadline (dup/skip absorbs the rest).
+    int tick_ms = (g_pacer_fps > 0) ? (1000 / (g_pacer_fps * 2)) : 4;
+    if (tick_ms < 1) tick_ms = 1;
+
+    while (true) {
+        // Wait for the next tick, or stop signal.
+        if (htimer) {
+            LARGE_INTEGER due;
+            due.QuadPart = -static_cast<LONGLONG>(tick_ms) * 10000; // 100ns units, relative
+            SetWaitableTimer(htimer, &due, 0, nullptr, nullptr, FALSE);
+            HANDLE handles[2] = { g_pacer_stop_event, htimer };
+            DWORD w = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+            if (w == WAIT_OBJECT_0) break;          // stop event
+        } else {
+            DWORD w = WaitForSingleObject(g_pacer_stop_event,
+                                          static_cast<DWORD>(tick_ms));
+            if (w == WAIT_OBJECT_0) break;
+            if (w == WAIT_IO_COMPLETION) continue;
+        }
+
+        // Pull the latest captured frame (if a new one arrived).
         {
             std::lock_guard<std::mutex> lock(g_pacer_mutex);
             if (g_pacer_shared.frame_id != local_last_id) {
@@ -354,12 +378,33 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
             }
         }
 
-        if (g_video_enc.is_open() && !local_bgra.empty()) {
+        if (!g_video_enc.is_open() || local_bgra.empty())
+            continue;
+
+        // ── Clock-locked CFR: emit frames until we've caught up to wall-clock.
+        // target = number of frames that SHOULD exist by now.  Duplicate the
+        // latest frame to fill gaps; this makes playback speed independent of
+        // timer jitter, encode cost, and configured fps.
+        LARGE_INTEGER now_qpc;
+        QueryPerformanceCounter(&now_qpc);
+        int64_t target = llround(
+            static_cast<double>(now_qpc.QuadPart - g_pacer_start_qpc)
+            * g_pacer_fps / static_cast<double>(g_pacer_qpc_freq));
+
+        // Safety clamp: never emit a huge burst (e.g. after a long stall) that
+        // would flood the encoder.  Cap catch-up to ~1s worth of frames.
+        if (target - g_pacer_frames_done > g_pacer_fps)
+            g_pacer_frames_done = target - g_pacer_fps;
+
+        while (g_pacer_frames_done < target) {
             g_video_enc.push_bgra(local_bgra.data(), local_stride,
-                                  local_width, local_height);
+                                  local_width, local_height,
+                                  g_pacer_frames_done);
+            g_pacer_frames_done++;
         }
     }
 
+    if (htimer) CloseHandle(htimer);
     g_pacer_running = false;
     return 0;
 }
@@ -367,8 +412,19 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
 static void pacer_start()
 {
     if (g_settings.video_fps <= 0) return;
-    g_pacer_interval_ms = 1000 / g_settings.video_fps;
+    g_pacer_fps          = g_settings.video_fps;
+    g_pacer_interval_ms  = 1000 / g_pacer_fps;
     if (g_pacer_interval_ms < 1) g_pacer_interval_ms = 1;
+
+    LARGE_INTEGER freq, start;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&start);
+    g_pacer_qpc_freq    = freq.QuadPart;
+    g_pacer_start_qpc   = start.QuadPart;
+    g_pacer_frames_done = 0;
+
+    timeBeginPeriod(1); // tighten system timer resolution for the timer wait
+
     g_pacer_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_pacer_running = true;
     g_pacer_thread = CreateThread(nullptr, 0, pacer_thread_proc, nullptr, 0, nullptr);
@@ -385,6 +441,7 @@ static void pacer_stop()
         }
         CloseHandle(g_pacer_stop_event);
         g_pacer_stop_event = nullptr;
+        timeEndPeriod(1);
     }
 }
 

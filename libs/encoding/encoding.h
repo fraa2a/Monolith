@@ -83,7 +83,11 @@ public:
     // stride = bytes per row (>= width*4 after GPU-alignment).
     // Frames are scaled to the configured output width/height when the
     // source dimensions differ.
-    void push_bgra(const uint8_t* bgra, int stride, int width, int height);
+    // pts: frame index in the encoder timebase (1/fps).  Must be supplied by
+    // a clock-locked CFR pacer so playback speed matches wall-clock.  Pass -1
+    // to fall back to the internal auto-increment counter (legacy behaviour).
+    void push_bgra(const uint8_t* bgra, int stride, int width, int height,
+                   int64_t pts = -1);
 
     void flush();
     void close();

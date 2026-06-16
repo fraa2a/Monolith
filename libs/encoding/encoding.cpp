@@ -339,7 +339,8 @@ static void drain_video(ImplT* impl)
     av_packet_free(&pkt);
 }
 
-void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int height)
+void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int height,
+                             int64_t pts)
 {
     std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx || !bgra) return;
@@ -366,9 +367,18 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
         src_slices, src_stride, 0, height,
         impl_->frame->data, impl_->frame->linesize);
 
-    impl_->frame->pts = impl_->next_pts;
+    // PTS: clock-locked frame index from the pacer (preferred), or fall back
+    // to the internal counter when pts < 0.  The pacer is the single source of
+    // timing truth — it emits exactly fps frames per real second (dup/skip),
+    // so this PTS advances at wall-clock rate.
+    if (pts >= 0) {
+        impl_->frame->pts = pts;
+        impl_->next_pts   = pts + 1;
+    } else {
+        impl_->frame->pts = impl_->next_pts;
+    }
     int ret = avcodec_send_frame(impl_->ctx, impl_->frame);
-    if (ret == 0) {
+    if (ret == 0 && pts < 0) {
         impl_->next_pts++;
     }
     drain_video(impl_);
