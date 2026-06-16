@@ -28,6 +28,7 @@ namespace {
 
 std::atomic<bool>               g_running{false};
 SOCKET                          g_server_socket = INVALID_SOCKET;
+std::atomic<SOCKET>             g_client_socket{INVALID_SOCKET};
 HWND                            g_hwnd          = nullptr;
 std::function<RecordingState()> g_status_fn;
 std::thread                     g_thread;
@@ -119,7 +120,9 @@ void server_loop()
     while (g_running) {
         SOCKET client = accept(g_server_socket, nullptr, nullptr);
         if (client == INVALID_SOCKET) break; // closed by stop()
+        g_client_socket.store(client, std::memory_order_release);
         handle_client(client);
+        g_client_socket.store(INVALID_SOCKET, std::memory_order_release);
         closesocket(client);
     }
 }
@@ -169,6 +172,11 @@ void stop()
         closesocket(g_server_socket);
         g_server_socket = INVALID_SOCKET;
     }
+    // Unblock handle_client()'s recv() so server_loop() (and the join below)
+    // can return even while a client is still connected.
+    SOCKET client = g_client_socket.exchange(INVALID_SOCKET, std::memory_order_acq_rel);
+    if (client != INVALID_SOCKET)
+        shutdown(client, SD_BOTH);
     if (g_thread.joinable()) g_thread.join();
     WSACleanup();
 }

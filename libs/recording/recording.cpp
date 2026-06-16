@@ -1,5 +1,7 @@
 #include "recording.h"
 
+#include <encoding/mux_common.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -22,6 +24,8 @@ extern "C" {
 #include <vector>
 
 namespace recording {
+
+namespace mux = encoding::mux;
 
 struct StreamTiming {
     bool    input_anchor_set = false;
@@ -53,37 +57,6 @@ struct ManualRecorder::Impl {
     std::array<StreamTiming, 7> timing{};
 };
 
-static std::string wcs_to_utf8(const std::wstring& ws)
-{
-    if (ws.empty()) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0,
-        ws.c_str(), static_cast<int>(ws.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string s(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0,
-        ws.c_str(), static_cast<int>(ws.size()),
-        s.data(), n, nullptr, nullptr);
-    return s;
-}
-
-static const char* muxer_name(const std::string& container)
-{
-    return container == "mp4" ? "mp4" : "matroska";
-}
-
-static const wchar_t* file_extension(const std::string& container)
-{
-    return container == "mp4" ? L"mp4" : L"mkv";
-}
-
-static AVCodecID video_codec_id(encoding::VideoCodec codec)
-{
-    return codec == encoding::VideoCodec::H265
-        ? AV_CODEC_ID_HEVC
-        : AV_CODEC_ID_H264;
-}
-
 static std::wstring generate_recording_path(
     const std::wstring& dir,
     const std::string& container)
@@ -96,19 +69,8 @@ static std::wstring generate_recording_path(
         dir.c_str(),
         st.wYear, st.wMonth, st.wDay,
         st.wHour, st.wMinute, st.wSecond,
-        file_extension(container));
+        mux::file_extension(container));
     return path;
-}
-
-static bool copy_extradata(AVCodecParameters* codecpar, const std::vector<uint8_t>& data)
-{
-    if (data.empty()) return true;
-    codecpar->extradata = reinterpret_cast<uint8_t*>(
-        av_mallocz(data.size() + AV_INPUT_BUFFER_PADDING_SIZE));
-    if (!codecpar->extradata) return false;
-    memcpy(codecpar->extradata, data.data(), data.size());
-    codecpar->extradata_size = static_cast<int>(data.size());
-    return true;
 }
 
 template <typename ImplT>
@@ -119,44 +81,19 @@ static bool open_output(ImplT* impl)
 
     CreateDirectoryW(impl->output_dir.c_str(), nullptr);
 
-    std::string path_utf = wcs_to_utf8(impl->path);
+    std::string path_utf = mux::wcs_to_utf8(impl->path);
     if (path_utf.empty()) return false;
 
-    if (avformat_alloc_output_context2(&impl->fmt, nullptr, muxer_name(impl->container),
-                                       path_utf.c_str()) < 0)
+    mux::StreamSet streams;
+    if (!mux::alloc_output(path_utf, impl->container, impl->vsp,
+                           impl->audio_params, &impl->fmt, &streams))
         return false;
 
-    impl->video_stream = avformat_new_stream(impl->fmt, nullptr);
-    if (!impl->video_stream) return false;
-    impl->video_stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-    impl->video_stream->codecpar->codec_id   = video_codec_id(impl->vsp.codec);
-    impl->video_stream->codecpar->width      = impl->vsp.width;
-    impl->video_stream->codecpar->height     = impl->vsp.height;
-    impl->video_stream->time_base            = {impl->vsp.tb_num, impl->vsp.tb_den};
-    if (!copy_extradata(impl->video_stream->codecpar, impl->vsp.extradata)) return false;
+    impl->video_stream  = streams.video;
+    impl->audio_streams = streams.audio;
 
-    impl->audio_streams = {};
-    for (const auto& asp : impl->audio_params) {
-        if (asp.stream_index < 1 || asp.stream_index > 6) continue;
-        AVStream* stream = avformat_new_stream(impl->fmt, nullptr);
-        if (!stream) return false;
-        stream->codecpar->codec_type  = AVMEDIA_TYPE_AUDIO;
-        stream->codecpar->codec_id    = AV_CODEC_ID_AAC;
-        stream->codecpar->sample_rate = asp.sample_rate;
-        av_channel_layout_default(&stream->codecpar->ch_layout, asp.channels);
-        stream->time_base = {asp.tb_num, asp.tb_den};
-        if (!copy_extradata(stream->codecpar, asp.extradata)) return false;
-        impl->audio_streams[asp.stream_index] = stream;
-    }
-
-    if (avio_open(&impl->fmt->pb, path_utf.c_str(), AVIO_FLAG_WRITE) < 0) return false;
-
-    AVDictionary* opts = nullptr;
-    if (impl->container == "mp4")
-        av_dict_set(&opts, "movflags", "+faststart", 0);
-    const bool header_ok = avformat_write_header(impl->fmt, &opts) >= 0;
-    av_dict_free(&opts);
-    if (!header_ok) return false;
+    if (!mux::open_file_and_write_header(impl->fmt, path_utf, impl->container))
+        return false;
 
     impl->header_written = true;
     return true;
@@ -206,26 +143,9 @@ static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
         timing.pause_start_set = false;
     }
 
-    AVPacket* pkt = av_packet_alloc();
-    if (!pkt) return false;
-    if (av_new_packet(pkt, static_cast<int>(ep.data.size())) < 0) {
-        av_packet_free(&pkt);
-        return false;
-    }
-
-    pkt->stream_index = dst_stream->index;
-    memcpy(pkt->data, ep.data.data(), ep.data.size());
-    pkt->flags = ep.is_keyframe ? AV_PKT_FLAG_KEY : 0;
-    pkt->pts = ep.pts - timing.input_anchor_pts - timing.paused_pts;
-    pkt->dts = ep.dts - timing.input_anchor_dts - timing.paused_pts;
-    if (pkt->dts > pkt->pts) pkt->dts = pkt->pts;
-
-    AVRational src_tb = {ep.tb_num, ep.tb_den};
-    AVRational dst_tb = dst_stream->time_base;
-    av_packet_rescale_ts(pkt, src_tb, dst_tb);
-
-    bool ok = av_interleaved_write_frame(impl->fmt, pkt) >= 0;
-    av_packet_free(&pkt);
+    const int64_t pts_off = timing.input_anchor_pts + timing.paused_pts;
+    const int64_t dts_off = timing.input_anchor_dts + timing.paused_pts;
+    bool ok = mux::write_packet(impl->fmt, dst_stream, ep, pts_off, dts_off);
     if (ok) impl->wrote_packet = true;
     return ok;
 }

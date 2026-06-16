@@ -13,23 +13,9 @@ extern "C" {
 }
 
 #include <cstring>
-#include <cstdio>
-#include <cstdlib>
 #include <mutex>
 
 namespace encoding {
-
-// ── Diagnostic logging (temporary) ────────────────────────────────────────────
-static void diag_log(const char* msg)
-{
-    const char* tmp = std::getenv("TEMP");
-    if (!tmp) tmp = std::getenv("TMP");
-    if (!tmp) tmp = ".";
-    char path[320];
-    snprintf(path, sizeof(path), "%s\\monolith_enc_diag.txt", tmp);
-    FILE* f = fopen(path, "a");
-    if (f) { fprintf(f, "%s\n", msg); fclose(f); }
-}
 
 // ── probe_video_encoder ───────────────────────────────────────────────────────
 
@@ -260,14 +246,6 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         }
     }
     if (opened.empty()) { cleanup(); return false; }
-    {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-            "[enc_diag] video time_base after avcodec_open2: %d/%d  (cfg_fps=%d, encoder=%s)",
-            impl_->ctx->time_base.num, impl_->ctx->time_base.den,
-            cfg.fps, opened.c_str());
-        diag_log(buf);
-    }
     impl_->cfg_fps  = cfg.fps;
     impl_->enc_name = opened;
     if (cfg.scaling_filter == "bicubic") {
@@ -322,17 +300,6 @@ static void drain_video(ImplT* impl)
         ep.is_keyframe  = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
         ep.tb_num       = 1;
         ep.tb_den       = impl->cfg_fps;
-        {
-            static int pkt_count = 0;
-            if (pkt_count < 20) {
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                    "[enc_diag] video pkt #%d: dts=%ld pts=%ld dts_usec=%ld cfg_fps=%d",
-                    pkt_count++, (long)pkt->dts, (long)pkt->pts,
-                    (long)ep.dts_usec, impl->cfg_fps);
-                diag_log(buf);
-            }
-        }
         if (impl->sink) impl->sink(std::move(ep));
         av_packet_unref(pkt);
     }
@@ -486,15 +453,6 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
     av_channel_layout_default(&ctx->ch_layout, cfg.channels);
 
     if (avcodec_open2(ctx, codec, nullptr) < 0) { cleanup(); return false; }
-    {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-            "[enc_diag] audio time_base after avcodec_open2 (track %d): %d/%d  (cfg_sample_rate=%d)",
-            cfg.stream_index,
-            ctx->time_base.num, ctx->time_base.den,
-            cfg.sample_rate);
-        diag_log(buf);
-    }
 
     impl_->frame = av_frame_alloc();
     if (!impl_->frame) { cleanup(); return false; }
@@ -536,18 +494,6 @@ static void drain_audio(ImplT* impl)
         ep.is_keyframe  = true; // AAC frames are all independently decodable
         ep.tb_num       = 1;
         ep.tb_den       = impl->cfg_sample_rate;
-        {
-            static int apkt_count = 0;
-            if (apkt_count < 10) {
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                    "[enc_diag] audio pkt #%d (track %d): dts=%ld pts=%ld dts_usec=%ld sr=%d",
-                    apkt_count++, impl->stream_index,
-                    (long)pkt->dts, (long)pkt->pts,
-                    (long)ep.dts_usec, impl->cfg_sample_rate);
-                diag_log(buf);
-            }
-        }
         if (impl->sink) impl->sink(std::move(ep));
         av_packet_unref(pkt);
     }

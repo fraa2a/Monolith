@@ -76,7 +76,7 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   },
   "active_game": {
     "detection_enabled": true,
-    "poll_interval_ms": 30000,
+    "poll_interval_ms": 5000,
     "switch_debounce_ms": 3000,
     "min_confidence": 50,
     "fast_scan_enabled": true,
@@ -525,14 +525,14 @@ Config config_from_json(
         };
         config.active_game.detection_enabled         = ag_bool("detection_enabled",         true);
         config.active_game.fast_scan_enabled         = ag_bool("fast_scan_enabled",         true);
-        config.active_game.poll_interval_ms          = ag_int ("poll_interval_ms",          30000);
+        config.active_game.poll_interval_ms          = ag_int ("poll_interval_ms",          5000);
         config.active_game.switch_debounce_ms        = ag_int ("switch_debounce_ms",        3000);
         config.active_game.min_confidence            = ag_int ("min_confidence",            50);
         config.active_game.fast_scan_min_interval_ms = ag_int ("fast_scan_min_interval_ms", 1000);
 
         // Clamp to safe ranges.
         if (config.active_game.poll_interval_ms < 3000 || config.active_game.poll_interval_ms > 30000)
-            config.active_game.poll_interval_ms = 30000;
+            config.active_game.poll_interval_ms = 5000;
         if (config.active_game.switch_debounce_ms < 1000 || config.active_game.switch_debounce_ms > 15000)
             config.active_game.switch_debounce_ms = 3000;
         if (config.active_game.min_confidence < 0 || config.active_game.min_confidence > 100)
@@ -625,16 +625,8 @@ bool save(Config& config, std::string* error)
     return write_text(config.user_config_path, config.merged_json, error);
 }
 
-bool write_runtime_status(
-    const std::wstring& app_data_dir,
-    const RuntimeStatus& status,
-    std::string* error)
+std::string serialize_runtime_status(const RuntimeStatus& status)
 {
-    if (app_data_dir.empty()) {
-        if (error) *error = "AppData path not available";
-        return false;
-    }
-
     json doc;
     doc["monitors"] = json::array();
     for (const auto& mon : status.monitors) {
@@ -683,7 +675,21 @@ bool write_runtime_status(
     doc["encode_width"]  = status.encode_width;
     doc["encode_height"] = status.encode_height;
 
-    return write_text(app_data_dir + L"\\runtime-status.json", doc.dump(2), error);
+    return doc.dump(2);
+}
+
+bool write_runtime_status(
+    const std::wstring& app_data_dir,
+    const RuntimeStatus& status,
+    std::string* error)
+{
+    if (app_data_dir.empty()) {
+        if (error) *error = "AppData path not available";
+        return false;
+    }
+
+    return write_text(app_data_dir + L"\\runtime-status.json",
+                      serialize_runtime_status(status), error);
 }
 
 } // namespace settings

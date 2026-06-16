@@ -207,40 +207,52 @@ static void apply_native_window_theme(HWND hwnd)
 {
     BOOL dark = apps_use_light_theme() ? FALSE : TRUE;
 
-    if (HMODULE dwm = LoadLibraryW(L"dwmapi.dll")) {
-        using DwmSetWindowAttributeFn = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
-        auto set_attr = reinterpret_cast<DwmSetWindowAttributeFn>(
-            GetProcAddress(dwm, "DwmSetWindowAttribute"));
-        if (set_attr) {
-            DWORD attr = 20;
-            if (FAILED(set_attr(hwnd, attr, &dark, sizeof(dark)))) {
-                attr = 19;
-                set_attr(hwnd, attr, &dark, sizeof(dark));
-            }
+    // Resolve the dwmapi/uxtheme entry points once and cache them — this runs on
+    // every tray right-click and theme change, so repeated LoadLibrary/FreeLibrary
+    // would be pure waste.
+    using DwmSetWindowAttributeFn = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    using SetPreferredAppModeFn   = int (WINAPI*)(int);
+    using FlushMenuThemesFn       = void (WINAPI*)();
+    using SetWindowThemeFn        = HRESULT (WINAPI*)(HWND, LPCWSTR, LPCWSTR);
+
+    static const auto fns = [] {
+        struct {
+            DwmSetWindowAttributeFn set_attr        = nullptr;
+            SetPreferredAppModeFn   set_app_mode    = nullptr;
+            FlushMenuThemesFn       flush_menu      = nullptr;
+            SetWindowThemeFn        set_theme       = nullptr;
+        } f;
+        // Leaked intentionally for process lifetime — these modules stay loaded
+        // anyway and the handles never need releasing.
+        if (HMODULE dwm = LoadLibraryW(L"dwmapi.dll"))
+            f.set_attr = reinterpret_cast<DwmSetWindowAttributeFn>(
+                GetProcAddress(dwm, "DwmSetWindowAttribute"));
+        if (HMODULE ux = LoadLibraryW(L"uxtheme.dll")) {
+            f.set_app_mode = reinterpret_cast<SetPreferredAppModeFn>(
+                GetProcAddress(ux, MAKEINTRESOURCEA(135)));
+            f.flush_menu = reinterpret_cast<FlushMenuThemesFn>(
+                GetProcAddress(ux, MAKEINTRESOURCEA(136)));
+            f.set_theme = reinterpret_cast<SetWindowThemeFn>(
+                GetProcAddress(ux, "SetWindowTheme"));
         }
-        FreeLibrary(dwm);
+        return f;
+    }();
+
+    if (fns.set_attr) {
+        DWORD attr = 20;
+        if (FAILED(fns.set_attr(hwnd, attr, &dark, sizeof(dark)))) {
+            attr = 19;
+            fns.set_attr(hwnd, attr, &dark, sizeof(dark));
+        }
     }
 
-    if (HMODULE ux = LoadLibraryW(L"uxtheme.dll")) {
-        using SetPreferredAppModeFn = int (WINAPI*)(int);
-        using FlushMenuThemesFn = void (WINAPI*)();
-        auto set_app_mode = reinterpret_cast<SetPreferredAppModeFn>(
-            GetProcAddress(ux, MAKEINTRESOURCEA(135)));
-        auto flush_menu_themes = reinterpret_cast<FlushMenuThemesFn>(
-            GetProcAddress(ux, MAKEINTRESOURCEA(136)));
-        if (set_app_mode) {
-            set_app_mode(dark ? 2 : 3); // ForceDark / ForceLight.
-            if (flush_menu_themes)
-                flush_menu_themes();
-        }
-
-        using SetWindowThemeFn = HRESULT (WINAPI*)(HWND, LPCWSTR, LPCWSTR);
-        auto set_theme = reinterpret_cast<SetWindowThemeFn>(
-            GetProcAddress(ux, "SetWindowTheme"));
-        if (set_theme)
-            set_theme(hwnd, dark ? L"DarkMode_Explorer" : nullptr, nullptr);
-        FreeLibrary(ux);
+    if (fns.set_app_mode) {
+        fns.set_app_mode(dark ? 2 : 3); // ForceDark / ForceLight.
+        if (fns.flush_menu)
+            fns.flush_menu();
     }
+    if (fns.set_theme)
+        fns.set_theme(hwnd, dark ? L"DarkMode_Explorer" : nullptr, nullptr);
 }
 
 static capture::DisplayCapture      g_video;
@@ -253,6 +265,9 @@ static recording::ManualRecorder    g_recording;
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
+// Backoff after a failed encoder open: don't re-probe on every captured frame.
+static std::atomic<uint64_t> g_video_enc_retry_after_ms{ 0 };
+static constexpr uint64_t kVideoEncRetryBackoffMs = 2000;
 // ── OBS-style video pacer: fixed-rate thread feeds encoder ──────────────
 static HANDLE               g_pacer_thread       = nullptr;
 static HANDLE               g_pacer_stop_event   = nullptr;
@@ -267,8 +282,6 @@ struct PacerFrame {
 };
 
 static PacerFrame           g_pacer_shared;
-static uint64_t             g_pacer_last_read_id = 0;
-static int                  g_pacer_interval_ms  = 0;
 static int64_t              g_pacer_qpc_freq     = 0;  // QueryPerformanceFrequency
 static int64_t              g_pacer_start_qpc    = 0;  // QPC at pacer start
 static int64_t              g_pacer_frames_done  = 0;  // CFR frames emitted so far
@@ -302,8 +315,13 @@ static DWORD         g_last_fast_scan_ms = 0;
 static std::mutex g_status_mutex;
 static settings::RuntimeStatus g_runtime_status;
 
-// Re-writes AppData\Local\Monolith\runtime-status.json from g_runtime_status.
-// Callable from the WGC callback thread (encoder opens on first frame).
+// Re-writes AppData\Local\Monolith\runtime-status.json from g_runtime_status,
+// but only when the serialized content actually changed — the active-game poll
+// runs every few seconds and on every foreground change, and most ticks produce
+// identical status, so skipping no-op disk writes avoids needless I/O.
+static std::string g_last_runtime_status_json;
+static std::mutex  g_last_runtime_status_mutex;
+
 static void publish_runtime_status()
 {
     settings::RuntimeStatus snapshot;
@@ -312,6 +330,12 @@ static void publish_runtime_status()
         snapshot = g_runtime_status;
     }
     std::string error;
+    std::string json = settings::serialize_runtime_status(snapshot);
+    {
+        std::lock_guard<std::mutex> lk(g_last_runtime_status_mutex);
+        if (json == g_last_runtime_status_json) return; // unchanged: skip disk write
+        g_last_runtime_status_json = json;
+    }
     if (!settings::write_runtime_status(app_data_dir(), snapshot, &error))
         log_msg("settings", ("runtime-status write failed: " + error).c_str());
 }
@@ -363,14 +387,16 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
             DWORD w = WaitForSingleObject(g_pacer_stop_event,
                                           static_cast<DWORD>(tick_ms));
             if (w == WAIT_OBJECT_0) break;
-            if (w == WAIT_IO_COMPLETION) continue;
         }
 
-        // Pull the latest captured frame (if a new one arrived).
+        // Pull the latest captured frame (if a new one arrived).  Swap buffers
+        // under the lock instead of copying: the consumer takes ownership of the
+        // shared frame's storage and hands back its own (reused next push), so
+        // there is no per-frame full-frame memcpy on the consumer side.
         {
             std::lock_guard<std::mutex> lock(g_pacer_mutex);
             if (g_pacer_shared.frame_id != local_last_id) {
-                local_bgra    = g_pacer_shared.bgra;
+                std::swap(local_bgra, g_pacer_shared.bgra);
                 local_stride  = g_pacer_shared.stride;
                 local_width   = g_pacer_shared.width;
                 local_height  = g_pacer_shared.height;
@@ -916,23 +942,23 @@ static void stop_audio_system()
 
 static void start_default_audio_system()
 {
+    // start_endpoint_source() already closes its own tracks on failure, so the
+    // return values are only informative here.
     std::vector<int> desktop_tracks{1};
-    bool desktop_ok = start_endpoint_source(
+    start_endpoint_source(
         audio::WasapiCapture::Mode::Loopback,
         L"",
         desktop_tracks,
         "audio.sys",
         "WASAPI loopback started -> audio track 1");
-    if (!desktop_ok) close_audio_track(1);
 
     std::vector<int> mic_tracks{2};
-    bool mic_ok = start_endpoint_source(
+    start_endpoint_source(
         audio::WasapiCapture::Mode::Microphone,
         g_settings.primary_microphone_device_id,
         mic_tracks,
         "audio.mic",
         "WASAPI microphone started -> audio track 2");
-    if (!mic_ok) close_audio_track(2);
 }
 
 static void start_custom_audio_system()
@@ -1014,6 +1040,9 @@ static audio::DetectConfig build_detect_config()
 {
     audio::DetectConfig cfg;
     cfg.min_confidence = g_settings.active_game.min_confidence;
+    // Keep the live game's foreground bonus stable while a Monolith window
+    // (e.g. Settings) holds focus, so detection isn't invalidated temporarily.
+    cfg.sticky_foreground_pid = g_active_game_pid;
     for (const auto& s : g_settings.active_game.blacklist_processes)
         cfg.blacklist.push_back(utf8_to_wide(s));
     for (const auto& s : g_settings.active_game.whitelist_processes)
@@ -1048,7 +1077,7 @@ static void drop_active_game_capture(const char* reason_msg)
 // Hysteresis: a new candidate must remain the best choice for switch_debounce_ms
 // before the capture is swapped.  Only the Active Game capture is touched; other
 // captures, encoders, and the replay buffer are never restarted.
-static void poll_active_game()
+static void poll_active_game_impl()
 {
     if (g_active_game_tracks.empty()) return;
     if (!g_settings.active_game.detection_enabled) return;
@@ -1065,6 +1094,21 @@ static void poll_active_game()
     if (best_pid == 0) {
         g_pending_game_pid      = 0;
         g_pending_game_first_ms = 0;
+        // Reflect "no game" in the status only when nothing is being captured.
+        // (A live capture with a transient 0 this cycle keeps its display.)
+        if (g_active_game_pid == 0) {
+            std::lock_guard<std::mutex> lk(g_status_mutex);
+            g_runtime_status.active_game.process_id      = 0;
+            g_runtime_status.active_game.process_name.clear();
+            g_runtime_status.active_game.display_name.clear();
+            g_runtime_status.active_game.executable_path.clear();
+            g_runtime_status.active_game.confidence      = 0;
+            g_runtime_status.active_game.reason.clear();
+            g_runtime_status.active_game.capture_mode    = "none";
+            g_runtime_status.active_game.process_loopback_available = false;
+            g_runtime_status.active_game.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
+            g_runtime_status.active_game.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
+        }
         return;
     }
 
@@ -1114,7 +1158,7 @@ static void poll_active_game()
             g_runtime_status.active_game.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
             g_runtime_status.active_game.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
         }
-        publish_runtime_status();
+        // Status flushed by the poll_active_game() wrapper after this returns.
         return;
     }
 
@@ -1181,6 +1225,16 @@ static void poll_active_game()
         g_runtime_status.active_game.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
         g_runtime_status.active_game.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
     }
+    // Status flushed by the poll_active_game() wrapper after this returns.
+}
+
+// Public entry point: run a detection pass and always flush the updated status
+// to runtime-status.json so the UI reflects acquire/keep/lose transitions
+// (the timer/fast-scan callers relied on this; previously only the
+// acquire/switch branches published, so refreshes were lost).
+static void poll_active_game()
+{
+    poll_active_game_impl();
     publish_runtime_status();
 }
 
@@ -1238,6 +1292,7 @@ static void media_start(HWND hwnd)
     }
 
     g_video_enc_open_attempted.store(false, std::memory_order_release);
+    g_video_enc_retry_after_ms.store(0, std::memory_order_release);
     g_enc_w = 0;
     g_enc_h = 0;
 
@@ -1292,6 +1347,13 @@ static void media_start(HWND hwnd)
                 g_recording.state() == recording::RecordingState::Idle)
                 return;
             if (!g_video_enc.is_open()) {
+                // Respect the post-failure backoff window so a transient open
+                // failure (e.g. GPU busy / driver reset) doesn't get re-probed on
+                // every single captured frame.
+                if (GetTickCount64() <
+                    g_video_enc_retry_after_ms.load(std::memory_order_acquire))
+                    return;
+
                 bool expected = false;
                 if (!g_video_enc_open_attempted.compare_exchange_strong(
                         expected, true, std::memory_order_acq_rel)) {
@@ -1341,7 +1403,7 @@ static void media_start(HWND hwnd)
                             ? g_settings.extra_ffmpeg_options.c_str() : "");
                     log_msg("encoding", enc_msg);
                 } else {
-                    log_msg("encoding", "WARNING: no video encoder - replay disabled");
+                    log_msg("encoding", "WARNING: video encoder open failed - will retry");
                 }
 
                 if (enc_ok) {
@@ -1356,6 +1418,11 @@ static void media_start(HWND hwnd)
                     }
                     publish_runtime_status();
                 } else {
+                    // Re-arm so a later frame can retry after the backoff window.
+                    g_video_enc_retry_after_ms.store(
+                        GetTickCount64() + kVideoEncRetryBackoffMs,
+                        std::memory_order_release);
+                    g_video_enc_open_attempted.store(false, std::memory_order_release);
                     return;
                 }
             }

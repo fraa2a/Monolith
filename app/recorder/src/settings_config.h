@@ -21,7 +21,7 @@ struct AudioSourceConfig {
 // Configuration for the dynamic Active Game detection subsystem.
 struct ActiveGameSettings {
     bool detection_enabled         = true;
-    int  poll_interval_ms          = 30000;  // clamped 3000–30000
+    int  poll_interval_ms          = 5000;   // clamped 3000–30000
     int  switch_debounce_ms        = 3000;   // clamped 1000–15000
     int  min_confidence            = 50;     // clamped 0–100
     bool fast_scan_enabled         = true;
@@ -142,6 +142,10 @@ struct RuntimeStatus {
     int encode_width = 0;
     int encode_height = 0;
 };
+
+// Serializes RuntimeStatus to the JSON written to runtime-status.json.
+// Exposed so callers can diff against the previous content and skip no-op writes.
+std::string serialize_runtime_status(const RuntimeStatus& status);
 
 bool write_runtime_status(
     const std::wstring& app_data_dir,

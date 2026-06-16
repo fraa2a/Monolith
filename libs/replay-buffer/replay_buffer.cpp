@@ -1,5 +1,7 @@
 #include "replay_buffer.h"
 
+#include <encoding/mux_common.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -25,6 +27,8 @@ extern "C" {
 #include <vector>
 
 namespace replay_buffer {
+
+namespace mux = encoding::mux;
 
 // ── Impl ──────────────────────────────────────────────────────────────────────
 
@@ -196,26 +200,12 @@ static size_t find_clip_start(
     return best;
 }
 
-static std::string wcs_to_utf8(const std::wstring& ws)
-{
-    if (ws.empty()) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0,
-        ws.c_str(), static_cast<int>(ws.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string s(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0,
-        ws.c_str(), static_cast<int>(ws.size()),
-        s.data(), n, nullptr, nullptr);
-    return s;
-}
-
 static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec,
                                        const std::string& container)
 {
     SYSTEMTIME st;
     GetLocalTime(&st);
-    const wchar_t* ext = (container == "mp4") ? L"mp4" : L"mkv";
+    const wchar_t* ext = mux::file_extension(container);
     wchar_t path[MAX_PATH];
     swprintf_s(path, MAX_PATH,
         L"%s\\%04d%02d%02d_%02d%02d%02d_%ds_clip.%s",
@@ -225,13 +215,6 @@ static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec
         duration_sec,
         ext);
     return path;
-}
-
-static AVCodecID video_codec_id(encoding::VideoCodec codec)
-{
-    return codec == encoding::VideoCodec::H265
-        ? AV_CODEC_ID_HEVC
-        : AV_CODEC_ID_H264;
 }
 
 static std::wstring write_clip(
@@ -248,9 +231,8 @@ static std::wstring write_clip(
     // Ensure the output directory exists.
     CreateDirectoryW(out_dir.c_str(), nullptr);
 
-    const bool   is_mp4   = (container == "mp4");
     std::wstring path     = generate_clip_path(out_dir, duration_sec, container);
-    std::string  path_utf = wcs_to_utf8(path);
+    std::string  path_utf = mux::wcs_to_utf8(path);
     if (path_utf.empty()) return {};
 
     // ── Reorder packets by DTS (OBS-style: B-frame safety) ──────────────────
@@ -259,65 +241,15 @@ static std::wstring write_clip(
             return a.dts_usec < b.dts_usec;
         });
 
-    // ── Open output context ─────────────────────────────────────────────────
+    // ── Open output context + streams ───────────────────────────────────────
     AVFormatContext* fmt = nullptr;
-    if (avformat_alloc_output_context2(&fmt, nullptr,
-                                       is_mp4 ? "mp4" : "matroska",
-                                       path_utf.c_str()) < 0)
+    mux::StreamSet streams;
+    if (!mux::alloc_output(path_utf, container, vsp, audio_params, &fmt, &streams))
         return {};
+    AVStream* vs = streams.video;
+    std::array<AVStream*, 7>& audio_streams = streams.audio;
 
-    // ── Video stream ─────────────────────────────────────────────────────────
-    AVStream* vs = avformat_new_stream(fmt, nullptr);
-    if (!vs) { avformat_free_context(fmt); return {}; }
-    vs->codecpar->codec_type  = AVMEDIA_TYPE_VIDEO;
-    vs->codecpar->codec_id    = video_codec_id(vsp.codec);
-    vs->codecpar->width       = vsp.width;
-    vs->codecpar->height      = vsp.height;
-    vs->time_base             = {vsp.tb_num, vsp.tb_den};
-    if (!vsp.extradata.empty()) {
-        vs->codecpar->extradata = reinterpret_cast<uint8_t*>(
-            av_mallocz(vsp.extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
-        if (vs->codecpar->extradata) {
-            memcpy(vs->codecpar->extradata,
-                   vsp.extradata.data(), vsp.extradata.size());
-            vs->codecpar->extradata_size = static_cast<int>(vsp.extradata.size());
-        }
-    }
-
-    // ── Audio stream ─────────────────────────────────────────────────────────
-    std::array<AVStream*, 7> audio_streams{};
-    for (const auto& asp : audio_params) {
-        if (asp.stream_index < 1 || asp.stream_index > 6) continue;
-        AVStream* as = avformat_new_stream(fmt, nullptr);
-        if (!as) { avformat_free_context(fmt); return {}; }
-        as->codecpar->codec_type  = AVMEDIA_TYPE_AUDIO;
-        as->codecpar->codec_id    = AV_CODEC_ID_AAC;
-        as->codecpar->sample_rate = asp.sample_rate;
-        av_channel_layout_default(&as->codecpar->ch_layout, asp.channels);
-        as->time_base             = {asp.tb_num, asp.tb_den};
-        if (!asp.extradata.empty()) {
-            as->codecpar->extradata = reinterpret_cast<uint8_t*>(
-                av_mallocz(asp.extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
-            if (as->codecpar->extradata) {
-                memcpy(as->codecpar->extradata,
-                       asp.extradata.data(), asp.extradata.size());
-                as->codecpar->extradata_size = static_cast<int>(asp.extradata.size());
-            }
-        }
-        audio_streams[asp.stream_index] = as;
-    }
-
-    // ── Open file + write header ──────────────────────────────────────────────
-    if (avio_open(&fmt->pb, path_utf.c_str(), AVIO_FLAG_WRITE) < 0) {
-        avformat_free_context(fmt);
-        return {};
-    }
-    AVDictionary* mux_opts = nullptr;
-    if (is_mp4)
-        av_dict_set(&mux_opts, "movflags", "+faststart", 0);
-    int header_err = avformat_write_header(fmt, &mux_opts);
-    av_dict_free(&mux_opts);
-    if (header_err < 0) {
+    if (!mux::open_file_and_write_header(fmt, path_utf, container)) {
         avio_closep(&fmt->pb);
         avformat_free_context(fmt);
         return {};
@@ -362,28 +294,7 @@ static std::wstring write_clip(
         }
         if (!dst_stream) continue;
 
-        AVPacket* pkt = av_packet_alloc();
-        if (!pkt) continue;
-        if (av_new_packet(pkt, static_cast<int>(ep.data.size())) < 0) {
-            av_packet_free(&pkt);
-            continue;
-        }
-
-        pkt->stream_index = dst_stream->index;
-        memcpy(pkt->data, ep.data.data(), ep.data.size());
-        pkt->flags        = ep.is_keyframe ? AV_PKT_FLAG_KEY : 0;
-
-        pkt->pts = ep.pts - pts_off;
-        pkt->dts = ep.dts - dts_off;
-
-        // Rescale to stream timebase (packet and stream use the same,
-        // but this guards against future divergence).
-        AVRational src_tb = {ep.tb_num, ep.tb_den};
-        AVRational dst_tb = dst_stream->time_base;
-        av_packet_rescale_ts(pkt, src_tb, dst_tb);
-
-        av_interleaved_write_frame(fmt, pkt);
-        av_packet_free(&pkt);
+        mux::write_packet(fmt, dst_stream, ep, pts_off, dts_off);
     }
 
     av_write_trailer(fmt);

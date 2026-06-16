@@ -58,6 +58,12 @@ struct DetectConfig {
     std::vector<std::wstring> whitelist;    // processes that receive a strong bonus
     std::vector<std::wstring> manual_games; // user-explicitly-chosen games (strong bonus)
     int min_confidence = 50;               // 0–100; candidates below this are discarded
+    // When Monolith's own window (recorder or Settings) is in the foreground,
+    // the real game loses its foreground bonus and may drop below
+    // min_confidence — invalidating detection while Settings is open.  Set this
+    // to the currently-tracked game pid so its foreground bonus stays "sticky"
+    // while a Monolith window holds focus.  0 = no sticky fallback.
+    uint32_t sticky_foreground_pid = 0;
 };
 
 // Extended result returned by the config-driven detect_active_game overload.

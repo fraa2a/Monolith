@@ -33,6 +33,7 @@ struct WasapiCapture::Impl {
     winrt::com_ptr<IAudioClient>        client;
     winrt::com_ptr<IAudioCaptureClient> cap_client;
     WAVEFORMATEX*                       mix_fmt  = nullptr;
+    HANDLE                              event    = nullptr; // buffer-ready event (EVENTCALLBACK)
 
     std::thread           thread;
     std::atomic<bool>     running{ false };
@@ -167,6 +168,13 @@ static void capture_thread(ImplT* impl)
     const uint16_t bit_depth = impl->mix_fmt->wBitsPerSample;
 
     while (impl->running.load(std::memory_order_acquire)) {
+        // Event-driven: block until WASAPI signals a buffer is ready (no busy
+        // polling).  A 200 ms timeout bounds shutdown latency and guards against
+        // a missed signal.  Loopback streams only raise the event while audio is
+        // flowing, so the timeout also lets us re-check `running` during silence.
+        if (impl->event)
+            WaitForSingleObject(impl->event, 200);
+
         UINT32 packet_size = 0;
         HRESULT hr = impl->cap_client->GetNextPacketSize(&packet_size);
         if (FAILED(hr)) {
@@ -206,7 +214,10 @@ static void capture_thread(ImplT* impl)
             impl->cap_client->GetNextPacketSize(&packet_size);
         }
 
-        Sleep(10);
+        // Fallback pacing when no event handle is available (should not happen
+        // with EVENTCALLBACK, but keeps the loop from spinning if it ever is).
+        if (!impl->event)
+            Sleep(10);
     }
 
     CoUninitialize();
@@ -322,6 +333,20 @@ bool process_alive(uint32_t process_id)
 
 // ── Active-game detection ─────────────────────────────────────────────────────
 
+static std::wstring to_lower(std::wstring s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+    return s;
+}
+
+// Monolith's own processes (recorder + Settings sidecar).  Used so that opening
+// the Settings window does not steal the foreground bonus from the live game,
+// and shared with the shell/system exclusion list below.
+static bool is_self_process(const std::wstring& lower_name)
+{
+    return lower_name == L"monolith.exe" || lower_name == L"monolith.settings.exe";
+}
+
 // Built-in shell/system process names that are always excluded regardless of user config.
 static bool is_builtin_shell_process(const std::wstring& lower_name)
 {
@@ -329,18 +354,12 @@ static bool is_builtin_shell_process(const std::wstring& lower_name)
         L"explorer.exe", L"searchhost.exe", L"startmenuexperiencehost.exe",
         L"shellexperiencehost.exe", L"textinputhost.exe", L"taskmgr.exe",
         L"systemsettings.exe", L"lockapp.exe", L"dwm.exe",
-        L"monolith.exe", L"monolith.settings.exe",
     };
+    if (is_self_process(lower_name)) return true;
     for (const wchar_t* name : kBuiltinShell) {
         if (lower_name == name) return true;
     }
     return false;
-}
-
-static std::wstring to_lower(std::wstring s)
-{
-    std::transform(s.begin(), s.end(), s.begin(), ::towlower);
-    return s;
 }
 
 // Visible, unowned, non-tool top-level window of plausible app size.
@@ -415,6 +434,16 @@ ActiveGameResult detect_active_game(const DetectConfig& cfg)
     HWND fg = GetForegroundWindow();
     DWORD fg_pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &fg_pid);
+
+    // Sticky foreground: when our own recorder/Settings window holds focus
+    // (e.g. the user opened Settings, which defocuses the game), substitute the
+    // caller-supplied live game pid so it keeps its foreground bonus and does
+    // not drop below min_confidence while Settings is open.
+    if (fg_pid != 0 && cfg.sticky_foreground_pid != 0) {
+        ProcessInfo fg_info = process_info(fg_pid);
+        if (is_self_process(to_lower(fg_info.process_name)))
+            fg_pid = cfg.sticky_foreground_pid;
+    }
 
     // Enumerate plausible top-level windows.
     std::vector<GameCandidate> raw_candidates;
@@ -557,6 +586,7 @@ bool WasapiCapture::start_device(Mode mode, const std::wstring& device_id_value,
     if (FAILED(hr)) return false;
 
     DWORD flags = (mode == Mode::Loopback) ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
+    flags |= AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
     hr = impl_->client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         flags,
@@ -564,6 +594,11 @@ bool WasapiCapture::start_device(Mode mode, const std::wstring& device_id_value,
         0,
         impl_->mix_fmt,
         nullptr);
+    if (FAILED(hr)) return false;
+
+    impl_->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!impl_->event) return false;
+    hr = impl_->client->SetEventHandle(impl_->event);
     if (FAILED(hr)) return false;
 
     hr = impl_->client->GetService(
@@ -634,11 +669,16 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
 
     hr = impl_->client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
         kReftimesPerSec / 10,
         0,
         impl_->mix_fmt,
         nullptr);
+    if (FAILED(hr)) return false;
+
+    impl_->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!impl_->event) return false;
+    hr = impl_->client->SetEventHandle(impl_->event);
     if (FAILED(hr)) return false;
 
     hr = impl_->client->GetService(
@@ -664,6 +704,11 @@ void WasapiCapture::stop()
     if (impl_->mix_fmt) {
         CoTaskMemFree(impl_->mix_fmt);
         impl_->mix_fmt = nullptr;
+    }
+
+    if (impl_->event) {
+        CloseHandle(impl_->event);
+        impl_->event = nullptr;
     }
 
     impl_->cap_client = nullptr;

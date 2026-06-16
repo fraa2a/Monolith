@@ -52,7 +52,7 @@
   },
   "active_game": {
     "detection_enabled": true,
-    "poll_interval_ms": 30000,
+    "poll_interval_ms": 5000,
     "switch_debounce_ms": 3000,
     "min_confidence": 50,
     "fast_scan_enabled": true,
