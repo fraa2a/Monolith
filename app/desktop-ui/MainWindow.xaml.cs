@@ -406,19 +406,25 @@ public sealed partial class MainWindow : Window
         SelectComboBoxByTag(PrimaryMicComboBox, viewModel.PrimaryMicrophoneDeviceId);
     }
 
-    private void PopulateAddAudioSourceCombo()
+    private string addSourceSignature = "";
+
+    // Rebuilds the "Add source" combo from the current runtime status. Returns true
+    // if the visible item set actually changed. When unchanged it leaves Items
+    // untouched — mutating an open ComboBox's Items collapses it, so skipping the
+    // no-op rebuild lets the dropdown stay open when refreshed on open.
+    private bool PopulateAddAudioSourceCombo()
     {
-        AddAudioSourceComboBox.Items.Clear();
+        var items = new List<(string label, object tag)>();
         if (!viewModel.IsConfiguredSourceId("desktop"))
-            AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "All desktop audio", Tag = "desktop" });
+            items.Add(("All desktop audio", "desktop"));
         if (!viewModel.IsConfiguredSourceId("active_game"))
-            AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = "Active Game (Beta experimental)", Tag = "active_game" });
+            items.Add(("Active Game (Beta experimental)", "active_game"));
 
         RuntimeStatus? status = viewModel.RuntimeStatus;
         if (status is not null)
         {
             foreach (AudioDeviceInfo device in status.InputDevices.Where(d => !viewModel.IsConfiguredSourceId(InputSourceId(d.Id))))
-                AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = $"Input: {device.Name}", Tag = device });
+                items.Add(($"Input: {device.Name}", device));
 
             foreach (AudioSessionInfo session in status.AudioSessions)
             {
@@ -430,12 +436,21 @@ public sealed partial class MainWindow : Window
                     : session.DisplayName;
                 if (string.IsNullOrWhiteSpace(label))
                     label = $"PID {session.ProcessId}";
-                AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = $"App: {label}", Tag = session });
+                items.Add(($"App: {label}", session));
             }
         }
 
-        if (AddAudioSourceComboBox.Items.Count > 0)
+        bool empty = items.Count == 0;
+        string signature = empty ? "<empty>" : string.Join("␟", items.Select(i => i.label));
+        if (signature == addSourceSignature && AddAudioSourceComboBox.Items.Count > 0)
+            return false; // unchanged — don't disturb a (possibly open) dropdown
+
+        addSourceSignature = signature;
+        AddAudioSourceComboBox.Items.Clear();
+        if (!empty)
         {
+            foreach (var (label, tag) in items)
+                AddAudioSourceComboBox.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
             AddAudioSourceComboBox.IsEnabled = true;
             AddAudioSourceButton.IsEnabled = true;
             AddAudioSourceComboBox.SelectedIndex = 0;
@@ -447,6 +462,7 @@ public sealed partial class MainWindow : Window
             AddAudioSourceComboBox.IsEnabled = false;
             AddAudioSourceButton.IsEnabled = false;
         }
+        return true;
     }
 
     private void RefreshAudioSourcesList(string? selectedSourceId = null)
@@ -846,7 +862,11 @@ public sealed partial class MainWindow : Window
         try
         {
             await viewModel.RefreshAudioSourcesFromRecorderAsync();
-            PopulateAddAudioSourceCombo();
+            // Only the changed case rebuilds Items (which collapses the open
+            // dropdown); reopen it so the user sees the refreshed list. The
+            // unchanged case is a no-op and leaves the dropdown open.
+            if (PopulateAddAudioSourceCombo())
+                AddAudioSourceComboBox.IsDropDownOpen = true;
         }
         finally
         {
