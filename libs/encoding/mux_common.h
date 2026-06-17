@@ -41,7 +41,8 @@ bool alloc_output(const std::string&                          path_utf,
                   AVFormatContext**                           out_fmt,
                   StreamSet*                                  out_streams);
 
-// Opens the file and writes the container header (adds +faststart for mp4).
+// Opens the file and writes the container header. mp4 keeps the moov atom at the
+// end (no +faststart) so finalizing never rewrites the whole file on stop.
 // Returns false without closing on failure (caller frees the context).
 bool open_file_and_write_header(AVFormatContext* fmt,
                                 const std::string& path_utf,

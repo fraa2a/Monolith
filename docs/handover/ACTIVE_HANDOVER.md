@@ -84,6 +84,12 @@ Bumped to 0.5.1 in `VERSION`, `CMakeLists.txt`, `installer/monolith.iss`.
 
 ## Latest Continuation Notes
 
+- `libs/encoding/mux_common.cpp`: removed `+faststart` for mp4. It relocated the
+  moov atom to the file front at `av_write_trailer()` time, rewriting the entire
+  file on stop — a multi-GB manual recording froze the UI/hotkeys for seconds on
+  the message-loop thread. moov is now left at the end (OBS default); stop is
+  near-instant; local playback/editing unaffected. (Interrupted mp4 still needs a
+  moov to play — use mkv for crash resilience, same as before.)
 - `libs/capture/capture.cpp`: changed WGC surface QI from `as<IDirect3DDxgiInterfaceAccess>()` to `try_as<...>()` so a missing interface does not throw on the frame callback thread.
 - `libs/audio/audio.cpp`: silent WASAPI packets now preserve `data_bytes`.
 - `libs/encoding/encoding.cpp`: `AudioEncoder::push_pcm` now converts null PCM input into zeroed silence, preserving AAC timeline during silent stretches.

@@ -113,14 +113,18 @@ bool open_file_and_write_header(AVFormatContext* fmt,
                                 const std::string& path_utf,
                                 const std::string& container)
 {
+    (void)container; // container-specific muxer options are set in alloc_output
+
     if (avio_open(&fmt->pb, path_utf.c_str(), AVIO_FLAG_WRITE) < 0)
         return false;
 
-    AVDictionary* opts = nullptr;
-    if (container == "mp4")
-        av_dict_set(&opts, "movflags", "+faststart", 0);
-    const bool ok = avformat_write_header(fmt, &opts) >= 0;
-    av_dict_free(&opts);
+    // NB: no "+faststart" for mp4. faststart relocates the moov atom to the
+    // front of the file at av_write_trailer() time, which rewrites the ENTIRE
+    // file on stop — for a multi-GB manual recording that is many seconds of
+    // disk/CPU on the calling thread and froze the UI/hotkeys. We instead leave
+    // the moov at the end (OBS default); local playback and editing are
+    // unaffected, and finalizing only writes the index, so stop is near-instant.
+    const bool ok = avformat_write_header(fmt, nullptr) >= 0;
     return ok;
 }
 
