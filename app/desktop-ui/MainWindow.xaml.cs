@@ -91,6 +91,7 @@ public sealed partial class MainWindow : Window
         PopulateAudioControls();
         RefreshAudioSourcesList();
         UpdateCaptureBorderWarning();
+        UpdateVideoEncoderError();
         SyncComponentToggles();
         StartupTrace.MarkDuration("ConfigureWindow", sw.ElapsedMilliseconds);
         UpdateCorruptConfigBar();
@@ -577,6 +578,7 @@ public sealed partial class MainWindow : Window
                     await viewModel.RefreshRuntimeStatusAsync();
                     PopulateCaptureCombos();
                     UpdateCaptureBorderWarning();
+                    UpdateVideoEncoderError();
                     break;
                 case "Audio":
                     await viewModel.RefreshRuntimeStatusAsync();
@@ -718,6 +720,20 @@ public sealed partial class MainWindow : Window
             viewModel.ShowBorderSuppressedWarning ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    private void UpdateVideoEncoderError()
+    {
+        string? error = viewModel.RuntimeStatus?.VideoEncoderError;
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            VideoEncoderErrorText.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            VideoEncoderErrorText.Text = error;
+            VideoEncoderErrorText.Visibility = Visibility.Visible;
+        }
+    }
+
     // ── Component enable toggles ──────────────────────────────────────────────
 
     private void SyncComponentToggles()
@@ -818,6 +834,24 @@ public sealed partial class MainWindow : Window
 
         if (PrimaryMicComboBox.SelectedItem is ComboBoxItem item && item.Tag is string deviceId)
             viewModel.PrimaryMicrophoneDeviceId = deviceId;
+    }
+
+    private bool refreshingAudioSources;
+
+    private async void OnAddAudioSourceDropDownOpened(object? sender, object e)
+    {
+        if (refreshingAudioSources)
+            return;
+        refreshingAudioSources = true;
+        try
+        {
+            await viewModel.RefreshAudioSourcesFromRecorderAsync();
+            PopulateAddAudioSourceCombo();
+        }
+        finally
+        {
+            refreshingAudioSources = false;
+        }
     }
 
     private void OnAddAudioSource(object sender, RoutedEventArgs e)

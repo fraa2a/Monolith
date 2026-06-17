@@ -198,6 +198,7 @@ public sealed class SettingsService
             }
 
             status.ActiveEncoder = StringAt(obj, "active_encoder");
+            status.VideoEncoderError = StringAt(obj, "video_encoder_error");
             status.ActiveMonitorDevice = StringAt(obj, "active_monitor_device");
             status.BorderSuppressed = BoolAt(obj, "border_suppressed");
             status.EncodeWidth = IntAt(obj, "encode_width", 0);

@@ -256,6 +256,12 @@
                                 <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12" Padding="22">
                                     <StackPanel Spacing="14">
                                         <TextBlock Text="Video Encoder" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                        <TextBlock
+                                            x:Name="VideoEncoderErrorText"
+                                            Foreground="#F44336"
+                                            TextWrapping="Wrap"
+                                            FontSize="12"
+                                            Visibility="Collapsed" />
                                         <ComboBox
                                             x:Name="EncoderComboBox"
                                             Header="Encoder"
@@ -378,6 +384,7 @@
                                             <ComboBox
                                                 x:Name="AddAudioSourceComboBox"
                                                 Header="Add source"
+                                                DropDownOpened="OnAddAudioSourceDropDownOpened"
                                                 HorizontalAlignment="Stretch" />
                                             <Button x:Name="AddAudioSourceButton" Grid.Column="1" Content="Add" VerticalAlignment="Bottom" Click="OnAddAudioSource" />
                                         </Grid>

@@ -48,6 +48,7 @@ static constexpr WCHAR kMutexName[]   = L"Monolith_SingleInstance";
 static constexpr UINT  WM_TRAYICON        = WM_APP + 1;
 static constexpr UINT  WM_SETTINGS_RELOAD = WM_APP + 2;
 static constexpr UINT  WM_FAST_SCAN       = WM_APP + 3; // posted by the WinEvent fg hook
+static constexpr UINT  WM_REFRESH_AUDIO_SOURCES = WM_APP + 4; // posted by Settings UI on dropdown open
 
 enum Cmd : UINT {
     CMD_SAVE_REPLAY     = 1001,
@@ -258,7 +259,23 @@ static void apply_native_window_theme(HWND hwnd)
 static capture::DisplayCapture      g_video;
 static encoding::VideoEncoder       g_video_enc;
 static std::array<encoding::AudioEncoder, 6> g_audio_encoders;
-static std::vector<std::unique_ptr<audio::WasapiCapture>> g_audio_captures;
+
+// Per-track mixers (index 1..6; index 0 unused). A track gets a mixer only when
+// two or more enabled sources route to it; single-source tracks push straight to
+// their encoder. The mixer's sink forwards summed PCM into that track's encoder.
+static std::array<std::unique_ptr<encoding::TrackMixer>, 7> g_track_mixers;
+
+// One output route for a source: which track, and (when that track is mixed) the
+// source's id within the mixer. mixer_src == -1 means push directly to encoder.
+struct AudioRoute { int track = 0; int mixer_src = -1; };
+
+// A live capture plus the routes its callback writes to. Routes are kept so that
+// when a capture is removed (e.g. Active Game swap) its mixer slots are released.
+struct ActiveCapture {
+    std::unique_ptr<audio::WasapiCapture> capture;
+    std::vector<AudioRoute> routes;
+};
+static std::vector<ActiveCapture> g_audio_captures;
 static replay_buffer::ReplayBuffer  g_replay;
 static recording::ManualRecorder    g_recording;
 
@@ -794,10 +811,53 @@ static bool open_audio_track(int track)
     return ok;
 }
 
-static void close_audio_track(int track)
+// Number of enabled sources planned for each track (index 1..6). A track with
+// count >= 2 is mixed; count <= 1 pushes straight to the encoder. Recomputed by
+// start_*_audio_system before any source starts.
+static std::array<int, 7> g_track_plan_count{};
+
+// Ensure a mixer exists for `track`, wired to feed that track's encoder.
+static encoding::TrackMixer* ensure_track_mixer(int track)
 {
-    if (track < 1 || track > 6) return;
-    g_audio_encoders[track - 1].close();
+    if (track < 1 || track > 6) return nullptr;
+    if (g_track_mixers[track]) return g_track_mixers[track].get();
+
+    auto mixer = std::make_unique<encoding::TrackMixer>();
+    bool ok = mixer->open(48000, 2,
+        [track](const uint8_t* data, int bytes, int sr, int ch, int bd, bool is_float) {
+            g_audio_encoders[track - 1].push_pcm(data, bytes, sr, ch, bd, is_float);
+        });
+    if (!ok) return nullptr;
+    g_track_mixers[track] = std::move(mixer);
+    return g_track_mixers[track].get();
+}
+
+// Build output routes for a source given its requested tracks. Opens each
+// track's encoder; tracks planned for multiple sources get a mixer slot, others
+// route directly. Returns empty on total failure.
+static std::vector<AudioRoute> make_routes(const std::vector<int>& requested)
+{
+    std::vector<AudioRoute> routes;
+    for (int track : valid_tracks(requested)) {
+        if (!open_audio_track(track)) continue;
+        AudioRoute r;
+        r.track = track;
+        if (g_track_plan_count[track] > 1) {
+            encoding::TrackMixer* mixer = ensure_track_mixer(track);
+            r.mixer_src = mixer ? mixer->add_source() : -1;
+        }
+        routes.push_back(r);
+    }
+    return routes;
+}
+
+// Release the mixer slots a capture held; close encoders only for direct routes.
+static void release_routes(const std::vector<AudioRoute>& routes)
+{
+    for (const auto& r : routes) {
+        if (r.mixer_src >= 0 && g_track_mixers[r.track])
+            g_track_mixers[r.track]->remove_source(r.mixer_src);
+    }
 }
 
 static void publish_audio_params()
@@ -811,27 +871,33 @@ static void publish_audio_params()
     g_recording.set_audio_params(params);
 }
 
-static void push_audio_to_tracks(const std::vector<int>& tracks,
+static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
                                  const audio::PacketInfo& p,
                                  const char* log_tag)
 {
     if (p.seq % 500 == 0) {
         char buf[160];
         snprintf(buf, sizeof(buf),
-            "seq=%-6u  frames=%-4u  sr=%u  ch=%u tracks=%zu%s",
+            "seq=%-6u  frames=%-4u  sr=%u  ch=%u routes=%zu%s",
             p.seq, p.frame_count, p.sample_rate, p.channels,
-            tracks.size(), p.silent ? "  [silent]" : "");
+            routes.size(), p.silent ? "  [silent]" : "");
         log_msg(log_tag, buf);
     }
 
     if (p.data_bytes == 0) return;
-    for (int track : tracks) {
-        if (track < 1 || track > 6) continue;
-        g_audio_encoders[track - 1].push_pcm(
-            p.data, static_cast<int>(p.data_bytes),
-            static_cast<int>(p.sample_rate),
-            static_cast<int>(p.channels),
-            static_cast<int>(p.bit_depth), p.is_float);
+    for (const auto& r : routes) {
+        if (r.track < 1 || r.track > 6) continue;
+        if (r.mixer_src >= 0 && g_track_mixers[r.track]) {
+            g_track_mixers[r.track]->push(
+                r.mixer_src, p.data, static_cast<int>(p.data_bytes),
+                static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
+                static_cast<int>(p.bit_depth), p.is_float);
+        } else {
+            g_audio_encoders[r.track - 1].push_pcm(
+                p.data, static_cast<int>(p.data_bytes),
+                static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
+                static_cast<int>(p.bit_depth), p.is_float);
+        }
     }
 }
 
@@ -841,33 +907,23 @@ static bool start_endpoint_source(audio::WasapiCapture::Mode mode,
                                   const char* log_tag,
                                   const char* label)
 {
-    tracks = valid_tracks(tracks);
-    if (tracks.empty()) return false;
-    for (int track : tracks) {
-        if (!open_audio_track(track)) {
-            for (int opened : tracks) {
-                if (opened == track) break;
-                close_audio_track(opened);
-            }
-            return false;
-        }
-    }
+    std::vector<AudioRoute> routes = make_routes(tracks);
+    if (routes.empty()) return false;
 
     auto capture = std::make_unique<audio::WasapiCapture>();
     bool ok = capture->start_device(mode, device_id,
-        [tracks = std::move(tracks), log_tag](audio::PacketInfo const& p) {
-            push_audio_to_tracks(tracks, p, log_tag);
+        [routes, log_tag](audio::PacketInfo const& p) {
+            push_audio_to_routes(routes, p, log_tag);
         });
 
     if (ok) {
-        g_audio_captures.push_back(std::move(capture));
+        g_audio_captures.push_back({std::move(capture), routes});
         log_msg(log_tag, label);
         return true;
     }
 
     log_msg(log_tag, "WARNING: source failed to start");
-    for (int track : tracks)
-        close_audio_track(track);
+    release_routes(routes);
     return false;
 }
 
@@ -876,33 +932,24 @@ static bool start_process_source(uint32_t pid,
                                  const char* log_tag,
                                  const char* label)
 {
-    tracks = valid_tracks(tracks);
-    if (pid == 0 || tracks.empty()) return false;
-    for (int track : tracks) {
-        if (!open_audio_track(track)) {
-            for (int opened : tracks) {
-                if (opened == track) break;
-                close_audio_track(opened);
-            }
-            return false;
-        }
-    }
+    if (pid == 0) return false;
+    std::vector<AudioRoute> routes = make_routes(tracks);
+    if (routes.empty()) return false;
 
     auto capture = std::make_unique<audio::WasapiCapture>();
     bool ok = capture->start_process_loopback(pid,
-        [tracks = std::move(tracks), log_tag](audio::PacketInfo const& p) {
-            push_audio_to_tracks(tracks, p, log_tag);
+        [routes, log_tag](audio::PacketInfo const& p) {
+            push_audio_to_routes(routes, p, log_tag);
         });
 
     if (ok) {
-        g_audio_captures.push_back(std::move(capture));
+        g_audio_captures.push_back({std::move(capture), routes});
         log_msg(log_tag, label);
         return true;
     }
 
     log_msg(log_tag, "WARNING: process loopback failed");
-    for (int track : tracks)
-        close_audio_track(track);
+    release_routes(routes);
     return false;
 }
 
@@ -926,12 +973,15 @@ static uint32_t resolve_configured_process(const settings::AudioSourceConfig& so
 
 static void stop_audio_system()
 {
-    for (auto& capture : g_audio_captures) {
-        if (capture) capture->stop();
+    for (auto& ac : g_audio_captures) {
+        if (ac.capture) ac.capture->stop();
     }
     g_audio_captures.clear();
+    for (auto& mixer : g_track_mixers)
+        mixer.reset();
     for (auto& encoder : g_audio_encoders)
         encoder.close();
+    g_track_plan_count.fill(0);
     g_active_game_tracks.clear();
     g_active_game_pid           = 0;
     g_active_game_capture       = nullptr;
@@ -963,28 +1013,18 @@ static void start_default_audio_system()
 
 static void start_custom_audio_system()
 {
-    std::array<std::string, 7> track_owner{};
-    auto claim_tracks = [&](const settings::AudioSourceConfig& source) {
-        std::vector<int> tracks;
-        for (int track : valid_tracks(source.tracks)) {
-            if (track_owner[track].empty()) {
-                track_owner[track] = source.id.empty() ? source.name : source.id;
-                tracks.push_back(track);
-                continue;
-            }
-            char msg[256];
-            snprintf(msg, sizeof(msg),
-                "track %d already owned by %s; skipping source %s until mixer is implemented",
-                track, track_owner[track].c_str(),
-                source.name.empty() ? source.id.c_str() : source.name.c_str());
-            log_msg("audio.route", msg);
-        }
-        return tracks;
-    };
+    // Plan first: count how many enabled sources route to each track so make_routes()
+    // knows which tracks need a mixer (>= 2 sources) vs a direct encoder feed.
+    g_track_plan_count.fill(0);
+    for (const auto& source : g_settings.audio_sources) {
+        if (!source.enabled) continue;
+        for (int track : valid_tracks(source.tracks))
+            g_track_plan_count[track]++;
+    }
 
     for (const auto& source : g_settings.audio_sources) {
         if (!source.enabled) continue;
-        std::vector<int> tracks = claim_tracks(source);
+        std::vector<int> tracks = valid_tracks(source.tracks);
         if (tracks.empty()) continue;
 
         if (source.type == "desktop") {
@@ -1057,8 +1097,9 @@ static void drop_active_game_capture(const char* reason_msg)
 {
     if (g_active_game_capture == nullptr) return;
     for (auto it = g_audio_captures.begin(); it != g_audio_captures.end(); ++it) {
-        if (it->get() == g_active_game_capture) {
-            (*it)->stop();
+        if (it->capture.get() == g_active_game_capture) {
+            it->capture->stop();
+            release_routes(it->routes);
             g_audio_captures.erase(it);
             break;
         }
@@ -1132,7 +1173,7 @@ static void poll_active_game_impl()
                                        "audio.game", "active game audio started");
         if (ok) {
             g_active_game_pid          = best_pid;
-            g_active_game_capture      = g_audio_captures.back().get();
+            g_active_game_capture      = g_audio_captures.back().capture.get();
             g_active_game_capture_mode = "process_loopback";
         } else {
             g_active_game_capture_mode = "unavailable";
@@ -1188,13 +1229,14 @@ static void poll_active_game_impl()
         return;
     }
 
-    audio::WasapiCapture* new_capture = g_audio_captures.back().get();
+    audio::WasapiCapture* new_capture = g_audio_captures.back().capture.get();
 
     // Remove old capture — only the Active Game source, nothing else.
     if (g_active_game_capture != nullptr) {
         for (auto it = g_audio_captures.begin(); it != g_audio_captures.end(); ++it) {
-            if (it->get() == g_active_game_capture) {
-                (*it)->stop();
+            if (it->capture.get() == g_active_game_capture) {
+                it->capture->stop();
+                release_routes(it->routes);
                 g_audio_captures.erase(it);
                 break;
             }
@@ -1413,11 +1455,24 @@ static void media_start(HWND hwnd)
                     {
                         std::lock_guard<std::mutex> lk(g_status_mutex);
                         g_runtime_status.active_encoder = g_video_enc.encoder_name();
+                        g_runtime_status.video_encoder_error.clear();
                         g_runtime_status.encode_width   = g_enc_w;
                         g_runtime_status.encode_height  = g_enc_h;
                     }
                     publish_runtime_status();
                 } else {
+                    {
+                        char err[160];
+                        snprintf(err, sizeof(err),
+                            "No usable video encoder for %dx%d @%dfps (backend: %s). Retrying…",
+                            g_enc_w, g_enc_h, g_settings.video_fps,
+                            g_settings.encoder_backend.empty()
+                                ? "auto" : g_settings.encoder_backend.c_str());
+                        std::lock_guard<std::mutex> lk(g_status_mutex);
+                        g_runtime_status.active_encoder.clear();
+                        g_runtime_status.video_encoder_error = err;
+                    }
+                    publish_runtime_status();
                     // Re-arm so a later frame can retry after the backoff window.
                     g_video_enc_retry_after_ms.store(
                         GetTickCount64() + kVideoEncRetryBackoffMs,
@@ -1462,6 +1517,11 @@ static void media_stop()
         if (!path.empty()) log_path("recording", "recording saved: ", path);
     }
     g_video_enc_open_attempted.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(g_status_mutex);
+        g_runtime_status.active_encoder.clear();
+        g_runtime_status.video_encoder_error.clear();
+    }
     log_msg("app", "capture + audio + encoding stopped");
 }
 
@@ -2066,6 +2126,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_SETTINGS_RELOAD:
         reload_settings_from_disk(hwnd);
+        return 0;
+
+    case WM_REFRESH_AUDIO_SOURCES:
+        // On-demand re-enumeration requested by the Settings UI (e.g. when the
+        // user opens the "Add source" dropdown). Refresh the live audio session
+        // list and rewrite runtime-status.json synchronously so the caller sees
+        // current sessions as soon as this returns.
+        refresh_audio_runtime_status();
+        publish_runtime_status();
         return 0;
 
     default:

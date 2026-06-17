@@ -257,31 +257,23 @@ std::vector<DeviceInfo> enumerate_input_devices()
     return result;
 }
 
-std::vector<ProcessAudioSessionInfo> enumerate_render_sessions()
+// Append the active audio sessions of a single render endpoint to `result`,
+// skipping PIDs already present in `seen` (deduplication across endpoints).
+static void enumerate_sessions_for_device(IMMDevice* device,
+                                          std::vector<ProcessAudioSessionInfo>& result,
+                                          std::vector<uint32_t>& seen)
 {
-    std::vector<ProcessAudioSessionInfo> result;
-    winrt::com_ptr<IMMDeviceEnumerator> enumerator;
-    HRESULT hr = CoCreateInstance(
-        __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-        __uuidof(IMMDeviceEnumerator), enumerator.put_void());
-    if (FAILED(hr)) return result;
-
-    winrt::com_ptr<IMMDevice> device;
-    if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, device.put())))
-        return result;
-
     winrt::com_ptr<IAudioSessionManager2> manager;
     if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
                                 manager.put_void())))
-        return result;
+        return;
 
     winrt::com_ptr<IAudioSessionEnumerator> sessions;
     if (FAILED(manager->GetSessionEnumerator(sessions.put())))
-        return result;
+        return;
 
     int count = 0;
     sessions->GetCount(&count);
-    std::vector<uint32_t> seen;
     for (int i = 0; i < count; ++i) {
         winrt::com_ptr<IAudioSessionControl> session;
         if (FAILED(sessions->GetSession(i, session.put()))) continue;
@@ -306,6 +298,32 @@ std::vector<ProcessAudioSessionInfo> enumerate_render_sessions()
                 ? (L"PID " + std::to_wstring(pid))
                 : info.process_name;
         result.push_back(std::move(info));
+    }
+}
+
+std::vector<ProcessAudioSessionInfo> enumerate_render_sessions()
+{
+    std::vector<ProcessAudioSessionInfo> result;
+    winrt::com_ptr<IMMDeviceEnumerator> enumerator;
+    HRESULT hr = CoCreateInstance(
+        __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+        __uuidof(IMMDeviceEnumerator), enumerator.put_void());
+    if (FAILED(hr)) return result;
+
+    // Enumerate sessions on every active render endpoint, not just the default
+    // one: an app (e.g. Discord) may render to a non-default output device, and
+    // its session would otherwise never appear in the source list.
+    winrt::com_ptr<IMMDeviceCollection> devices;
+    if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, devices.put())))
+        return result;
+
+    UINT count = 0;
+    devices->GetCount(&count);
+    std::vector<uint32_t> seen;
+    for (UINT i = 0; i < count; ++i) {
+        winrt::com_ptr<IMMDevice> device;
+        if (FAILED(devices->Item(i, device.put()))) continue;
+        enumerate_sessions_for_device(device.get(), result, seen);
     }
     return result;
 }

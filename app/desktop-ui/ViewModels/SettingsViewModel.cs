@@ -437,6 +437,23 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ShowBorderSuppressedWarning));
     }
 
+    // Force the recorder to re-enumerate live audio sessions, then re-read the
+    // refreshed status file. Used when the user opens the "Add source" dropdown
+    // so newly started apps (e.g. Discord) appear without restarting the recorder.
+    public async Task RefreshAudioSourcesFromRecorderAsync()
+    {
+        RuntimeStatus? status = await Task.Run(() =>
+        {
+            RecorderReloadNotifier.RequestAudioSourceRefresh();
+            return service.LoadRuntimeStatus();
+        });
+        runtimeStatus = status;
+        OnPropertyChanged(nameof(RuntimeStatus));
+        OnPropertyChanged(nameof(HasRuntimeStatus));
+        OnPropertyChanged(nameof(RuntimeStatusLoaded));
+        OnPropertyChanged(nameof(ShowBorderSuppressedWarning));
+    }
+
     public bool Save()
     {
         if (!Validate(out string error))

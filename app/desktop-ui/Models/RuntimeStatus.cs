@@ -48,6 +48,7 @@ public sealed class RuntimeStatus
     public ActiveGameStatus? ActiveGame { get; set; }
     public List<string> AvailableEncoders { get; set; } = new();
     public string ActiveEncoder { get; set; } = "";
+    public string VideoEncoderError { get; set; } = "";
     public string ActiveMonitorDevice { get; set; } = "";
     public bool BorderSuppressed { get; set; }
     public int EncodeWidth { get; set; }

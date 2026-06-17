@@ -137,6 +137,7 @@ struct RuntimeStatus {
     ActiveGameStatus active_game;           // extended; was RuntimeAudioSession
     std::vector<std::string> available_encoders;
     std::string active_encoder;        // "" until the encoder opens
+    std::string video_encoder_error;   // "" when ok; set when encoder open fails
     std::wstring active_monitor_device;
     bool border_suppressed = false;
     int encode_width = 0;

@@ -113,7 +113,12 @@ Bumped to 0.5.1 in `VERSION`, `CMakeLists.txt`, `installer/monolith.iss`.
 
 ## Not Implemented Yet
 
-- PCM mixer for multiple simultaneous sources sharing the same output track.
+- (done) PCM mixer for multiple simultaneous sources sharing the same output track:
+  `encoding::TrackMixer` resamples each source to a canonical 48k/2ch float format,
+  buffers per-source FIFOs, and a wall-clock-paced thread sums + clips into the
+  track encoder. Routing in `main.cpp` counts sources per track; tracks with >= 2
+  sources go through a mixer, single-source tracks push directly. Needs runtime
+  soak testing for A/V sync and overrun behavior.
 - Long-session A/V sync soak tests for the new multi-track audio path.
 - Game detection is heuristic/best-effort; confidence scoring reduces false positives but is not infallible. Process-loopback requires Windows 10 21H2+ and is not guaranteed for all games/launchers.
 - True live audio re-route without restarting the audio pipeline (Active Game source swaps its own capture only; other sources still require a pipeline restart).

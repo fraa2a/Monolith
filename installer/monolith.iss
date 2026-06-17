@@ -10,7 +10,7 @@
 ; PrivilegesRequired=lowest so WinSparkle can run the updater without UAC.
 
 #ifndef MonolithVersion
-  #define MonolithVersion "0.5.4"
+  #define MonolithVersion "1.2.0"
 #endif
 
 #define MonolithName "Monolith"

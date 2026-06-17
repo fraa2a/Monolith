@@ -670,6 +670,7 @@ std::string serialize_runtime_status(const RuntimeStatus& status)
     };
     doc["available_encoders"] = status.available_encoders;
     doc["active_encoder"] = status.active_encoder;
+    doc["video_encoder_error"] = status.video_encoder_error;
     doc["active_monitor_device"] = wide_to_utf8(status.active_monitor_device);
     doc["border_suppressed"] = status.border_suppressed;
     doc["encode_width"]  = status.encode_width;

@@ -12,8 +12,15 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 namespace encoding {
 
@@ -645,6 +652,213 @@ void AudioEncoder::close()
     impl_->swr_src_fmt   = AV_SAMPLE_FMT_NONE;
     impl_->stream_index  = 1;
     impl_->asp           = {};
+}
+
+// ── TrackMixer ────────────────────────────────────────────────────────────────
+//
+// Canonical mix format is interleaved 32-bit float (AV_SAMPLE_FMT_FLT). Each
+// source owns a swr context (its native WASAPI format → canonical) plus a FIFO
+// of converted samples. A wall-clock-paced thread wakes every kMixIntervalMs,
+// computes how many output frames correspond to elapsed real time, sums that
+// many frames from every source (zero-filling sources that are behind), clips
+// to [-1, 1], and forwards the block to the sink.
+
+namespace {
+constexpr int kMixIntervalMs   = 10;   // mix cadence
+constexpr int kMaxFifoFrames   = 48000 * 2; // ~2 s cap per source at 48 kHz
+}
+
+struct MixSource {
+    SwrContext*    swr      = nullptr;
+    AVAudioFifo*   fifo     = nullptr;
+    int            src_rate = 0;
+    int            src_ch   = 0;
+    AVSampleFormat src_fmt  = AV_SAMPLE_FMT_NONE;
+};
+
+struct TrackMixer::Impl {
+    std::mutex                          mutex;       // guards sources map + swr/fifo
+    std::map<int, std::unique_ptr<MixSource>> sources;
+    int                                 next_id   = 0;
+    int                                 out_rate  = 48000;
+    int                                 out_ch    = 2;
+    Sink                                sink;
+    std::thread                         thread;
+    std::atomic<bool>                   running{false};
+
+    void reset_source_swr(MixSource& s, int rate, int ch, AVSampleFormat fmt)
+    {
+        if (s.swr) swr_free(&s.swr);
+        AVChannelLayout src_chl{}; av_channel_layout_default(&src_chl, ch);
+        AVChannelLayout dst_chl{}; av_channel_layout_default(&dst_chl, out_ch);
+        swr_alloc_set_opts2(&s.swr,
+            &dst_chl, AV_SAMPLE_FMT_FLT, out_rate,
+            &src_chl, fmt,               rate,
+            0, nullptr);
+        av_channel_layout_uninit(&src_chl);
+        av_channel_layout_uninit(&dst_chl);
+        if (s.swr && swr_init(s.swr) < 0) swr_free(&s.swr);
+        s.src_rate = rate; s.src_ch = ch; s.src_fmt = fmt;
+    }
+};
+
+TrackMixer::TrackMixer()  : impl_(new Impl()) {}
+TrackMixer::~TrackMixer() { close(); delete impl_; }
+
+bool TrackMixer::is_open() const { return impl_->running.load(std::memory_order_acquire); }
+
+int TrackMixer::source_count() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return static_cast<int>(impl_->sources.size());
+}
+
+bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
+{
+    if (out_sample_rate <= 0 || out_channels <= 0) return false;
+    close();
+    impl_->out_rate = out_sample_rate;
+    impl_->out_ch   = out_channels;
+    impl_->sink     = std::move(sink);
+    impl_->running.store(true, std::memory_order_release);
+
+    impl_->thread = std::thread([this] {
+        using clock = std::chrono::steady_clock;
+        auto last = clock::now();
+        const int ch = impl_->out_ch;
+        std::vector<float> acc;   // accumulator (interleaved)
+        std::vector<float> tmp;   // per-source read buffer (interleaved)
+
+        while (impl_->running.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kMixIntervalMs));
+            auto now = clock::now();
+            int64_t elapsed_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(now - last).count();
+            // Frames of output that correspond to the elapsed wall-clock time.
+            int frames = static_cast<int>(
+                (elapsed_us * impl_->out_rate) / 1'000'000);
+            if (frames <= 0) continue;
+            last = now;
+
+            acc.assign(static_cast<size_t>(frames) * ch, 0.0f);
+            int mixed_sources = 0;
+
+            {
+                std::lock_guard lk(impl_->mutex);
+                if (impl_->sources.empty()) continue;
+                tmp.resize(static_cast<size_t>(frames) * ch);
+                for (auto& [id, sp] : impl_->sources) {
+                    if (!sp->fifo) continue;
+                    int avail = av_audio_fifo_size(sp->fifo);
+                    int take  = std::min(frames, avail);
+                    if (take <= 0) continue;
+                    void* dst[1] = { tmp.data() };
+                    int got = av_audio_fifo_read(sp->fifo, dst, take);
+                    if (got <= 0) continue;
+                    size_t n = static_cast<size_t>(got) * ch;
+                    for (size_t i = 0; i < n; ++i) acc[i] += tmp[i];
+                    ++mixed_sources;
+                }
+            }
+
+            if (mixed_sources == 0) continue;
+
+            // Clip to [-1, 1] to avoid wrap/overflow on summed sources.
+            for (float& v : acc) {
+                if (v >  1.0f) v =  1.0f;
+                else if (v < -1.0f) v = -1.0f;
+            }
+
+            if (impl_->sink) {
+                impl_->sink(
+                    reinterpret_cast<const uint8_t*>(acc.data()),
+                    static_cast<int>(acc.size() * sizeof(float)),
+                    impl_->out_rate, ch, 32, /*is_float=*/true);
+            }
+        }
+    });
+    return true;
+}
+
+int TrackMixer::add_source()
+{
+    if (!is_open()) return -1;
+    std::lock_guard lk(impl_->mutex);
+    int id = impl_->next_id++;
+    auto src = std::make_unique<MixSource>();
+    src->fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLT, impl_->out_ch, impl_->out_rate);
+    if (!src->fifo) return -1;
+    impl_->sources.emplace(id, std::move(src));
+    return id;
+}
+
+void TrackMixer::remove_source(int source_id)
+{
+    std::lock_guard lk(impl_->mutex);
+    auto it = impl_->sources.find(source_id);
+    if (it == impl_->sources.end()) return;
+    if (it->second->swr)  swr_free(&it->second->swr);
+    if (it->second->fifo) av_audio_fifo_free(it->second->fifo);
+    impl_->sources.erase(it);
+}
+
+void TrackMixer::push(int source_id, const uint8_t* data, int bytes,
+                      int sample_rate, int channels, int bit_depth, bool is_float)
+{
+    if (bytes <= 0 || sample_rate <= 0 || channels <= 0 || bit_depth <= 0) return;
+    AVSampleFormat src_fmt = wasapi_to_av_fmt(bit_depth, is_float);
+    int src_frames = bytes / (bit_depth / 8 * channels);
+    if (src_frames <= 0) return;
+
+    std::vector<uint8_t> silence;
+    const uint8_t* src_data = data;
+    if (!src_data) { silence.assign(static_cast<size_t>(bytes), 0); src_data = silence.data(); }
+
+    std::lock_guard lk(impl_->mutex);
+    auto it = impl_->sources.find(source_id);
+    if (it == impl_->sources.end()) return;
+    MixSource& s = *it->second;
+
+    if (!s.swr || s.src_rate != sample_rate || s.src_ch != channels || s.src_fmt != src_fmt)
+        impl_->reset_source_swr(s, sample_rate, channels, src_fmt);
+    if (!s.swr) return;
+
+    int max_out = static_cast<int>(av_rescale_rnd(
+        swr_get_delay(s.swr, sample_rate) + src_frames,
+        impl_->out_rate, sample_rate, AV_ROUND_UP));
+    if (max_out <= 0) return;
+
+    uint8_t** dst = nullptr; int dst_linesize = 0;
+    if (av_samples_alloc_array_and_samples(
+            &dst, &dst_linesize, impl_->out_ch, max_out, AV_SAMPLE_FMT_FLT, 0) < 0)
+        return;
+
+    int converted = swr_convert(s.swr, dst, max_out, &src_data, src_frames);
+    if (converted > 0) {
+        // Drop oldest data if a source overruns (downstream stalled / paused).
+        if (av_audio_fifo_size(s.fifo) + converted > kMaxFifoFrames) {
+            int drop = av_audio_fifo_size(s.fifo) + converted - kMaxFifoFrames;
+            av_audio_fifo_drain(s.fifo, drop);
+        }
+        av_audio_fifo_write(s.fifo, reinterpret_cast<void**>(dst), converted);
+    }
+    av_freep(&dst[0]);
+    av_freep(&dst);
+}
+
+void TrackMixer::close()
+{
+    if (impl_->running.exchange(false, std::memory_order_acq_rel)) {
+        if (impl_->thread.joinable()) impl_->thread.join();
+    }
+    std::lock_guard lk(impl_->mutex);
+    for (auto& [id, sp] : impl_->sources) {
+        if (sp->swr)  swr_free(&sp->swr);
+        if (sp->fifo) av_audio_fifo_free(sp->fifo);
+    }
+    impl_->sources.clear();
+    impl_->next_id = 0;
+    impl_->sink    = nullptr;
 }
 
 } // namespace encoding

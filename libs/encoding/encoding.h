@@ -140,4 +140,51 @@ private:
     Impl* impl_;
 };
 
+// Mixes PCM from multiple capture sources into a single output stream for one
+// audio track. Each source is resampled to a canonical format and buffered;
+// an internal wall-clock-paced thread sums all sources (with clipping) and
+// emits a steady output stream through the sink, so the downstream encoder
+// timeline advances at real-time rate regardless of per-source bursts/gaps.
+//
+// Used only when two or more sources are routed to the same track; a single
+// source still feeds its encoder directly without going through the mixer.
+class TrackMixer {
+public:
+    // Sink receives mixed PCM in the canonical format (interleaved float).
+    // Signature mirrors AudioEncoder::push_pcm so it can forward directly.
+    using Sink = std::function<void(const uint8_t* data, int bytes,
+                                    int sample_rate, int channels,
+                                    int bit_depth, bool is_float)>;
+
+     TrackMixer();
+    ~TrackMixer();
+    TrackMixer(const TrackMixer&)            = delete;
+    TrackMixer& operator=(const TrackMixer&) = delete;
+
+    // Starts the mix thread. out_channels is the canonical channel count.
+    bool open(int out_sample_rate, int out_channels, Sink sink);
+
+    // Registers a source and returns its id (>= 0), or -1 if not open.
+    // Thread-safe.
+    int add_source();
+
+    // Removes a previously added source. Thread-safe.
+    void remove_source(int source_id);
+
+    // Number of currently registered sources.
+    int source_count() const;
+
+    // Feeds PCM for one source. Converts to the canonical format and buffers it.
+    // Safe to call from that source's capture thread; data need not outlive call.
+    void push(int source_id, const uint8_t* data, int bytes,
+              int sample_rate, int channels, int bit_depth, bool is_float);
+
+    void close();
+    bool is_open() const;
+
+private:
+    struct Impl;
+    Impl* impl_;
+};
+
 } // namespace encoding
