@@ -456,8 +456,6 @@ static void pacer_start()
 {
     if (g_settings.video_fps <= 0) return;
     g_pacer_fps          = g_settings.video_fps;
-    g_pacer_interval_ms  = 1000 / g_pacer_fps;
-    if (g_pacer_interval_ms < 1) g_pacer_interval_ms = 1;
 
     LARGE_INTEGER freq, start;
     QueryPerformanceFrequency(&freq);
