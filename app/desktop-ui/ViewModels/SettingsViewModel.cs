@@ -630,7 +630,10 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     public AudioSourceData? AddProcessSource(AudioSessionInfo session)
     {
-        string id = !string.IsNullOrWhiteSpace(session.ExecutablePath)
+        string id = !string.IsNullOrWhiteSpace(session.WindowClass) &&
+                    !string.IsNullOrWhiteSpace(session.WindowTitle)
+            ? $"window:{session.ExecutablePath}:{session.WindowClass}:{session.WindowTitle}"
+            : !string.IsNullOrWhiteSpace(session.ExecutablePath)
             ? $"process:{session.ExecutablePath}"
             : $"process:{session.ProcessId}";
         if (AudioSources.Any(s => s.Id == id))
@@ -643,6 +646,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             ProcessId = session.ProcessId,
             ProcessName = session.ProcessName,
             ExecutablePath = session.ExecutablePath,
+            WindowTitle = session.WindowTitle,
+            WindowClass = session.WindowClass,
             Enabled = true,
             Tracks = new List<int> { 1 },
         });
@@ -1128,6 +1133,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 s.ProcessId.ToString(),
                 s.ProcessName,
                 s.ExecutablePath,
+                s.WindowTitle,
+                s.WindowClass,
                 s.Enabled ? "1" : "0",
                 string.Join(",", s.Tracks.OrderBy(t => t))));
 
@@ -1150,6 +1157,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             ProcessId = s.ProcessId,
             ProcessName = s.ProcessName,
             ExecutablePath = s.ExecutablePath,
+            WindowTitle = s.WindowTitle,
+            WindowClass = s.WindowClass,
             Enabled = s.Enabled,
             Tracks = s.Tracks.Distinct().Where(t => t is >= 1 and <= 6).OrderBy(t => t).ToList(),
         }).ToList();

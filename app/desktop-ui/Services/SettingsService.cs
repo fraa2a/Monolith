@@ -175,6 +175,8 @@ public sealed class SettingsService
                         ProcessName = StringAt(s, "process_name"),
                         DisplayName = StringAt(s, "display_name"),
                         ExecutablePath = StringAt(s, "executable_path"),
+                        WindowTitle = StringAt(s, "window_title"),
+                        WindowClass = StringAt(s, "window_class"),
                     });
                 }
             }
@@ -455,6 +457,10 @@ public sealed class SettingsService
                 item["process_name"] = source.ProcessName;
             if (!string.IsNullOrWhiteSpace(source.ExecutablePath))
                 item["executable_path"] = source.ExecutablePath;
+            if (!string.IsNullOrWhiteSpace(source.WindowTitle))
+                item["window_title"] = source.WindowTitle;
+            if (!string.IsNullOrWhiteSpace(source.WindowClass))
+                item["window_class"] = source.WindowClass;
             sources.Add(item);
         }
         audio["sources"] = sources;
@@ -489,6 +495,8 @@ public sealed class SettingsService
                 ProcessId = UIntAt(obj, "process_id", 0),
                 ProcessName = StringAt(obj, "process_name"),
                 ExecutablePath = StringAt(obj, "executable_path"),
+                WindowTitle = StringAt(obj, "window_title"),
+                WindowClass = StringAt(obj, "window_class"),
                 Enabled = BoolAt(obj, "enabled", true),
                 Tracks = ReadTracks(obj["tracks"]),
             };
@@ -498,7 +506,14 @@ public sealed class SettingsService
             if (source.Type is not ("desktop" or "input" or "process" or "active_game"))
                 continue;
             if (string.IsNullOrWhiteSpace(source.Id))
-                source.Id = $"{source.Type}:{source.Name}:{source.ProcessId}:{source.DeviceId}";
+            {
+                if (source.Type == "process" &&
+                    !string.IsNullOrWhiteSpace(source.WindowClass) &&
+                    !string.IsNullOrWhiteSpace(source.WindowTitle))
+                    source.Id = $"window:{source.ExecutablePath}:{source.WindowClass}:{source.WindowTitle}";
+                else
+                    source.Id = $"{source.Type}:{source.Name}:{source.ProcessId}:{source.DeviceId}";
+            }
             if (string.IsNullOrWhiteSpace(source.Name))
                 source.Name = source.Id;
             result.Add(source);

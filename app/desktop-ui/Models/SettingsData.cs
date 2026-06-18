@@ -9,6 +9,8 @@ public sealed class AudioSourceData
     public uint ProcessId { get; set; }
     public string ProcessName { get; set; } = "";
     public string ExecutablePath { get; set; } = "";
+    public string WindowTitle { get; set; } = "";
+    public string WindowClass { get; set; } = "";
     public bool Enabled { get; set; } = true;
     public List<int> Tracks { get; set; } = new();
 }

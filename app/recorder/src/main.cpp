@@ -738,6 +738,8 @@ static settings::RuntimeAudioSession runtime_audio_session(const audio::ProcessI
     out.process_name = proc.process_name;
     out.display_name = proc.display_name;
     out.executable_path = proc.executable_path;
+    out.window_title = proc.window_title;
+    out.window_class = proc.window_class;
     return out;
 }
 
@@ -957,6 +959,98 @@ static bool start_process_source(uint32_t pid,
     return false;
 }
 
+static std::wstring process_executable_path(uint32_t pid)
+{
+    if (pid == 0) return {};
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return {};
+
+    wchar_t path[MAX_PATH * 4] = {};
+    DWORD size = static_cast<DWORD>(_countof(path));
+    std::wstring result;
+    if (QueryFullProcessImageNameW(process, 0, path, &size) && size > 0)
+        result.assign(path, size);
+    CloseHandle(process);
+    return result;
+}
+
+struct WindowProcessMatch {
+    const settings::AudioSourceConfig* source = nullptr;
+    uint32_t process_id = 0;
+};
+
+static bool is_obs_style_window_candidate(HWND hwnd)
+{
+    if (!IsWindowVisible(hwnd)) return false;
+    if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
+    if (GetWindowTextLengthW(hwnd) <= 0) return false;
+
+    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if ((style & WS_DISABLED) != 0) return false;
+
+    LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if ((ex_style & WS_EX_TOOLWINDOW) != 0) return false;
+
+    return true;
+}
+
+static std::wstring hwnd_text(HWND hwnd)
+{
+    int len = GetWindowTextLengthW(hwnd);
+    if (len <= 0) return {};
+    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
+    int copied = GetWindowTextW(hwnd, text.data(), len + 1);
+    if (copied <= 0) return {};
+    text.resize(static_cast<size_t>(copied));
+    return text;
+}
+
+static std::wstring hwnd_class_name(HWND hwnd)
+{
+    wchar_t buf[256] = {};
+    int copied = GetClassNameW(hwnd, buf, static_cast<int>(_countof(buf)));
+    if (copied <= 0) return {};
+    return std::wstring(buf, static_cast<size_t>(copied));
+}
+
+static uint32_t resolve_configured_process_window(const settings::AudioSourceConfig& source)
+{
+    if (source.window_title.empty() || source.window_class.empty()) return 0;
+
+    WindowProcessMatch match;
+    match.source = &source;
+    EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+        auto* match = reinterpret_cast<WindowProcessMatch*>(param);
+        if (match->process_id != 0) return FALSE;
+        if (!is_obs_style_window_candidate(hwnd)) return TRUE;
+
+        if (hwnd_text(hwnd) != match->source->window_title) return TRUE;
+        if (hwnd_class_name(hwnd) != match->source->window_class) return TRUE;
+
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == 0 || pid == GetCurrentProcessId()) return TRUE;
+
+        if (!match->source->executable_path.empty()) {
+            std::wstring path = process_executable_path(pid);
+            if (path.empty() ||
+                _wcsicmp(path.c_str(), match->source->executable_path.c_str()) != 0)
+                return TRUE;
+        }
+
+        match->process_id = pid;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&match));
+
+    if (match.process_id != 0) {
+        char buf[320];
+        snprintf(buf, sizeof(buf), "resolved window '%s' -> pid %u",
+                 wide_to_utf8(source.window_title).c_str(), match.process_id);
+        log_msg("audio.app", buf);
+    }
+    return match.process_id;
+}
+
 // Resolve a configured `process` audio source to a live PID. The PID is never
 // trusted as a persistent identity (it dies/recycles across reboots); we always
 // re-resolve from the live render sessions, matching by executable path first
@@ -964,6 +1058,9 @@ static bool start_process_source(uint32_t pid,
 // best-effort hint when it is still alive AND points at the wanted executable.
 static uint32_t resolve_configured_process(const settings::AudioSourceConfig& source)
 {
+    uint32_t window_pid = resolve_configured_process_window(source);
+    if (window_pid != 0) return window_pid;
+
     const std::wstring wanted_path = source.executable_path;
     const std::string  wanted_name = source.process_name;
 

@@ -48,6 +48,8 @@ struct ProcessInfo {
     std::wstring process_name;
     std::wstring display_name;
     std::wstring executable_path;
+    std::wstring window_title;
+    std::wstring window_class;
 };
 
 using ProcessAudioSessionInfo = ProcessInfo;

@@ -311,6 +311,8 @@ AudioSourceConfig audio_source_from_json(const json& item)
     source.process_id = item.value("process_id", 0u);
     source.process_name = item.value("process_name", "");
     source.executable_path = utf8_to_wide(item.value("executable_path", ""));
+    source.window_title = utf8_to_wide(item.value("window_title", ""));
+    source.window_class = utf8_to_wide(item.value("window_class", ""));
     source.enabled = item.value("enabled", true);
     auto tracks_it = item.find("tracks");
     if (tracks_it != item.end())
@@ -327,6 +329,11 @@ AudioSourceConfig audio_source_from_json(const json& item)
             source.id = "active_game";
         else if (source.type == "input" && !source.device_id.empty())
             source.id = "input:" + wide_to_utf8(source.device_id);
+        else if (source.type == "process" && !source.window_class.empty() &&
+                 !source.window_title.empty())
+            source.id = "window:" + wide_to_utf8(source.executable_path) + ":" +
+                wide_to_utf8(source.window_class) + ":" +
+                wide_to_utf8(source.window_title);
         else if (source.type == "process" && source.process_id != 0)
             source.id = "process:" + std::to_string(source.process_id);
     }
@@ -374,6 +381,10 @@ json audio_source_to_json(const AudioSourceConfig& source)
         item["process_name"] = source.process_name;
     if (!source.executable_path.empty())
         item["executable_path"] = wide_to_utf8(source.executable_path);
+    if (!source.window_title.empty())
+        item["window_title"] = wide_to_utf8(source.window_title);
+    if (!source.window_class.empty())
+        item["window_class"] = wide_to_utf8(source.window_class);
     return item;
 }
 
@@ -653,6 +664,8 @@ std::string serialize_runtime_status(const RuntimeStatus& status)
             {"process_name", wide_to_utf8(session.process_name)},
             {"display_name", wide_to_utf8(session.display_name)},
             {"executable_path", wide_to_utf8(session.executable_path)},
+            {"window_title", wide_to_utf8(session.window_title)},
+            {"window_class", wide_to_utf8(session.window_class)},
         });
     }
     doc["active_game"] = {

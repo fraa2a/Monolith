@@ -14,6 +14,8 @@ struct AudioSourceConfig {
     uint32_t process_id = 0;
     std::string process_name;
     std::wstring executable_path;
+    std::wstring window_title;
+    std::wstring window_class;
     bool enabled = true;
     std::vector<int> tracks;
 };
@@ -113,6 +115,8 @@ struct RuntimeAudioSession {
     std::wstring process_name;
     std::wstring display_name;
     std::wstring executable_path;
+    std::wstring window_title;
+    std::wstring window_class;
 };
 
 // Extended runtime status for the Active Game virtual source.

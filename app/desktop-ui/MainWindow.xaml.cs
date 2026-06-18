@@ -521,6 +521,12 @@ public sealed partial class MainWindow : Window
             return status.InputDevices.Any(d => d.Id == source.DeviceId);
         if (source.Type == "process")
             return status.AudioSessions.Any(s =>
+                (!string.IsNullOrWhiteSpace(source.WindowTitle) &&
+                 !string.IsNullOrWhiteSpace(source.WindowClass) &&
+                 s.WindowTitle == source.WindowTitle &&
+                 s.WindowClass == source.WindowClass &&
+                 (string.IsNullOrWhiteSpace(source.ExecutablePath) ||
+                  s.ExecutablePath == source.ExecutablePath)) ||
                 (source.ProcessId != 0 && s.ProcessId == source.ProcessId) ||
                 (!string.IsNullOrWhiteSpace(source.ExecutablePath) && s.ExecutablePath == source.ExecutablePath) ||
                 (!string.IsNullOrWhiteSpace(source.ProcessName) && s.ProcessName == source.ProcessName));
@@ -946,7 +952,10 @@ public sealed partial class MainWindow : Window
 
     private static string ProcessSourceId(AudioSessionInfo session)
     {
-        return !string.IsNullOrWhiteSpace(session.ExecutablePath)
+        return !string.IsNullOrWhiteSpace(session.WindowClass) &&
+               !string.IsNullOrWhiteSpace(session.WindowTitle)
+            ? $"window:{session.ExecutablePath}:{session.WindowClass}:{session.WindowTitle}"
+            : !string.IsNullOrWhiteSpace(session.ExecutablePath)
             ? $"process:{session.ExecutablePath}"
             : $"process:{session.ProcessId}";
     }

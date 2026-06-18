@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cwctype>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -26,7 +27,7 @@ static constexpr REFERENCE_TIME kReftimesPerSec = 10000000;
 
 namespace audio {
 
-// ── Diagnostic log sink ─────────────────────────────────────────────────────────
+// Diagnostic log sink
 
 static std::function<void(const char*, const char*)> g_log_sink;
 
@@ -42,7 +43,7 @@ static void audio_log(const char* tag, const char* msg)
     OutputDebugStringA("\n");
 }
 
-// ── Impl ──────────────────────────────────────────────────────────────────────
+// Impl
 
 struct WasapiCapture::Impl {
     winrt::com_ptr<IMMDeviceEnumerator> enumerator;
@@ -58,9 +59,9 @@ struct WasapiCapture::Impl {
     PacketCallback        cb;
 };
 
-// ── Capture thread ────────────────────────────────────────────────────────────
+// Capture thread
 
-// KSDATAFORMAT_SUBTYPE_IEEE_FLOAT — {00000003-0000-0010-8000-00AA00389B71}
+// KSDATAFORMAT_SUBTYPE_IEEE_FLOAT - {00000003-0000-0010-8000-00AA00389B71}
 static const GUID kSubTypeFloat =
     { 0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71} };
 
@@ -127,7 +128,75 @@ static ProcessInfo process_info(uint32_t pid)
     return info;
 }
 
-class ActivateCompletionHandler final : public IActivateAudioInterfaceCompletionHandler {
+struct WindowIdentity {
+    uint32_t process_id = 0;
+    std::wstring title;
+    std::wstring window_class;
+};
+
+static bool is_capture_candidate_window(HWND hwnd)
+{
+    if (!IsWindowVisible(hwnd)) return false;
+    if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
+    if (GetWindowTextLengthW(hwnd) <= 0) return false;
+
+    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if ((style & WS_DISABLED) != 0) return false;
+
+    LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if ((ex_style & WS_EX_TOOLWINDOW) != 0) return false;
+
+    return true;
+}
+
+static std::wstring window_text(HWND hwnd)
+{
+    int len = GetWindowTextLengthW(hwnd);
+    if (len <= 0) return {};
+    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
+    int copied = GetWindowTextW(hwnd, text.data(), len + 1);
+    if (copied <= 0) return {};
+    text.resize(static_cast<size_t>(copied));
+    return text;
+}
+
+static std::wstring window_class_name(HWND hwnd)
+{
+    wchar_t buf[256] = {};
+    int copied = GetClassNameW(hwnd, buf, static_cast<int>(_countof(buf)));
+    if (copied <= 0) return {};
+    return std::wstring(buf, static_cast<size_t>(copied));
+}
+
+static std::map<uint32_t, WindowIdentity> enumerate_capture_windows()
+{
+    std::map<uint32_t, WindowIdentity> result;
+    EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+        if (!is_capture_candidate_window(hwnd)) return TRUE;
+
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == 0 || pid == GetCurrentProcessId()) return TRUE;
+
+        auto* windows = reinterpret_cast<std::map<uint32_t, WindowIdentity>*>(param);
+        if (windows->find(pid) != windows->end()) return TRUE;
+
+        WindowIdentity identity;
+        identity.process_id = pid;
+        identity.title = window_text(hwnd);
+        identity.window_class = window_class_name(hwnd);
+        if (!identity.title.empty() && !identity.window_class.empty())
+            windows->emplace(pid, std::move(identity));
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&result));
+    return result;
+}
+
+// ActivateAudioInterfaceAsync rejects non-agile completion handlers with
+// E_ILLEGAL_METHOD_CALL for process-loopback activation.
+class ActivateCompletionHandler final
+    : public IActivateAudioInterfaceCompletionHandler
+    , public IAgileObject {
 public:
     explicit ActivateCompletionHandler(HANDLE done) : done_(done) {}
 
@@ -149,6 +218,11 @@ public:
         if (riid == __uuidof(IUnknown) ||
             riid == __uuidof(IActivateAudioInterfaceCompletionHandler)) {
             *out = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
+            AddRef();
+            return S_OK;
+        }
+        if (riid == __uuidof(IAgileObject)) {
+            *out = static_cast<IAgileObject*>(this);
             AddRef();
             return S_OK;
         }
@@ -195,7 +269,7 @@ static void capture_thread(ImplT* impl)
         UINT32 packet_size = 0;
         HRESULT hr = impl->cap_client->GetNextPacketSize(&packet_size);
         if (FAILED(hr)) {
-            OutputDebugStringA("[audio] GetNextPacketSize failed — stopping\n");
+            OutputDebugStringA("[audio] GetNextPacketSize failed - stopping\n");
             break;
         }
 
@@ -278,7 +352,8 @@ std::vector<DeviceInfo> enumerate_input_devices()
 // skipping PIDs already present in `seen` (deduplication across endpoints).
 static void enumerate_sessions_for_device(IMMDevice* device,
                                           std::vector<ProcessAudioSessionInfo>& result,
-                                          std::vector<uint32_t>& seen)
+                                          std::vector<uint32_t>& seen,
+                                          const std::map<uint32_t, WindowIdentity>& windows)
 {
     winrt::com_ptr<IAudioSessionManager2> manager;
     if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
@@ -306,8 +381,16 @@ static void enumerate_sessions_for_device(IMMDevice* device,
         seen.push_back(pid);
 
         ProcessAudioSessionInfo info = process_info(pid);
+        auto window_it = windows.find(pid);
+        if (window_it != windows.end()) {
+            info.window_title = window_it->second.title;
+            info.window_class = window_it->second.window_class;
+            if (!info.window_title.empty())
+                info.display_name = info.window_title;
+        }
         LPWSTR display = nullptr;
-        if (SUCCEEDED(session->GetDisplayName(&display)) && display && display[0])
+        if (info.display_name.empty() &&
+            SUCCEEDED(session->GetDisplayName(&display)) && display && display[0])
             info.display_name = display;
         if (display) CoTaskMemFree(display);
         if (info.display_name.empty())
@@ -337,10 +420,11 @@ std::vector<ProcessAudioSessionInfo> enumerate_render_sessions()
     UINT count = 0;
     devices->GetCount(&count);
     std::vector<uint32_t> seen;
+    auto windows = enumerate_capture_windows();
     for (UINT i = 0; i < count; ++i) {
         winrt::com_ptr<IMMDevice> device;
         if (FAILED(devices->Item(i, device.put()))) continue;
-        enumerate_sessions_for_device(device.get(), result, seen);
+        enumerate_sessions_for_device(device.get(), result, seen, windows);
     }
     return result;
 }
@@ -366,7 +450,7 @@ bool process_alive(uint32_t process_id)
     return alive;
 }
 
-// ── Active-game detection ─────────────────────────────────────────────────────
+// Active-game detection
 
 static std::wstring to_lower(std::wstring s)
 {
@@ -450,8 +534,8 @@ static BOOL CALLBACK game_window_enum_proc(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
-// Scoring constants (raw points, converted to confidence 0–100 as min(100, score*10)).
-// Max natural score without whitelist: 4(fullscreen) + 4(foreground) + 2(session) = 10 → 100%
+// Scoring constants (raw points, converted to confidence 0-100 as min(100, score*10)).
+// Max natural score without whitelist: 4(fullscreen) + 4(foreground) + 2(session) = 10 -> 100%
 static constexpr int kScoreFullscreen = 4;
 static constexpr int kScoreForeground = 4;
 static constexpr int kScoreSession    = 2;
@@ -547,7 +631,7 @@ ActiveGameResult detect_active_game(const DetectConfig& cfg)
     }
 
     // If nothing passed confidence with window scoring, try bare foreground process
-    // (only when min_confidence is low enough to accept it — score would be foreground only = 40).
+    // (only when min_confidence is low enough to accept it - score would be foreground only = 40).
     if (best.process.process_id == 0 && fg_pid != 0 && fg_pid != GetCurrentProcessId()) {
         ProcessInfo fg_info = process_info(fg_pid);
         if (!fg_info.process_name.empty()) {
@@ -576,7 +660,7 @@ ActiveGameResult detect_active_game(const DetectConfig& cfg)
     return best;
 }
 
-// ── WasapiCapture ─────────────────────────────────────────────────────────────
+// WasapiCapture
 
 WasapiCapture::WasapiCapture() : impl_(new Impl()) {}
 WasapiCapture::~WasapiCapture() { stop(); delete impl_; }
@@ -716,12 +800,9 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
         return false;
     }
 
-    // The process-loopback virtual device does NOT support GetMixFormat, nor
-    // event-driven buffering (AUDCLNT_STREAMFLAGS_EVENTCALLBACK + SetEventHandle
-    // succeed but the buffer-ready event never fires, so capture stalls). Follow
-    // the OBS / ApplicationLoopback approach: provide a fixed format and use
-    // timer-based polling. WASAPI returns the capture buffer in exactly this
-    // format (no conversion), so the downstream encoder gets float32/48k/stereo.
+    // OBS-style process loopback: the virtual device has no reliable
+    // GetMixFormat path, so we provide the capture format up front, then use
+    // WASAPI event callbacks to wake only when process audio is available.
     auto* wf = static_cast<WAVEFORMATEXTENSIBLE*>(
         CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE)));
     if (!wf) return false;
@@ -739,12 +820,12 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
     wf->SubFormat              = kSubTypeFloat; // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
     impl_->mix_fmt = reinterpret_cast<WAVEFORMATEX*>(wf);
 
-    // Loopback only — NO EVENTCALLBACK (see note above). capture_thread() polls
-    // with a short sleep when impl_->event is null.
+    // Use WASAPI event callbacks like OBS, not timer polling.
+    DWORD flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
     hr = impl_->client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_LOOPBACK,
-        kReftimesPerSec / 10, // 100ms buffer
+        flags,
+        5 * kReftimesPerSec,
         0,
         impl_->mix_fmt,
         nullptr);
@@ -753,6 +834,24 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
         snprintf(buf, sizeof(buf), "process loopback: Initialize failed (hr=0x%08lX)",
                  static_cast<unsigned long>(hr));
         audio_log("audio.app", buf);
+        stop();
+        return false;
+    }
+
+    impl_->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!impl_->event) {
+        audio_log("audio.app", "process loopback: CreateEvent failed");
+        stop();
+        return false;
+    }
+
+    hr = impl_->client->SetEventHandle(impl_->event);
+    if (FAILED(hr)) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "process loopback: SetEventHandle failed (hr=0x%08lX)",
+                 static_cast<unsigned long>(hr));
+        audio_log("audio.app", buf);
+        stop();
         return false;
     }
 
@@ -764,6 +863,7 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
         snprintf(buf, sizeof(buf), "process loopback: GetService failed (hr=0x%08lX)",
                  static_cast<unsigned long>(hr));
         audio_log("audio.app", buf);
+        stop();
         return false;
     }
 
@@ -773,6 +873,7 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
         snprintf(buf, sizeof(buf), "process loopback: Start failed (hr=0x%08lX)",
                  static_cast<unsigned long>(hr));
         audio_log("audio.app", buf);
+        stop();
         return false;
     }
 
