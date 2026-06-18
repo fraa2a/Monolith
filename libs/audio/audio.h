@@ -31,6 +31,11 @@ struct PacketInfo {
 
 using PacketCallback = std::function<void(const PacketInfo&)>;
 
+// Optional diagnostic log sink (tag, message). The host wires this to its own
+// logger so audio-library diagnostics (e.g. process-loopback HRESULT failures)
+// land in the app log. Pass nullptr to disable. Set once at startup.
+void set_log_sink(std::function<void(const char* tag, const char* msg)> sink);
+
 struct DeviceInfo {
     std::wstring id;
     std::wstring name;

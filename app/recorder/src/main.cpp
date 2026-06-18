@@ -867,6 +867,15 @@ static void publish_audio_params()
     }
     g_replay.set_audio_params(params);
     g_recording.set_audio_params(params);
+
+    // Diagnostics: which logical audio tracks end up as streams in the output.
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf), "published %zu audio track(s):", params.size());
+    for (const auto& p : params) {
+        if (n < 0 || n >= static_cast<int>(sizeof(buf))) break;
+        n += snprintf(buf + n, sizeof(buf) - n, " %d", p.stream_index);
+    }
+    log_msg("audio", buf);
 }
 
 static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
@@ -951,22 +960,63 @@ static bool start_process_source(uint32_t pid,
     return false;
 }
 
+// Resolve a configured `process` audio source to a live PID. The PID is never
+// trusted as a persistent identity (it dies/recycles across reboots); we always
+// re-resolve from the live render sessions, matching by executable path first
+// and falling back to the process name. The saved process_id is used only as a
+// best-effort hint when it is still alive AND points at the wanted executable.
 static uint32_t resolve_configured_process(const settings::AudioSourceConfig& source)
 {
-    if (source.process_id != 0)
-        return source.process_id;
+    const std::wstring wanted_path = source.executable_path;
+    const std::string  wanted_name = source.process_name;
 
-    std::wstring wanted_path = source.executable_path;
-    std::string wanted_name = source.process_name;
     auto sessions = audio::enumerate_render_sessions();
-    for (const auto& session : sessions) {
-        if (!wanted_path.empty() && session.executable_path == wanted_path)
-            return session.process_id;
+
+    // 0 = no match, 1 = name match, 2 = exact executable-path match.
+    auto match_rank = [&](const audio::ProcessAudioSessionInfo& s) -> int {
+        if (!wanted_path.empty() &&
+            _wcsicmp(s.executable_path.c_str(), wanted_path.c_str()) == 0)
+            return 2;
         if (!wanted_name.empty() &&
-            _stricmp(wide_to_utf8(session.process_name).c_str(), wanted_name.c_str()) == 0)
-            return session.process_id;
+            _stricmp(wide_to_utf8(s.process_name).c_str(), wanted_name.c_str()) == 0)
+            return 1;
+        return 0;
+    };
+
+    uint32_t by_path = 0, by_name = 0;
+    for (const auto& s : sessions) {
+        int rank = match_rank(s);
+        if (rank == 2 && by_path == 0) by_path = s.process_id;
+        else if (rank == 1 && by_name == 0) by_name = s.process_id;
     }
-    return 0;
+
+    uint32_t resolved = by_path ? by_path : by_name;
+
+    // Saved PID hint: accept only if still alive and matching the wanted exe.
+    if (resolved == 0 && source.process_id != 0 &&
+        audio::process_alive(source.process_id)) {
+        for (const auto& s : sessions) {
+            if (s.process_id == source.process_id && match_rank(s) > 0) {
+                resolved = source.process_id;
+                break;
+            }
+        }
+    }
+
+    const std::string wanted_label =
+        !wanted_name.empty() ? wanted_name : wide_to_utf8(wanted_path);
+    char buf[320];
+    if (resolved != 0) {
+        snprintf(buf, sizeof(buf), "resolved process '%s' -> pid %u (%s)",
+                 wanted_label.c_str(), resolved,
+                 by_path ? "by path" : "by name");
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "process '%s' not found among active render sessions",
+                 wanted_label.c_str());
+    }
+    log_msg("audio.app", buf);
+    return resolved;
 }
 
 static void stop_audio_system()
@@ -1020,10 +1070,32 @@ static void start_custom_audio_system()
             g_track_plan_count[track]++;
     }
 
+    // Open an encoder for every configured track up front, BEFORE starting the
+    // capture sources. This decouples the output file's track layout from which
+    // sources actually start: a source that fails to start (e.g. a process not
+    // yet running) leaves its track present (silent) in the file instead of
+    // making it vanish and renumbering the others. publish_audio_params() then
+    // advertises every configured track to the muxer.
+    for (int track = 1; track <= 6; ++track) {
+        if (g_track_plan_count[track] > 0)
+            open_audio_track(track);
+    }
+
     for (const auto& source : g_settings.audio_sources) {
         if (!source.enabled) continue;
         std::vector<int> tracks = valid_tracks(source.tracks);
         if (tracks.empty()) continue;
+
+        {
+            char buf[128];
+            int n = snprintf(buf, sizeof(buf), "starting source type=%s tracks:",
+                             source.type.c_str());
+            for (int t : tracks) {
+                if (n < 0 || n >= static_cast<int>(sizeof(buf))) break;
+                n += snprintf(buf + n, sizeof(buf) - n, " %d", t);
+            }
+            log_msg("audio", buf);
+        }
 
         if (source.type == "desktop") {
             start_endpoint_source(audio::WasapiCapture::Mode::Loopback, L"",
@@ -2157,6 +2229,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 
     log_init();
     log_msg("app", "initializing (Monolith: replay + manual recording)");
+    audio::set_log_sink([](const char* tag, const char* msg) { log_msg(tag, msg); });
     load_app_settings();
     updater::init(g_settings.update_auto_check);
     if (g_settings.update_auto_check)

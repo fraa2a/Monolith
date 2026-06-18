@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cstdio>
 #include <cwctype>
 #include <mutex>
 #include <string>
@@ -24,6 +25,22 @@
 static constexpr REFERENCE_TIME kReftimesPerSec = 10000000;
 
 namespace audio {
+
+// ── Diagnostic log sink ─────────────────────────────────────────────────────────
+
+static std::function<void(const char*, const char*)> g_log_sink;
+
+void set_log_sink(std::function<void(const char* tag, const char* msg)> sink)
+{
+    g_log_sink = std::move(sink);
+}
+
+static void audio_log(const char* tag, const char* msg)
+{
+    if (g_log_sink) g_log_sink(tag, msg);
+    OutputDebugStringA(msg);
+    OutputDebugStringA("\n");
+}
 
 // ── Impl ──────────────────────────────────────────────────────────────────────
 
@@ -662,6 +679,11 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
         operation.put());
 
     if (FAILED(hr)) {
+        char buf[96];
+        snprintf(buf, sizeof(buf),
+                 "process loopback: ActivateAudioInterfaceAsync failed (hr=0x%08lX)",
+                 static_cast<unsigned long>(hr));
+        audio_log("audio.app", buf);
         handler->Release();
         CloseHandle(done);
         return false;
@@ -669,6 +691,12 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
 
     DWORD wait_result = WaitForSingleObject(done, 5000);
     if (wait_result != WAIT_OBJECT_0 || FAILED(handler->activate_hr())) {
+        char buf[112];
+        snprintf(buf, sizeof(buf),
+                 "process loopback: activation %s (hr=0x%08lX)",
+                 wait_result != WAIT_OBJECT_0 ? "timed out" : "failed",
+                 static_cast<unsigned long>(handler->activate_hr()));
+        audio_log("audio.app", buf);
         handler->Release();
         CloseHandle(done);
         return false;
@@ -678,34 +706,75 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
     handler->Release();
     CloseHandle(done);
 
-    if (!activated) return false;
+    if (!activated) {
+        audio_log("audio.app", "process loopback: activation returned no interface");
+        return false;
+    }
     impl_->client = activated.as<IAudioClient>();
-    if (!impl_->client) return false;
+    if (!impl_->client) {
+        audio_log("audio.app", "process loopback: IAudioClient query failed");
+        return false;
+    }
 
-    hr = impl_->client->GetMixFormat(&impl_->mix_fmt);
-    if (FAILED(hr)) return false;
+    // The process-loopback virtual device does NOT support GetMixFormat, nor
+    // event-driven buffering (AUDCLNT_STREAMFLAGS_EVENTCALLBACK + SetEventHandle
+    // succeed but the buffer-ready event never fires, so capture stalls). Follow
+    // the OBS / ApplicationLoopback approach: provide a fixed format and use
+    // timer-based polling. WASAPI returns the capture buffer in exactly this
+    // format (no conversion), so the downstream encoder gets float32/48k/stereo.
+    auto* wf = static_cast<WAVEFORMATEXTENSIBLE*>(
+        CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE)));
+    if (!wf) return false;
+    ZeroMemory(wf, sizeof(*wf));
+    wf->Format.wFormatTag      = WAVE_FORMAT_EXTENSIBLE;
+    wf->Format.nChannels       = 2;
+    wf->Format.nSamplesPerSec  = 48000;
+    wf->Format.wBitsPerSample  = 32;
+    wf->Format.nBlockAlign     = static_cast<WORD>(
+        wf->Format.nChannels * wf->Format.wBitsPerSample / 8);
+    wf->Format.nAvgBytesPerSec = wf->Format.nSamplesPerSec * wf->Format.nBlockAlign;
+    wf->Format.cbSize          = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+    wf->Samples.wValidBitsPerSample = 32;
+    wf->dwChannelMask          = 0x3; // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+    wf->SubFormat              = kSubTypeFloat; // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+    impl_->mix_fmt = reinterpret_cast<WAVEFORMATEX*>(wf);
 
+    // Loopback only — NO EVENTCALLBACK (see note above). capture_thread() polls
+    // with a short sleep when impl_->event is null.
     hr = impl_->client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-        kReftimesPerSec / 10,
+        AUDCLNT_STREAMFLAGS_LOOPBACK,
+        kReftimesPerSec / 10, // 100ms buffer
         0,
         impl_->mix_fmt,
         nullptr);
-    if (FAILED(hr)) return false;
-
-    impl_->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!impl_->event) return false;
-    hr = impl_->client->SetEventHandle(impl_->event);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "process loopback: Initialize failed (hr=0x%08lX)",
+                 static_cast<unsigned long>(hr));
+        audio_log("audio.app", buf);
+        return false;
+    }
 
     hr = impl_->client->GetService(
         __uuidof(IAudioCaptureClient),
         impl_->cap_client.put_void());
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "process loopback: GetService failed (hr=0x%08lX)",
+                 static_cast<unsigned long>(hr));
+        audio_log("audio.app", buf);
+        return false;
+    }
 
     hr = impl_->client->Start();
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "process loopback: Start failed (hr=0x%08lX)",
+                 static_cast<unsigned long>(hr));
+        audio_log("audio.app", buf);
+        return false;
+    }
 
     impl_->running = true;
     impl_->thread = std::thread([impl = impl_]() { capture_thread(impl); });

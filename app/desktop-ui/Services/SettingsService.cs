@@ -447,8 +447,10 @@ public sealed class SettingsService
             };
             if (!string.IsNullOrWhiteSpace(source.DeviceId))
                 item["device_id"] = source.DeviceId;
-            if (source.ProcessId != 0)
-                item["process_id"] = source.ProcessId;
+            // NB: process_id is intentionally NOT persisted. A PID is ephemeral and
+            // dies/recycles across reboots; the recorder re-resolves the live PID at
+            // startup from executable_path/process_name. Persisting it caused process
+            // sources to silently stop capturing after a reboot.
             if (!string.IsNullOrWhiteSpace(source.ProcessName))
                 item["process_name"] = source.ProcessName;
             if (!string.IsNullOrWhiteSpace(source.ExecutablePath))
