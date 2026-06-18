@@ -809,9 +809,10 @@ static bool open_audio_track(int track)
     return ok;
 }
 
-// Number of enabled sources planned for each track (index 1..6). A track with
-// count >= 2 is mixed; count <= 1 pushes straight to the encoder. Recomputed by
-// start_*_audio_system before any source starts.
+// Number of enabled sources planned for each track (index 1..6). Used to decide
+// which tracks to pre-create. Every track now flows through its mixer (which
+// emits continuous PCM, silence-filled), so a track stays present and aligned
+// even with 0 or 2+ sources. Recomputed by start_*_audio_system before start.
 static std::array<int, 7> g_track_plan_count{};
 
 // Ensure a mixer exists for `track`, wired to feed that track's encoder.
@@ -831,19 +832,20 @@ static encoding::TrackMixer* ensure_track_mixer(int track)
 }
 
 // Build output routes for a source given its requested tracks. Opens each
-// track's encoder; tracks planned for multiple sources get a mixer slot, others
-// route directly. Returns empty on total failure.
+// track's encoder and routes the source through that track's mixer. The mixer
+// emits a continuous PCM stream (silence when no source is active), so the
+// track stays present in the output and time-aligned, and multiple sources on
+// one track are summed (OBS model). Returns empty on total failure.
 static std::vector<AudioRoute> make_routes(const std::vector<int>& requested)
 {
     std::vector<AudioRoute> routes;
     for (int track : valid_tracks(requested)) {
         if (!open_audio_track(track)) continue;
+        encoding::TrackMixer* mixer = ensure_track_mixer(track);
+        if (!mixer) continue;
         AudioRoute r;
         r.track = track;
-        if (g_track_plan_count[track] > 1) {
-            encoding::TrackMixer* mixer = ensure_track_mixer(track);
-            r.mixer_src = mixer ? mixer->add_source() : -1;
-        }
+        r.mixer_src = mixer->add_source();
         routes.push_back(r);
     }
     return routes;
@@ -897,11 +899,6 @@ static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
         if (r.mixer_src >= 0 && g_track_mixers[r.track]) {
             g_track_mixers[r.track]->push(
                 r.mixer_src, p.data, static_cast<int>(p.data_bytes),
-                static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
-                static_cast<int>(p.bit_depth), p.is_float);
-        } else {
-            g_audio_encoders[r.track - 1].push_pcm(
-                p.data, static_cast<int>(p.data_bytes),
                 static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
                 static_cast<int>(p.bit_depth), p.is_float);
         }
@@ -1070,15 +1067,18 @@ static void start_custom_audio_system()
             g_track_plan_count[track]++;
     }
 
-    // Open an encoder for every configured track up front, BEFORE starting the
-    // capture sources. This decouples the output file's track layout from which
-    // sources actually start: a source that fails to start (e.g. a process not
-    // yet running) leaves its track present (silent) in the file instead of
-    // making it vanish and renumbering the others. publish_audio_params() then
-    // advertises every configured track to the muxer.
+    // Pre-create the encoder AND mixer for every configured track, BEFORE
+    // starting the capture sources. The mixer emits continuous PCM (silence when
+    // no source feeds it), so a track whose source never starts (e.g. a process
+    // not yet running, or one that fails activation) stays present in the file
+    // as a silent, time-aligned track instead of vanishing and renumbering the
+    // others. When its source does start, make_routes() adds it to this same
+    // mixer and real audio mixes in seamlessly.
     for (int track = 1; track <= 6; ++track) {
-        if (g_track_plan_count[track] > 0)
+        if (g_track_plan_count[track] > 0) {
             open_audio_track(track);
+            ensure_track_mixer(track);
+        }
     }
 
     for (const auto& source : g_settings.audio_sources) {

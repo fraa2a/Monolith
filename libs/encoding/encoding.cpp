@@ -724,28 +724,30 @@ bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
 
     impl_->thread = std::thread([this] {
         using clock = std::chrono::steady_clock;
-        auto last = clock::now();
+        const auto start = clock::now();
+        int64_t emitted_frames = 0; // frames already sent since `start`
         const int ch = impl_->out_ch;
         std::vector<float> acc;   // accumulator (interleaved)
         std::vector<float> tmp;   // per-source read buffer (interleaved)
 
         while (impl_->running.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(kMixIntervalMs));
-            auto now = clock::now();
+
+            // Clock-locked CFR: the number of frames emitted is a function of the
+            // real time elapsed since `start`, not of loop iterations. Tracking a
+            // running total against a fixed origin avoids the cumulative drift of
+            // truncating per-tick deltas, keeping audio aligned over long sessions.
             int64_t elapsed_us =
-                std::chrono::duration_cast<std::chrono::microseconds>(now - last).count();
-            // Frames of output that correspond to the elapsed wall-clock time.
-            int frames = static_cast<int>(
-                (elapsed_us * impl_->out_rate) / 1'000'000);
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    clock::now() - start).count();
+            int64_t target = (elapsed_us * impl_->out_rate) / 1'000'000;
+            int frames = static_cast<int>(target - emitted_frames);
             if (frames <= 0) continue;
-            last = now;
+            emitted_frames = target;
 
             acc.assign(static_cast<size_t>(frames) * ch, 0.0f);
-            int mixed_sources = 0;
-
             {
                 std::lock_guard lk(impl_->mutex);
-                if (impl_->sources.empty()) continue;
                 tmp.resize(static_cast<size_t>(frames) * ch);
                 for (auto& [id, sp] : impl_->sources) {
                     if (!sp->fifo) continue;
@@ -757,11 +759,8 @@ bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
                     if (got <= 0) continue;
                     size_t n = static_cast<size_t>(got) * ch;
                     for (size_t i = 0; i < n; ++i) acc[i] += tmp[i];
-                    ++mixed_sources;
                 }
             }
-
-            if (mixed_sources == 0) continue;
 
             // Clip to [-1, 1] to avoid wrap/overflow on summed sources.
             for (float& v : acc) {
@@ -769,6 +768,9 @@ bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
                 else if (v < -1.0f) v = -1.0f;
             }
 
+            // Always emit, even when no source contributed (acc is then silence).
+            // A continuous output keeps every configured track present in the
+            // file and the downstream encoder timeline advancing at real time.
             if (impl_->sink) {
                 impl_->sink(
                     reinterpret_cast<const uint8_t*>(acc.data()),
