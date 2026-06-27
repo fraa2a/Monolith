@@ -98,15 +98,10 @@ public sealed partial class MainWindow : Window
         StartupTrace.MarkDuration("SettingsViewModel.Load", sw.ElapsedMilliseconds);
 
         sw.Restart();
-        PopulateCaptureCombos();
         SelectRecordingFormat();
-        PopulateAudioControls();
-        RefreshAudioSourcesList();
-        UpdateCaptureBorderWarning();
-        UpdateVideoEncoderError();
         SyncComponentToggles();
         UpdateCorruptConfigBar();
-        StartupTrace.MarkDuration("Settings post-first-frame populate", sw.ElapsedMilliseconds);
+        StartupTrace.MarkDuration("Settings post-first-frame base populate", sw.ElapsedMilliseconds);
         StartupTrace.Flush();
     }
 

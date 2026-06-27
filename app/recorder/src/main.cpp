@@ -882,9 +882,8 @@ static bool open_audio_track(int track)
 }
 
 // Number of enabled sources planned for each track (index 1..6). Used to decide
-// which tracks to pre-create. Every track now flows through its mixer (which
-// emits continuous PCM, silence-filled), so a track stays present and aligned
-// even with 0 or 2+ sources. Recomputed by start_*_audio_system before start.
+// whether a track can be pushed directly (single source) or needs a mixer
+// (multiple sources on the same logical track). Recomputed before audio start.
 static std::array<int, 7> g_track_plan_count{};
 
 // Ensure a mixer exists for `track`, wired to feed that track's encoder.
@@ -903,21 +902,23 @@ static encoding::TrackMixer* ensure_track_mixer(int track)
     return g_track_mixers[track].get();
 }
 
-// Build output routes for a source given its requested tracks. Opens each
-// track's encoder and routes the source through that track's mixer. The mixer
-// emits a continuous PCM stream (silence when no source is active), so the
-// track stays present in the output and time-aligned, and multiple sources on
-// one track are summed (OBS model). Returns empty on total failure.
+// Build output routes for a source given its requested tracks. A single source
+// on a track pushes directly to the encoder. Only tracks with multiple sources
+// pay the continuous mixer cost.
 static std::vector<AudioRoute> make_routes(const std::vector<int>& requested)
 {
     std::vector<AudioRoute> routes;
     for (int track : valid_tracks(requested)) {
         if (!open_audio_track(track)) continue;
-        encoding::TrackMixer* mixer = ensure_track_mixer(track);
-        if (!mixer) continue;
         AudioRoute r;
         r.track = track;
-        r.mixer_src = mixer->add_source();
+        r.mixer_src = -1;
+        if (g_track_plan_count[track] > 1) {
+            encoding::TrackMixer* mixer = ensure_track_mixer(track);
+            if (!mixer) continue;
+            r.mixer_src = mixer->add_source();
+            if (r.mixer_src < 0) continue;
+        }
         routes.push_back(r);
     }
     return routes;
@@ -971,6 +972,11 @@ static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
         if (r.mixer_src >= 0 && g_track_mixers[r.track]) {
             g_track_mixers[r.track]->push(
                 r.mixer_src, p.data, static_cast<int>(p.data_bytes),
+                static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
+                static_cast<int>(p.bit_depth), p.is_float);
+        } else if (r.mixer_src < 0) {
+            g_audio_encoders[r.track - 1].push_pcm(
+                p.data, static_cast<int>(p.data_bytes),
                 static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
                 static_cast<int>(p.bit_depth), p.is_float);
         }
@@ -1234,17 +1240,14 @@ static void start_custom_audio_system()
             g_track_plan_count[track]++;
     }
 
-    // Pre-create the encoder AND mixer for every configured track, BEFORE
-    // starting the capture sources. The mixer emits continuous PCM (silence when
-    // no source feeds it), so a track whose source never starts (e.g. a process
-    // not yet running, or one that fails activation) stays present in the file
-    // as a silent, time-aligned track instead of vanishing and renumbering the
-    // others. When its source does start, make_routes() adds it to this same
-    // mixer and real audio mixes in seamlessly.
+    // Pre-create encoders for configured tracks. Only tracks with multiple
+    // sources pre-create a mixer; single-source tracks use direct encoder input
+    // to avoid an unnecessary continuous mixer thread and silence generation.
     for (int track = 1; track <= 6; ++track) {
         if (g_track_plan_count[track] > 0) {
             open_audio_track(track);
-            ensure_track_mixer(track);
+            if (g_track_plan_count[track] > 1)
+                ensure_track_mixer(track);
         }
     }
 
@@ -1552,6 +1555,18 @@ static void uninstall_fg_hook()
 
 static void media_start(HWND hwnd)
 {
+    // ── Replay buffer config ───────────────────────────────────────────────────
+    apply_runtime_settings();
+
+    // Do not run WGC/pacer/audio when no video output is active. Keep this
+    // before monitor enumeration and encoder probing, which can be relatively
+    // expensive and should not happen for replay-off idle startup.
+    if (!g_settings.replay_buffer_enabled &&
+        g_recording.state() == recording::RecordingState::Idle) {
+        log_msg("app", "media pipeline not started: replay disabled and recording idle");
+        return;
+    }
+
     // ── Capture monitor from config (restart-required setting) ───────────────
     std::vector<MonitorEntry> monitors = enumerate_monitors();
     std::wstring used_device;
@@ -1574,18 +1589,6 @@ static void media_start(HWND hwnd)
     g_video_enc_retry_after_ms.store(0, std::memory_order_release);
     g_enc_w = 0;
     g_enc_h = 0;
-
-    // ── Replay buffer config ───────────────────────────────────────────────────
-    {
-        apply_runtime_settings();
-    }
-
-    // Do not run WGC/pacer/encoder while no video output is active.
-    if (!g_settings.replay_buffer_enabled &&
-        g_recording.state() == recording::RecordingState::Idle) {
-        log_msg("app", "video pipeline not started: replay disabled and recording idle");
-        return;
-    }
 
     g_perf_pacer_frames_submitted.store(0, std::memory_order_relaxed);
     g_perf_encoder_frames_submitted.store(0, std::memory_order_relaxed);
@@ -1791,11 +1794,13 @@ static void media_start(HWND hwnd)
                              static_cast<int>(f.bgra_stride),
                              static_cast<int>(f.width),
                              static_cast<int>(f.height));
-        }, capture::CaptureOptions{
-            g_settings.show_capture_border,
-            std::max(1, g_settings.video_fps),
-            false
-        });
+        }, [&]() {
+            capture::CaptureOptions options;
+            options.show_border = g_settings.show_capture_border;
+            options.max_readback_fps = std::max(1, g_settings.video_fps);
+            options.allow_unlimited_readback = false;
+            return options;
+        }());
         log_msg("capture", ok ? "WGC display capture started"
                                : "WARNING: WGC display capture failed");
         if (ok) {
