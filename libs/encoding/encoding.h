@@ -69,6 +69,13 @@ std::string probe_video_encoder(int width, int height);
 // in probe order.  Used to populate the Settings UI encoder list.
 std::vector<std::string> available_video_encoders(int width, int height);
 
+struct VideoEncoderPerfStats {
+    uint64_t frames_submitted = 0;
+    uint64_t packets_output = 0;
+    uint64_t sws_scale_time_us_total = 0;
+    uint64_t encode_time_us_total = 0;
+};
+
 // H.264 encoder.  Not thread-safe — drive from a single thread (or serialise).
 class VideoEncoder {
 public:
@@ -119,6 +126,8 @@ public:
 
     // True when Config::extra_options had to be dropped to open the encoder.
     bool extra_options_rejected() const;
+
+    VideoEncoderPerfStats perf_stats() const;
 
 private:
     struct Impl;

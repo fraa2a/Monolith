@@ -24,6 +24,12 @@ extern "C" {
 
 namespace encoding {
 
+static uint64_t steady_now_us()
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 static EncodedBytesRef make_encoded_bytes(const uint8_t* data, int size)
 {
     if (!data || size <= 0) return {};
@@ -119,6 +125,7 @@ struct VideoEncoder::Impl {
     int             sws_flags = SWS_BILINEAR;
     int             cfg_fps  = 0;
     VideoStreamParams vsp;
+    VideoEncoderPerfStats perf;
 };
 
 VideoEncoder::VideoEncoder()  : impl_(new Impl()) {}
@@ -146,6 +153,12 @@ bool VideoEncoder::extra_options_rejected() const
 {
     std::lock_guard lk(impl_->mutex);
     return impl_->extra_rejected;
+}
+
+VideoEncoderPerfStats VideoEncoder::perf_stats() const
+{
+    std::lock_guard lk(impl_->mutex);
+    return impl_->perf;
 }
 
 bool VideoEncoder::open(Config const& cfg, PacketSink sink)
@@ -176,6 +189,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         impl_->vsp      = {};
         impl_->sink     = nullptr;
         impl_->cfg_fps  = 0;
+        impl_->perf     = {};
     };
 
     impl_->sink  = std::move(sink);
@@ -317,6 +331,7 @@ static void drain_video(ImplT* impl)
         ep.is_keyframe  = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
         ep.tb_num       = 1;
         ep.tb_den       = impl->cfg_fps;
+        impl->perf.packets_output++;
         if (impl->sink) impl->sink(std::move(ep));
         av_packet_unref(pkt);
     }
@@ -347,9 +362,11 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
 
     const uint8_t* src_slices[1] = { bgra };
     int            src_stride[1] = { stride };
+    const uint64_t sws_start_us = steady_now_us();
     sws_scale(impl_->sws,
         src_slices, src_stride, 0, height,
         impl_->frame->data, impl_->frame->linesize);
+    impl_->perf.sws_scale_time_us_total += steady_now_us() - sws_start_us;
 
     // PTS: clock-locked frame index from the pacer (preferred), or fall back
     // to the internal counter when pts < 0.  The pacer is the single source of
@@ -361,11 +378,14 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
     } else {
         impl_->frame->pts = impl_->next_pts;
     }
+    const uint64_t encode_start_us = steady_now_us();
     int ret = avcodec_send_frame(impl_->ctx, impl_->frame);
-    if (ret == 0 && pts < 0) {
-        impl_->next_pts++;
+    if (ret == 0) {
+        impl_->perf.frames_submitted++;
+        if (pts < 0) impl_->next_pts++;
     }
     drain_video(impl_);
+    impl_->perf.encode_time_us_total += steady_now_us() - encode_start_us;
 }
 
 void VideoEncoder::flush()

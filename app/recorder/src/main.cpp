@@ -1645,6 +1645,7 @@ static void media_start(HWND hwnd)
                 static uint64_t last_encoder_submitted = 0;
                 static uint64_t last_encoder_packets = 0;
                 static uint64_t last_encoder_push_us = 0;
+                static encoding::VideoEncoderPerfStats last_video_stats{};
 
                 const capture::CaptureStats capture_stats = g_video.stats();
                 if (capture_stats.frames_arrived < last_capture_stats.frames_arrived)
@@ -1653,6 +1654,9 @@ static void media_start(HWND hwnd)
                 const uint64_t encoder_submitted = g_perf_encoder_frames_submitted.load(std::memory_order_relaxed);
                 const uint64_t encoder_packets = g_perf_encoder_packets_output.load(std::memory_order_relaxed);
                 const uint64_t encoder_push_us = g_perf_encoder_push_time_us_total.load(std::memory_order_relaxed);
+                const encoding::VideoEncoderPerfStats video_stats = g_video_enc.perf_stats();
+                if (video_stats.frames_submitted < last_video_stats.frames_submitted)
+                    last_video_stats = {};
                 if (pacer_submitted < last_pacer_submitted) last_pacer_submitted = 0;
                 if (encoder_submitted < last_encoder_submitted) last_encoder_submitted = 0;
                 if (encoder_packets < last_encoder_packets) last_encoder_packets = 0;
@@ -1668,10 +1672,19 @@ static void media_start(HWND hwnd)
                 const double avg_push_ms = encoder_delta
                     ? static_cast<double>(encoder_push_us_delta) / static_cast<double>(encoder_delta) / 1000.0
                     : 0.0;
+                const uint64_t video_frames_delta = video_stats.frames_submitted - last_video_stats.frames_submitted;
+                const double avg_sws_ms = video_frames_delta
+                    ? static_cast<double>(video_stats.sws_scale_time_us_total - last_video_stats.sws_scale_time_us_total) /
+                        static_cast<double>(video_frames_delta) / 1000.0
+                    : 0.0;
+                const double avg_encode_ms = video_frames_delta
+                    ? static_cast<double>(video_stats.encode_time_us_total - last_video_stats.encode_time_us_total) /
+                        static_cast<double>(video_frames_delta) / 1000.0
+                    : 0.0;
 
-                char perf[256];
+                char perf[320];
                 snprintf(perf, sizeof(perf),
-                    "wgc=%llu drop_pre_readback=%llu readback=%llu pacer=%llu enc_frames=%llu packets=%llu avg_readback_ms=%.2f avg_push_ms=%.2f fps=%d",
+                    "wgc=%llu drop_pre_readback=%llu readback=%llu pacer=%llu enc_frames=%llu packets=%llu avg_readback_ms=%.2f avg_push_ms=%.2f avg_sws_ms=%.2f avg_encode_ms=%.2f fps=%d",
                     static_cast<unsigned long long>(capture_stats.frames_arrived - last_capture_stats.frames_arrived),
                     static_cast<unsigned long long>(capture_stats.frames_dropped_before_readback - last_capture_stats.frames_dropped_before_readback),
                     static_cast<unsigned long long>(readback_delta),
@@ -1680,6 +1693,8 @@ static void media_start(HWND hwnd)
                     static_cast<unsigned long long>(encoder_packets - last_encoder_packets),
                     avg_readback_ms,
                     avg_push_ms,
+                    avg_sws_ms,
+                    avg_encode_ms,
                     g_settings.video_fps);
                 log_msg("perf-video", perf);
 
@@ -1688,6 +1703,7 @@ static void media_start(HWND hwnd)
                 last_encoder_submitted = encoder_submitted;
                 last_encoder_packets = encoder_packets;
                 last_encoder_push_us = encoder_push_us;
+                last_video_stats = video_stats;
             }
             // Push BGRA frame to pacer. Pacer thread drives encoder at fixed FPS.
             if (f.bgra_data == nullptr) return;
