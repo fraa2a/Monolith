@@ -317,6 +317,8 @@ static std::atomic<uint64_t> g_perf_pacer_frames_submitted{ 0 };
 static std::atomic<uint64_t> g_perf_encoder_frames_submitted{ 0 };
 static std::atomic<uint64_t> g_perf_encoder_push_time_us_total{ 0 };
 static std::atomic<uint64_t> g_perf_encoder_packets_output{ 0 };
+static std::atomic<uint64_t> g_perf_bgra_memcpy_frames{ 0 };
+static std::atomic<uint64_t> g_perf_bgra_memcpy_time_us_total{ 0 };
 // Backoff after a failed encoder open: don't re-probe on every captured frame.
 static std::atomic<uint64_t> g_video_enc_retry_after_ms{ 0 };
 static constexpr uint64_t kVideoEncRetryBackoffMs = 2000;
@@ -398,12 +400,21 @@ static void publish_runtime_status()
 // Producer (WGC callback): copies BGRA to g_pacer_shared under mutex.
 // Consumer (pacer thread): reads latest frame each tick, pushes to encoder.
 
+static uint64_t qpc_elapsed_us(const LARGE_INTEGER& start,
+                               const LARGE_INTEGER& end);
+
 static void pacer_push_frame(const uint8_t* bgra, int stride, int width, int height)
 {
+    LARGE_INTEGER copy_start{}, copy_end{};
+    QueryPerformanceCounter(&copy_start);
     std::lock_guard<std::mutex> lock(g_pacer_mutex);
     size_t size = static_cast<size_t>(height) * static_cast<size_t>(stride);
     g_pacer_shared.bgra.resize(size);
     memcpy(g_pacer_shared.bgra.data(), bgra, size);
+    QueryPerformanceCounter(&copy_end);
+    g_perf_bgra_memcpy_frames.fetch_add(1, std::memory_order_relaxed);
+    g_perf_bgra_memcpy_time_us_total.fetch_add(
+        qpc_elapsed_us(copy_start, copy_end), std::memory_order_relaxed);
     g_pacer_shared.stride   = stride;
     g_pacer_shared.width    = width;
     g_pacer_shared.height   = height;
@@ -1594,6 +1605,8 @@ static void media_start(HWND hwnd)
     g_perf_encoder_frames_submitted.store(0, std::memory_order_relaxed);
     g_perf_encoder_push_time_us_total.store(0, std::memory_order_relaxed);
     g_perf_encoder_packets_output.store(0, std::memory_order_relaxed);
+    g_perf_bgra_memcpy_frames.store(0, std::memory_order_relaxed);
+    g_perf_bgra_memcpy_time_us_total.store(0, std::memory_order_relaxed);
 
     // ── Video encoder ─────────────────────────────────────────────────────────
     log_msg("encoding", "video encoder deferred until first WGC frame");
@@ -1645,6 +1658,8 @@ static void media_start(HWND hwnd)
                 static uint64_t last_encoder_submitted = 0;
                 static uint64_t last_encoder_packets = 0;
                 static uint64_t last_encoder_push_us = 0;
+                static uint64_t last_memcpy_frames = 0;
+                static uint64_t last_memcpy_us = 0;
                 static encoding::VideoEncoderPerfStats last_video_stats{};
 
                 const capture::CaptureStats capture_stats = g_video.stats();
@@ -1654,6 +1669,8 @@ static void media_start(HWND hwnd)
                 const uint64_t encoder_submitted = g_perf_encoder_frames_submitted.load(std::memory_order_relaxed);
                 const uint64_t encoder_packets = g_perf_encoder_packets_output.load(std::memory_order_relaxed);
                 const uint64_t encoder_push_us = g_perf_encoder_push_time_us_total.load(std::memory_order_relaxed);
+                const uint64_t memcpy_frames = g_perf_bgra_memcpy_frames.load(std::memory_order_relaxed);
+                const uint64_t memcpy_us = g_perf_bgra_memcpy_time_us_total.load(std::memory_order_relaxed);
                 const encoding::VideoEncoderPerfStats video_stats = g_video_enc.perf_stats();
                 if (video_stats.frames_submitted < last_video_stats.frames_submitted)
                     last_video_stats = {};
@@ -1661,6 +1678,8 @@ static void media_start(HWND hwnd)
                 if (encoder_submitted < last_encoder_submitted) last_encoder_submitted = 0;
                 if (encoder_packets < last_encoder_packets) last_encoder_packets = 0;
                 if (encoder_push_us < last_encoder_push_us) last_encoder_push_us = 0;
+                if (memcpy_frames < last_memcpy_frames) last_memcpy_frames = 0;
+                if (memcpy_us < last_memcpy_us) last_memcpy_us = 0;
 
                 const uint64_t readback_delta = capture_stats.frames_readback - last_capture_stats.frames_readback;
                 const uint64_t readback_us_delta = capture_stats.readback_time_us_total - last_capture_stats.readback_time_us_total;
@@ -1671,6 +1690,10 @@ static void media_start(HWND hwnd)
                     : 0.0;
                 const double avg_push_ms = encoder_delta
                     ? static_cast<double>(encoder_push_us_delta) / static_cast<double>(encoder_delta) / 1000.0
+                    : 0.0;
+                const uint64_t memcpy_delta = memcpy_frames - last_memcpy_frames;
+                const double avg_memcpy_ms = memcpy_delta
+                    ? static_cast<double>(memcpy_us - last_memcpy_us) / static_cast<double>(memcpy_delta) / 1000.0
                     : 0.0;
                 const uint64_t video_frames_delta = video_stats.frames_submitted - last_video_stats.frames_submitted;
                 const double avg_sws_ms = video_frames_delta
@@ -1684,7 +1707,7 @@ static void media_start(HWND hwnd)
 
                 char perf[320];
                 snprintf(perf, sizeof(perf),
-                    "wgc=%llu drop_pre_readback=%llu readback=%llu pacer=%llu enc_frames=%llu packets=%llu avg_readback_ms=%.2f avg_push_ms=%.2f avg_sws_ms=%.2f avg_encode_ms=%.2f fps=%d",
+                    "wgc=%llu drop_pre_readback=%llu readback=%llu pacer=%llu enc_frames=%llu packets=%llu avg_readback_ms=%.2f avg_memcpy_ms=%.2f avg_push_ms=%.2f avg_sws_ms=%.2f avg_encode_ms=%.2f fps=%d",
                     static_cast<unsigned long long>(capture_stats.frames_arrived - last_capture_stats.frames_arrived),
                     static_cast<unsigned long long>(capture_stats.frames_dropped_before_readback - last_capture_stats.frames_dropped_before_readback),
                     static_cast<unsigned long long>(readback_delta),
@@ -1692,6 +1715,7 @@ static void media_start(HWND hwnd)
                     static_cast<unsigned long long>(encoder_delta),
                     static_cast<unsigned long long>(encoder_packets - last_encoder_packets),
                     avg_readback_ms,
+                    avg_memcpy_ms,
                     avg_push_ms,
                     avg_sws_ms,
                     avg_encode_ms,
@@ -1703,6 +1727,8 @@ static void media_start(HWND hwnd)
                 last_encoder_submitted = encoder_submitted;
                 last_encoder_packets = encoder_packets;
                 last_encoder_push_us = encoder_push_us;
+                last_memcpy_frames = memcpy_frames;
+                last_memcpy_us = memcpy_us;
                 last_video_stats = video_stats;
             }
             // Push BGRA frame to pacer. Pacer thread drives encoder at fixed FPS.
