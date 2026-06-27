@@ -313,6 +313,10 @@ static recording::ManualRecorder    g_recording;
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
+static std::atomic<uint64_t> g_perf_pacer_frames_submitted{ 0 };
+static std::atomic<uint64_t> g_perf_encoder_frames_submitted{ 0 };
+static std::atomic<uint64_t> g_perf_encoder_push_time_us_total{ 0 };
+static std::atomic<uint64_t> g_perf_encoder_packets_output{ 0 };
 // Backoff after a failed encoder open: don't re-probe on every captured frame.
 static std::atomic<uint64_t> g_video_enc_retry_after_ms{ 0 };
 static constexpr uint64_t kVideoEncRetryBackoffMs = 2000;
@@ -335,6 +339,7 @@ static int64_t              g_pacer_start_qpc    = 0;  // QPC at pacer start
 static int64_t              g_pacer_frames_done  = 0;  // CFR frames emitted so far
 static int                  g_pacer_fps          = 0;
 static std::atomic<bool>    g_pacer_running{ false };
+static bool                 g_pacer_time_period_set = false;
 static std::wstring g_recordings_dir;
 static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
@@ -403,6 +408,14 @@ static void pacer_push_frame(const uint8_t* bgra, int stride, int width, int hei
     g_pacer_shared.width    = width;
     g_pacer_shared.height   = height;
     g_pacer_shared.frame_id++;
+}
+
+static uint64_t qpc_elapsed_us(const LARGE_INTEGER& start,
+                               const LARGE_INTEGER& end)
+{
+    return g_pacer_qpc_freq > 0
+        ? static_cast<uint64_t>((end.QuadPart - start.QuadPart) * 1000000ll / g_pacer_qpc_freq)
+        : 0;
 }
 
 static void pacer_release_buffers()
@@ -475,15 +488,22 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
             static_cast<double>(now_qpc.QuadPart - g_pacer_start_qpc)
             * g_pacer_fps / static_cast<double>(g_pacer_qpc_freq));
 
-        // Safety clamp: never emit a huge burst (e.g. after a long stall) that
-        // would flood the encoder.  Cap catch-up to ~1s worth of frames.
-        if (target - g_pacer_frames_done > g_pacer_fps)
-            g_pacer_frames_done = target - g_pacer_fps;
+        // Avoid catch-up bursts after stalls. For a lightweight clipping app it
+        // is better to drop late duplicate frames than to flood CPU/encoder work.
+        if (target - g_pacer_frames_done > 1)
+            g_pacer_frames_done = target - 1;
 
-        while (g_pacer_frames_done < target) {
+        if (g_pacer_frames_done < target) {
+            LARGE_INTEGER push_start{}, push_end{};
+            QueryPerformanceCounter(&push_start);
             g_video_enc.push_bgra(local_bgra.data(), local_stride,
                                   local_width, local_height,
                                   g_pacer_frames_done);
+            QueryPerformanceCounter(&push_end);
+            g_perf_encoder_push_time_us_total.fetch_add(
+                qpc_elapsed_us(push_start, push_end), std::memory_order_relaxed);
+            g_perf_pacer_frames_submitted.fetch_add(1, std::memory_order_relaxed);
+            g_perf_encoder_frames_submitted.fetch_add(1, std::memory_order_relaxed);
             g_pacer_frames_done++;
         }
     }
@@ -506,7 +526,11 @@ static void pacer_start()
     g_pacer_start_qpc   = start.QuadPart;
     g_pacer_frames_done = 0;
 
-    timeBeginPeriod(1); // tighten system timer resolution for the timer wait
+    g_pacer_time_period_set = false;
+    if (g_pacer_fps > 60) {
+        timeBeginPeriod(1); // high-FPS mode: tighten system timer resolution.
+        g_pacer_time_period_set = true;
+    }
 
     g_pacer_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_pacer_running = true;
@@ -524,7 +548,10 @@ static void pacer_stop()
         }
         CloseHandle(g_pacer_stop_event);
         g_pacer_stop_event = nullptr;
-        timeEndPeriod(1);
+        if (g_pacer_time_period_set) {
+            timeEndPeriod(1);
+            g_pacer_time_period_set = false;
+        }
     }
     pacer_release_buffers();
 }
@@ -1548,22 +1575,28 @@ static void media_start(HWND hwnd)
     g_enc_w = 0;
     g_enc_h = 0;
 
-    // ── Video encoder ─────────────────────────────────────────────────────────
-    log_msg("encoding", "video encoder deferred until first WGC frame");
-
-    // ── Start pacer thread (OBS-style fixed-rate encoder feed) ────────────────
-    pacer_start();
-
     // ── Replay buffer config ───────────────────────────────────────────────────
     {
         apply_runtime_settings();
     }
 
-    // Both components off: skip the whole media pipeline (low-end mode).
-    if (!g_settings.replay_buffer_enabled && !g_settings.recording_enabled) {
-        log_msg("app", "recording + replay buffer disabled: media pipeline not started");
+    // Do not run WGC/pacer/encoder while no video output is active.
+    if (!g_settings.replay_buffer_enabled &&
+        g_recording.state() == recording::RecordingState::Idle) {
+        log_msg("app", "video pipeline not started: replay disabled and recording idle");
         return;
     }
+
+    g_perf_pacer_frames_submitted.store(0, std::memory_order_relaxed);
+    g_perf_encoder_frames_submitted.store(0, std::memory_order_relaxed);
+    g_perf_encoder_push_time_us_total.store(0, std::memory_order_relaxed);
+    g_perf_encoder_packets_output.store(0, std::memory_order_relaxed);
+
+    // ── Video encoder ─────────────────────────────────────────────────────────
+    log_msg("encoding", "video encoder deferred until first WGC frame");
+
+    // ── Start pacer thread (OBS-style fixed-rate encoder feed) ────────────────
+    pacer_start();
 
     // ── Audio capture/routing ──────────────────────────────────────────────────
     g_main_hwnd = hwnd;
@@ -1603,6 +1636,55 @@ static void media_start(HWND hwnd)
                     stats.saving ? "true" : "false",
                     static_cast<double>(raw_capacity) / 1048576.0);
                 log_msg("capture", buf);
+
+                static capture::CaptureStats last_capture_stats{};
+                static uint64_t last_pacer_submitted = 0;
+                static uint64_t last_encoder_submitted = 0;
+                static uint64_t last_encoder_packets = 0;
+                static uint64_t last_encoder_push_us = 0;
+
+                const capture::CaptureStats capture_stats = g_video.stats();
+                if (capture_stats.frames_arrived < last_capture_stats.frames_arrived)
+                    last_capture_stats = {};
+                const uint64_t pacer_submitted = g_perf_pacer_frames_submitted.load(std::memory_order_relaxed);
+                const uint64_t encoder_submitted = g_perf_encoder_frames_submitted.load(std::memory_order_relaxed);
+                const uint64_t encoder_packets = g_perf_encoder_packets_output.load(std::memory_order_relaxed);
+                const uint64_t encoder_push_us = g_perf_encoder_push_time_us_total.load(std::memory_order_relaxed);
+                if (pacer_submitted < last_pacer_submitted) last_pacer_submitted = 0;
+                if (encoder_submitted < last_encoder_submitted) last_encoder_submitted = 0;
+                if (encoder_packets < last_encoder_packets) last_encoder_packets = 0;
+                if (encoder_push_us < last_encoder_push_us) last_encoder_push_us = 0;
+
+                const uint64_t readback_delta = capture_stats.frames_readback - last_capture_stats.frames_readback;
+                const uint64_t readback_us_delta = capture_stats.readback_time_us_total - last_capture_stats.readback_time_us_total;
+                const uint64_t encoder_delta = encoder_submitted - last_encoder_submitted;
+                const uint64_t encoder_push_us_delta = encoder_push_us - last_encoder_push_us;
+                const double avg_readback_ms = readback_delta
+                    ? static_cast<double>(readback_us_delta) / static_cast<double>(readback_delta) / 1000.0
+                    : 0.0;
+                const double avg_push_ms = encoder_delta
+                    ? static_cast<double>(encoder_push_us_delta) / static_cast<double>(encoder_delta) / 1000.0
+                    : 0.0;
+
+                char perf[256];
+                snprintf(perf, sizeof(perf),
+                    "wgc=%llu drop_pre_readback=%llu readback=%llu pacer=%llu enc_frames=%llu packets=%llu avg_readback_ms=%.2f avg_push_ms=%.2f fps=%d",
+                    static_cast<unsigned long long>(capture_stats.frames_arrived - last_capture_stats.frames_arrived),
+                    static_cast<unsigned long long>(capture_stats.frames_dropped_before_readback - last_capture_stats.frames_dropped_before_readback),
+                    static_cast<unsigned long long>(readback_delta),
+                    static_cast<unsigned long long>(pacer_submitted - last_pacer_submitted),
+                    static_cast<unsigned long long>(encoder_delta),
+                    static_cast<unsigned long long>(encoder_packets - last_encoder_packets),
+                    avg_readback_ms,
+                    avg_push_ms,
+                    g_settings.video_fps);
+                log_msg("perf-video", perf);
+
+                last_capture_stats = capture_stats;
+                last_pacer_submitted = pacer_submitted;
+                last_encoder_submitted = encoder_submitted;
+                last_encoder_packets = encoder_packets;
+                last_encoder_push_us = encoder_push_us;
             }
             // Push BGRA frame to pacer. Pacer thread drives encoder at fixed FPS.
             if (f.bgra_data == nullptr) return;
@@ -1645,6 +1727,7 @@ static void media_start(HWND hwnd)
                 vcfg.extra_options     = g_settings.extra_ffmpeg_options;
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
+                    g_perf_encoder_packets_output.fetch_add(1, std::memory_order_relaxed);
                     if (g_replay_enabled.load(std::memory_order_relaxed)) {
                         auto replay_pkt = pkt;
                         g_replay.push(std::move(replay_pkt));
@@ -1708,7 +1791,11 @@ static void media_start(HWND hwnd)
                              static_cast<int>(f.bgra_stride),
                              static_cast<int>(f.width),
                              static_cast<int>(f.height));
-        }, g_settings.show_capture_border);
+        }, capture::CaptureOptions{
+            g_settings.show_capture_border,
+            std::max(1, g_settings.video_fps),
+            false
+        });
         log_msg("capture", ok ? "WGC display capture started"
                                : "WARNING: WGC display capture failed");
         if (ok) {
@@ -2226,6 +2313,8 @@ static void dispatch(Cmd cmd, HWND hwnd)
             break;
         }
         if (g_recording.start(g_recordings_dir, g_recording_container)) {
+            if (!g_video.running())
+                media_start(hwnd);
             log_path("recording", "recording started: ", g_recording.current_path());
             feedback::play(feedback::Sound::RecordStart);
             tray_set_recording(true);
@@ -2243,6 +2332,8 @@ static void dispatch(Cmd cmd, HWND hwnd)
             else log_path("recording", "recording saved: ", path);
             feedback::play(feedback::Sound::RecordStop);
             tray_set_recording(false);
+            if (!g_replay_enabled.load(std::memory_order_relaxed) && g_video.running())
+                media_stop();
         } else {
             log_msg("recording", "recording_stop rejected: state=idle");
         }

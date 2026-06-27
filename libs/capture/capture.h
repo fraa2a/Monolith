@@ -11,6 +11,19 @@
 
 namespace capture {
 
+struct CaptureOptions {
+    bool show_border = true;
+    int max_readback_fps = 60;
+    bool allow_unlimited_readback = false;
+};
+
+struct CaptureStats {
+    uint64_t frames_arrived = 0;
+    uint64_t frames_dropped_before_readback = 0;
+    uint64_t frames_readback = 0;
+    uint64_t readback_time_us_total = 0;
+};
+
 struct FrameInfo {
     int64_t  timestamp_qpc; // QueryPerformanceCounter at ingest
     uint32_t width;
@@ -45,8 +58,10 @@ public:
     // show_border = false requests yellow-border suppression via
     // GraphicsCaptureSession::IsBorderRequired(false); the OS may deny it.
     bool start(HMONITOR hmon, FrameCallback cb, bool show_border = false);
+    bool start(HMONITOR hmon, FrameCallback cb, CaptureOptions options);
     void stop();
     bool running() const;
+    CaptureStats stats() const;
 
     // True when border suppression was requested and the OS accepted it.
     bool border_suppressed() const;
