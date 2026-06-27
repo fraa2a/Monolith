@@ -83,7 +83,32 @@ internal static class StartupTrace
             "Monolith");
         Directory.CreateDirectory(dir);
         string path = Path.Combine(dir, "settings-startup.log");
+        RotateIfTooLarge(path, maxBytes: 1024 * 1024, backups: 3);
         File.AppendAllLines(path, lines);
+    }
+
+    private static void RotateIfTooLarge(string path, long maxBytes, int backups)
+    {
+        try
+        {
+            FileInfo info = new(path);
+            if (!info.Exists || info.Length <= maxBytes)
+                return;
+
+            for (int i = backups; i >= 1; --i)
+            {
+                string src = i == 1 ? path : $"{path}.{i - 1}";
+                string dst = $"{path}.{i}";
+                if (i == backups && File.Exists(dst))
+                    File.Delete(dst);
+                if (File.Exists(src))
+                    File.Move(src, dst, overwrite: true);
+            }
+        }
+        catch
+        {
+            // Log retention is best-effort and must never block startup.
+        }
     }
 
     private static void TryAppendLines(IEnumerable<string> lines)

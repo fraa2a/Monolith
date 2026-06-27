@@ -9,7 +9,7 @@
   },
   "replay_buffer": {
     "duration_seconds": 30,
-    "memory_budget_mb": 512,
+    "memory_budget_mb": 128,
     "save_container": "mkv",
     "enabled": true
   },

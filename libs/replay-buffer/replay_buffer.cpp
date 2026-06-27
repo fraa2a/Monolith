@@ -48,6 +48,44 @@ struct ReplayBuffer::Impl {
 
     std::atomic<bool>               saving{false};
     std::thread                     save_thread;
+
+    bool can_purge() const
+    {
+        return ring.size() >= 2 && keyframes > 2;
+    }
+
+    bool pop_front_packet()
+    {
+        if (ring.empty()) return false;
+
+        encoding::EncodedPacket pkt = std::move(ring.front());
+        ring.pop_front();
+
+        const size_t pkt_size = pkt.size();
+        total_bytes = (pkt_size <= total_bytes) ? (total_bytes - pkt_size) : 0;
+
+        const bool was_video_keyframe = pkt.stream_index == 0 && pkt.is_keyframe;
+        if (was_video_keyframe && keyframes > 0)
+            keyframes--;
+
+        cur_time = ring.empty() ? 0 : ring.front().dts_usec;
+        return was_video_keyframe;
+    }
+
+    void purge_one_gop()
+    {
+        if (!can_purge()) return;
+
+        const bool removed_keyframe = pop_front_packet();
+        if (!removed_keyframe) return;
+
+        while (!ring.empty() && can_purge()) {
+            const auto& front = ring.front();
+            if (front.stream_index == 0 && front.is_keyframe)
+                break;
+            pop_front_packet();
+        }
+    }
 };
 
 // ── ReplayBuffer ──────────────────────────────────────────────────────────────
@@ -107,49 +145,18 @@ void ReplayBuffer::push(encoding::EncodedPacket pkt)
     const size_t max_bytes = static_cast<size_t>(impl_->cfg.memory_cap_mb) * 1024 * 1024;
     const int64_t max_time = static_cast<int64_t>(impl_->cfg.duration_sec) * 1000000;
 
-    // Guard: never purge below 2 keyframes or when ring is too small.
-    auto can_purge = [&]() -> bool {
-        return impl_->ring.size() >= 2 && impl_->keyframes > 2;
-    };
+    while (impl_->can_purge() && impl_->total_bytes + pkt.size() > max_bytes)
+        impl_->purge_one_gop();
 
-    auto pop_front = [&]() {
-        auto& front = impl_->ring.front();
-        impl_->total_bytes -= front.data.size();
-        if (front.stream_index == 0 && front.is_keyframe)
-            impl_->keyframes--;
-        impl_->ring.pop_front();
-        if (!impl_->ring.empty())
-            impl_->cur_time = impl_->ring.front().dts_usec;
-        else
-            impl_->cur_time = 0;
-    };
+    while (impl_->can_purge() && !impl_->ring.empty() &&
+           pkt.dts_usec - impl_->cur_time > max_time)
+        impl_->purge_one_gop();
 
-    // 1) Memory cap — purge until (total_bytes + pkt.size) ≤ max_bytes.
-    if (can_purge()) {
-        int64_t needed = static_cast<int64_t>(impl_->total_bytes)
-                       + static_cast<int64_t>(pkt.data.size())
-                       - static_cast<int64_t>(max_bytes);
-        while (needed > 0 && can_purge()) {
-            needed -= static_cast<int64_t>(impl_->ring.front().data.size());
-            pop_front();
-        }
-    }
-
-    // 2) Time cap — purge until (pkt.dts_usec - cur_time) ≤ max_time.
-    if (can_purge()) {
-        while (can_purge()) {
-            int64_t span = pkt.dts_usec - impl_->cur_time;
-            if (span <= max_time) break;
-            pop_front();
-        }
-    }
-
-    // 3) Push the new packet.
     if (pkt.stream_index == 0 && pkt.is_keyframe)
         impl_->keyframes++;
     if (impl_->ring.empty())
         impl_->cur_time = pkt.dts_usec;
-    impl_->total_bytes += pkt.data.size();
+    impl_->total_bytes += pkt.size();
     impl_->ring.push_back(std::move(pkt));
 }
 
@@ -163,6 +170,19 @@ size_t ReplayBuffer::memory_bytes() const
 {
     std::lock_guard lk(impl_->mutex);
     return impl_->total_bytes;
+}
+
+ReplayBufferStats ReplayBuffer::stats() const
+{
+    std::lock_guard lk(impl_->mutex);
+    ReplayBufferStats s;
+    s.packet_count = impl_->ring.size();
+    s.logical_bytes = impl_->total_bytes;
+    s.keyframes = impl_->keyframes;
+    s.oldest_dts_usec = impl_->ring.empty() ? 0 : impl_->ring.front().dts_usec;
+    s.newest_dts_usec = impl_->ring.empty() ? 0 : impl_->ring.back().dts_usec;
+    s.saving = impl_->saving.load();
+    return s;
 }
 
 // ── Clip save internals ───────────────────────────────────────────────────────

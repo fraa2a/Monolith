@@ -136,13 +136,14 @@ bool write_packet(AVFormatContext* fmt,
 {
     AVPacket* pkt = av_packet_alloc();
     if (!pkt) return false;
-    if (av_new_packet(pkt, static_cast<int>(ep.data.size())) < 0) {
+    if (av_new_packet(pkt, static_cast<int>(ep.size())) < 0) {
         av_packet_free(&pkt);
         return false;
     }
 
     pkt->stream_index = dst_stream->index;
-    memcpy(pkt->data, ep.data.data(), ep.data.size());
+    if (ep.size() > 0 && ep.data())
+        memcpy(pkt->data, ep.data(), ep.size());
     pkt->flags = ep.is_keyframe ? AV_PKT_FLAG_KEY : 0;
     pkt->pts   = ep.pts - pts_offset;
     pkt->dts   = ep.dts - dts_offset;

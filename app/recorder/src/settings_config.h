@@ -41,7 +41,7 @@ struct Config {
     std::wstring recordings_directory;
     std::wstring temp_directory;
     int replay_duration_seconds = 30;
-    int64_t replay_memory_budget_mb = 512;
+    int64_t replay_memory_budget_mb = 128;
     std::string replay_clip_container = "mkv"; // "mkv" | "mp4"
     bool replay_buffer_enabled = true;
     std::string recording_container = "mkv"; // "mkv" | "mp4"

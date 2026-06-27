@@ -24,6 +24,16 @@ extern "C" {
 
 namespace encoding {
 
+static EncodedBytesRef make_encoded_bytes(const uint8_t* data, int size)
+{
+    if (!data || size <= 0) return {};
+    auto mutable_bytes = std::make_shared<EncodedBytes>();
+    mutable_bytes->size = static_cast<size_t>(size);
+    mutable_bytes->data = std::make_unique<uint8_t[]>(mutable_bytes->size);
+    memcpy(mutable_bytes->data.get(), data, mutable_bytes->size);
+    return std::static_pointer_cast<const EncodedBytes>(mutable_bytes);
+}
+
 // ── probe_video_encoder ───────────────────────────────────────────────────────
 
 static const char* kEncoderCandidates[] = {
@@ -298,7 +308,7 @@ static void drain_video(ImplT* impl)
     if (!pkt) return;
     while (avcodec_receive_packet(impl->ctx, pkt) == 0) {
         EncodedPacket ep;
-        ep.data.assign(pkt->data, pkt->data + pkt->size);
+        ep.bytes        = make_encoded_bytes(pkt->data, pkt->size);
         ep.pts          = pkt->pts;
         ep.dts          = pkt->dts;
         ep.dts_usec     = av_rescale(pkt->dts, 1000000,
@@ -492,7 +502,7 @@ static void drain_audio(ImplT* impl)
     if (!pkt) return;
     while (avcodec_receive_packet(impl->ctx, pkt) == 0) {
         EncodedPacket ep;
-        ep.data.assign(pkt->data, pkt->data + pkt->size);
+        ep.bytes        = make_encoded_bytes(pkt->data, pkt->size);
         ep.pts          = pkt->pts;
         ep.dts          = pkt->dts;
         ep.dts_usec     = av_rescale(pkt->dts, 1000000,

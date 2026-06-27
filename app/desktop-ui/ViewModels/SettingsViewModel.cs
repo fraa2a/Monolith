@@ -21,7 +21,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     // replay_buffer
     private string replayDurationSeconds = "30";
-    private string replayMemoryBudgetMb = "512";
+    private string replayMemoryBudgetMb = "128";
     private string clipContainer = "mkv";
     private bool replayBufferEnabled = true;
     private string recordingContainer = "mkv";
@@ -71,7 +71,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string loadedClipsDirectory = "";
     private string loadedRecordingsDirectory = "";
     private string loadedReplayDurationSeconds = "30";
-    private string loadedReplayMemoryBudgetMb = "512";
+    private string loadedReplayMemoryBudgetMb = "128";
     private string loadedRecordingContainer = "mkv";
     private string loadedSaveReplayHotkey = "Ctrl+Shift+F8";
     private string loadedRecordingStartHotkey = "Ctrl+Shift+F9";

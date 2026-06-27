@@ -81,11 +81,23 @@ public sealed partial class MainWindow : Window
         RootLayout.Loaded += OnRootLayoutLoaded;
 
         sw.Restart();
+        ConfigureWindow();
+        SyncComponentToggles();
+        StartupTrace.MarkDuration("ConfigureWindowShell", sw.ElapsedMilliseconds);
+    }
+
+    private async void OnRootLayoutLoaded(object sender, RoutedEventArgs e)
+    {
+        RootLayout.Loaded -= OnRootLayoutLoaded;
+        StartupTrace.Mark("RootLayout.Loaded first frame");
+
+        await Task.Yield();
+
+        Stopwatch sw = Stopwatch.StartNew();
         viewModel.Load();
         StartupTrace.MarkDuration("SettingsViewModel.Load", sw.ElapsedMilliseconds);
 
         sw.Restart();
-        ConfigureWindow();
         PopulateCaptureCombos();
         SelectRecordingFormat();
         PopulateAudioControls();
@@ -93,14 +105,8 @@ public sealed partial class MainWindow : Window
         UpdateCaptureBorderWarning();
         UpdateVideoEncoderError();
         SyncComponentToggles();
-        StartupTrace.MarkDuration("ConfigureWindow", sw.ElapsedMilliseconds);
         UpdateCorruptConfigBar();
-    }
-
-    private void OnRootLayoutLoaded(object sender, RoutedEventArgs e)
-    {
-        RootLayout.Loaded -= OnRootLayoutLoaded;
-        StartupTrace.Mark("RootLayout.Loaded first frame");
+        StartupTrace.MarkDuration("Settings post-first-frame populate", sw.ElapsedMilliseconds);
         StartupTrace.Flush();
     }
 

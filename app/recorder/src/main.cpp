@@ -10,6 +10,7 @@
 #include <shellapi.h>
 #include <shellscalingapi.h>
 #include <strsafe.h>
+#include <share.h>
 
 #include <winrt/base.h>
 
@@ -123,11 +124,41 @@ static std::wstring app_temp_dir()
     return dir;
 }
 
+static bool file_size_bytes(const std::wstring& path, uint64_t* size)
+{
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data))
+        return false;
+    if (size) {
+        *size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) |
+                static_cast<uint64_t>(data.nFileSizeLow);
+    }
+    return true;
+}
+
+static void rotate_log_if_needed(const std::wstring& path,
+                                 uint64_t max_bytes,
+                                 int backups)
+{
+    uint64_t size = 0;
+    if (!file_size_bytes(path, &size) || size <= max_bytes)
+        return;
+
+    for (int i = backups; i >= 1; --i) {
+        std::wstring src = (i == 1) ? path : (path + L"." + std::to_wstring(i - 1));
+        std::wstring dst = path + L"." + std::to_wstring(i);
+        if (i == backups)
+            DeleteFileW(dst.c_str());
+        MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    }
+}
+
 static void log_init()
 {
     std::wstring dir = app_data_dir();
     if (dir.empty()) return;
     std::wstring path = dir + L"\\monolith.log";
+    rotate_log_if_needed(path, 5ull * 1024ull * 1024ull, 3);
     // _SH_DENYNO: keep the log readable by Settings/diagnostics while we run.
     g_log = _wfsopen(path.c_str(), L"a", _SH_DENYNO);
 }
@@ -374,6 +405,16 @@ static void pacer_push_frame(const uint8_t* bgra, int stride, int width, int hei
     g_pacer_shared.frame_id++;
 }
 
+static void pacer_release_buffers()
+{
+    std::lock_guard<std::mutex> lock(g_pacer_mutex);
+    std::vector<uint8_t>().swap(g_pacer_shared.bgra);
+    g_pacer_shared.stride = 0;
+    g_pacer_shared.width = 0;
+    g_pacer_shared.height = 0;
+    g_pacer_shared.frame_id = 0;
+}
+
 static DWORD WINAPI pacer_thread_proc(LPVOID)
 {
     std::vector<uint8_t> local_bgra;
@@ -447,6 +488,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
         }
     }
 
+    std::vector<uint8_t>().swap(local_bgra);
     if (htimer) CloseHandle(htimer);
     g_pacer_running = false;
     return 0;
@@ -484,6 +526,7 @@ static void pacer_stop()
         g_pacer_stop_event = nullptr;
         timeEndPeriod(1);
     }
+    pacer_release_buffers();
 }
 
 // ── Monitor enumeration / selection ──────────────────────────────────────────
@@ -1540,12 +1583,25 @@ static void media_start(HWND hwnd)
         bool ok = g_video.start(hmon, [](capture::FrameInfo const& f) {
             // Log buffer stats every 300 frames (~5s at 60fps).
             if (f.seq % 300 == 0) {
-                char buf[160];
+                auto stats = g_replay.stats();
+                size_t raw_capacity = 0;
+                {
+                    std::lock_guard<std::mutex> lock(g_pacer_mutex);
+                    raw_capacity = g_pacer_shared.bgra.capacity();
+                }
+                const double span_sec = stats.newest_dts_usec > stats.oldest_dts_usec
+                    ? static_cast<double>(stats.newest_dts_usec - stats.oldest_dts_usec) / 1000000.0
+                    : 0.0;
+                char buf[224];
                 snprintf(buf, sizeof(buf),
-                    "seq=%-6u  %ux%u  buf=%zu pkt / %.1f MB",
+                    "seq=%-6u %ux%u replay=%zu pkt / %.1f MB keyframes=%d span=%.1fs saving=%s raw_cap=%.1f MB",
                     f.seq, f.width, f.height,
-                    g_replay.packet_count(),
-                    static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
+                    stats.packet_count,
+                    static_cast<double>(stats.logical_bytes) / 1048576.0,
+                    stats.keyframes,
+                    span_sec,
+                    stats.saving ? "true" : "false",
+                    static_cast<double>(raw_capacity) / 1048576.0);
                 log_msg("capture", buf);
             }
             // Push BGRA frame to pacer. Pacer thread drives encoder at fixed FPS.

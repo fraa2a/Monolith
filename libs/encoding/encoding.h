@@ -1,21 +1,40 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace encoding {
 
+// Immutable encoded payload shared by replay snapshots, mux queues and
+// recording sinks. Copying EncodedPacket must not duplicate packet bytes.
+struct EncodedBytes {
+    std::unique_ptr<uint8_t[]> data;
+    size_t size = 0;
+
+    EncodedBytes() = default;
+    EncodedBytes(const EncodedBytes&) = delete;
+    EncodedBytes& operator=(const EncodedBytes&) = delete;
+};
+
+using EncodedBytesRef = std::shared_ptr<const EncodedBytes>;
+
 // Unit stored in the replay ring buffer and written to MKV.
 struct EncodedPacket {
-    std::vector<uint8_t> data;
-    int64_t  pts;           // in packet timebase
-    int64_t  dts;
-    int64_t  dts_usec;     // dts converted to microseconds (for replay buffer ordering/purge)
-    int32_t  stream_index;  // 0 = video, 1..6 = audio tracks
-    bool     is_keyframe;
-    int32_t  tb_num;        // timebase numerator
-    int32_t  tb_den;        // timebase denominator
+    EncodedBytesRef bytes;
+    int64_t  pts = 0;           // in packet timebase
+    int64_t  dts = 0;
+    int64_t  dts_usec = 0;      // dts converted to microseconds (for replay buffer ordering/purge)
+    int32_t  stream_index = 0;  // 0 = video, 1..6 = audio tracks
+    bool     is_keyframe = false;
+    int32_t  tb_num = 1;        // timebase numerator
+    int32_t  tb_den = 1;        // timebase denominator
+
+    const uint8_t* data() const noexcept { return bytes ? bytes->data.get() : nullptr; }
+    size_t size() const noexcept { return bytes ? bytes->size : 0; }
+    bool empty() const noexcept { return size() == 0; }
 };
 
 using PacketSink = std::function<void(EncodedPacket)>;

@@ -33,7 +33,7 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   "replay_buffer": {
     "enabled": true,
     "duration_seconds": 30,
-    "memory_budget_mb": 512,
+    "memory_budget_mb": 128,
     "save_container": "mkv"
   },
   "recording": {
@@ -437,12 +437,12 @@ Config config_from_json(
     config.replay_duration_seconds = int_at(
         doc, "replay_buffer", "duration_seconds", 30);
     config.replay_memory_budget_mb = int64_at(
-        doc, "replay_buffer", "memory_budget_mb", 512);
+        doc, "replay_buffer", "memory_budget_mb", 128);
 
     if (config.replay_duration_seconds < 5 || config.replay_duration_seconds > 600)
         config.replay_duration_seconds = 30;
     if (config.replay_memory_budget_mb < 64 || config.replay_memory_budget_mb > 16384)
-        config.replay_memory_budget_mb = 512;
+        config.replay_memory_budget_mb = 128;
 
     config.replay_clip_container = utf8_at(doc, "replay_buffer", "save_container", "mkv");
     if (config.replay_clip_container != "mkv" && config.replay_clip_container != "mp4")

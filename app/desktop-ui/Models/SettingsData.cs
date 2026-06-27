@@ -24,7 +24,7 @@ public sealed class SettingsData
 
     // replay_buffer
     public string ReplayDurationSeconds { get; set; } = "30";
-    public string ReplayMemoryBudgetMb { get; set; } = "512";
+    public string ReplayMemoryBudgetMb { get; set; } = "128";
     public string ClipContainer { get; set; } = "mkv";
 
     // hotkeys

@@ -20,7 +20,7 @@ public sealed class SettingsService
       },
       "replay_buffer": {
         "duration_seconds": 30,
-        "memory_budget_mb": 512,
+        "memory_budget_mb": 128,
         "save_container": "mkv",
         "enabled": true
       },
@@ -305,7 +305,7 @@ public sealed class SettingsService
 
         JsonObject replay = ObjectAt(root, "replay_buffer");
         SetIfMissing(replay, "duration_seconds", 30);
-        SetIfMissing(replay, "memory_budget_mb", 512);
+        SetIfMissing(replay, "memory_budget_mb", 128);
         SetIfMissing(replay, "save_container", "mkv");
         SetIfMissing(replay, "enabled", true);
 
@@ -375,7 +375,7 @@ public sealed class SettingsService
             RecordingsDirectory = StringAt(output, "recordings_directory"),
             TempDirectory = StringAt(output, "temp_directory"),
             ReplayDurationSeconds = IntAt(replay, "duration_seconds", 30).ToString(),
-            ReplayMemoryBudgetMb = IntAt(replay, "memory_budget_mb", 512).ToString(),
+            ReplayMemoryBudgetMb = IntAt(replay, "memory_budget_mb", 128).ToString(),
             ClipContainer = outputContainer,
             ReplayBufferEnabled = BoolAt(replay, "enabled", true),
             SaveReplayHotkey = StringAt(hotkeys, "save_replay", "Ctrl+Shift+F8"),
@@ -410,7 +410,7 @@ public sealed class SettingsService
 
         JsonObject replay = ObjectAt(root, "replay_buffer");
         replay["duration_seconds"] = ParseInt(settings.ReplayDurationSeconds, 30, 5, 600);
-        replay["memory_budget_mb"] = ParseInt(settings.ReplayMemoryBudgetMb, 512, 64, 16384);
+        replay["memory_budget_mb"] = ParseInt(settings.ReplayMemoryBudgetMb, 128, 64, 16384);
         string outputContainer = NormalizeContainer(settings.RecordingContainer);
         replay["save_container"] = outputContainer;
         replay["enabled"] = settings.ReplayBufferEnabled;
