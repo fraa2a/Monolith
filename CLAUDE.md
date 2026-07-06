@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Monolith is a Windows-only, recorder-first screen capture/replay-buffer app (an OBS alternative narrowed to recording + clip saving). Native C++23 engine + Win32 tray host in one process, with a WinUI 3 (C# / .NET 8) settings sidecar. Windows 11, x64 only.
+Monolith is a Windows-only, recorder-first screen capture/replay-buffer app (an OBS alternative narrowed to recording + clip saving). Native C++23 engine + Win32 tray host in one process, with a Tauri v2 / WebView2 UI sidecar (`Monolith.UI.exe`). Windows 11, x64 only.
 
 ## Build
 
-The native app and the settings sidecar build together through CMake. Building requires Windows with MSVC, vcpkg, and the .NET 8 SDK.
+The native engine and the Tauri UI build together through CMake. Building requires Windows with MSVC, vcpkg, the Rust toolchain (cargo), and Deno (used only to bundle the UI frontend).
 
 ```bat
 build.bat
@@ -22,7 +22,7 @@ cmake --build build --config Release --parallel
 ```
 
 - Dependencies are vcpkg manifest-mode (`vcpkg.json`), pinned via `builtin-baseline`: `nlohmann-json`, `winsparkle`, and `ffmpeg` (with `amf`, `nvcodec`, `qsv`, `x264`, `x265`, `gpl` features). To bump deps, change the baseline SHA deliberately.
-- The settings app (`app/desktop-ui`) is published self-contained via `dotnet publish` as a CMake custom target and dropped into `<recorder-output>/settings/`. If the .NET SDK is missing, CMake warns and skips it but still builds the recorder.
+- The new UI (`app/desktop-ui`) is a **Tauri v2 / WebView2** app: `deno` (2.9+) bundles the Preact frontend into `dist/` (`build.ts`) and `cargo build --release` compiles the self-contained `src-tauri/target/release/monolith_ui.exe`, which a CMake custom target copies to `<recorder-output>/ui/Monolith.UI.exe` (skipped with a warning if `deno` or `cargo` is absent; the tauri-cli is not needed). A missing toolchain is non-fatal — the recorder still builds.
 
 ## Tests
 
@@ -46,7 +46,7 @@ Single-process MVP. Module boundaries are enforced by library separation under `
 Actual targets (see root `CMakeLists.txt` — note this differs from the larger module list in `PROJECT_PLAN.md`, which is aspirational):
 
 - `app/recorder` — the `Monolith.exe` engine + tray host. `src/main.cpp` (~2200 lines) is the orchestrator: message-only window, single-instance guard, global hotkeys, the recording/replay state, audio-source wiring, and Active Game polling. `settings_config.cpp` owns config schema/load/validate/clamp; `settings_window.cpp` bridges to the sidecar; `updater.cpp` is WinSparkle.
-- `app/desktop-ui` — `Monolith.Settings.exe`, a WinUI 3 sidecar launched from the tray. Not an always-on process. MVVM under `Models/`, `ViewModels/`, `Services/`.
+- `app/desktop-ui` — the new UI layer (`Monolith.UI.exe`), a **Tauri v2** (WebView2) app: Home = clip grid, Settings = popup. Launched from the tray; not always-on. Rust host (`src-tauri/`: `main.rs`, `server.rs`, `media.rs`, plus data modules `clip_catalog.rs`/`settings_store.rs`/`engine_rpc.rs`/`game_catalog.rs`/`paths.rs`) + Preact frontend (`ui/`). The host runs a loopback HTTP server and the window loads `http://127.0.0.1:<port>/`, so the frontend keeps its `fetch()`/`/media` route contract. Reads the clip DBs read-only; clip mutations + settings-reload go to the engine over JSON-RPC. See ADR-0011 / ADR-0012. (The old Deno host — `main.ts`, `server/`, `bindings/` — is being removed.)
 - `libs/capture` — WGC (`Windows.Graphics.Capture`) display capture.
 - `libs/audio` — WASAPI loopback/microphone/input + process-loopback capture, plus `detect_active_game()`.
 - `libs/encoding` — FFmpeg H.264/AAC encode wrappers; `mux_common` for muxing.

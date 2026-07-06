@@ -57,7 +57,10 @@ bool settings_already_running()
     }
     FocusContext ctx{ GetProcessId(g_settings_process), false };
     EnumWindows(focus_enum_proc, reinterpret_cast<LPARAM>(&ctx));
-    return true;
+    // Only treat the process as "already running" when it actually has a visible
+    // window we could focus. A live process with no window (the failure mode that
+    // motivated leaving Deno Desktop) must not block relaunches forever.
+    return ctx.focused;
 }
 
 std::filesystem::path module_dir()
@@ -68,23 +71,47 @@ std::filesystem::path module_dir()
     return std::filesystem::path(path).parent_path();
 }
 
-std::filesystem::path settings_exe_path()
-{
-    const std::filesystem::path base = module_dir();
-    const std::filesystem::path candidates[] = {
-        base / "settings" / "Monolith.Settings.exe",
-        base / "Monolith.Settings.exe",
-        base / ".." / ".." / ".." / "desktop-ui" / "bin" / "Release"
-            / "net8.0-windows10.0.19041.0" / "win-x64" / "Monolith.Settings.exe",
-    };
+// How to launch the UI: the executable, its command line, and the working
+// directory. The Tauri host is a single self-contained exe (Monolith.UI.exe):
+// it starts its own loopback HTTP server and opens the WebView2 window, so a
+// plain exe path is all that's needed.
+struct UiLaunch {
+    std::filesystem::path exe;
+    std::wstring          command_line; // quoted exe + args
+    std::filesystem::path working_dir;
+    bool                  found = false;
+};
 
+// Locates the Tauri UI exe (installed under ui/Monolith.UI.exe next to the
+// recorder, or a dev cargo build tree) and returns its launch spec. Empty
+// result if no exe is present.
+UiLaunch resolve_tauri_ui(const std::filesystem::path& base)
+{
+    const std::filesystem::path candidates[] = {
+        base / "ui" / "Monolith.UI.exe",                           // installed / CMake copy
+        // Dev: running the recorder straight from a build tree, before the copy.
+        base / ".." / ".." / ".." / "app" / "desktop-ui" / "src-tauri"
+            / "target" / "release" / "monolith_ui.exe",
+        base / ".." / ".." / ".." / "app" / "desktop-ui" / "src-tauri"
+            / "target" / "debug" / "monolith_ui.exe",
+    };
     for (const auto& candidate : candidates) {
         std::error_code ec;
-        if (std::filesystem::is_regular_file(candidate, ec))
-            return std::filesystem::weakly_canonical(candidate, ec);
+        if (std::filesystem::is_regular_file(candidate, ec)) {
+            UiLaunch l;
+            l.exe          = std::filesystem::weakly_canonical(candidate, ec);
+            l.working_dir  = l.exe.parent_path();
+            l.command_line = L"\"" + l.exe.wstring() + L"\"";
+            l.found        = true;
+            return l;
+        }
     }
+    return {};
+}
 
-    return base / "Monolith.Settings.exe";
+UiLaunch resolve_ui_launch()
+{
+    return resolve_tauri_ui(module_dir());
 }
 
 } // namespace
@@ -93,10 +120,18 @@ void show(HWND owner, UINT reload_message)
 {
     if (settings_already_running()) return;
 
-    std::filesystem::path exe = settings_exe_path();
+    UiLaunch launch = resolve_ui_launch();
+    if (!launch.found) {
+        MessageBoxW(owner,
+            L"The Monolith UI (Monolith.UI.exe) was not found.\n\n"
+            L"It is built by CMake when Rust/Cargo and `deno` are installed; "
+            L"reinstall or rebuild to restore it.",
+            L"Monolith", MB_ICONERROR);
+        return;
+    }
 
-    std::wstring command_line = L"\"" + exe.wstring() + L"\"";
-    std::vector<wchar_t> mutable_command_line(command_line.begin(), command_line.end());
+    std::vector<wchar_t> mutable_command_line(
+        launch.command_line.begin(), launch.command_line.end());
     mutable_command_line.push_back(L'\0');
 
     STARTUPINFOW startup{};
@@ -105,9 +140,9 @@ void show(HWND owner, UINT reload_message)
     startup.wShowWindow = SW_SHOWNORMAL;
 
     PROCESS_INFORMATION process_info{};
-    std::wstring working_dir = exe.parent_path().wstring();
+    std::wstring working_dir = launch.working_dir.wstring();
     BOOL started = CreateProcessW(
-        exe.c_str(),
+        launch.exe.c_str(),
         mutable_command_line.data(),
         nullptr,
         nullptr,
@@ -120,11 +155,9 @@ void show(HWND owner, UINT reload_message)
 
     if (!started || !process_info.hProcess) {
         std::wstring message =
-            L"Monolith.Settings.exe was not found or could not be started.\n\n"
-            L"Expected location:\n" + exe.wstring() +
-            L"\n\nBuild or install the WinUI settings app "
-            L"(cmake builds it when the .NET 8 SDK is installed).";
-        MessageBoxW(owner, message.c_str(), L"Monolith Settings", MB_ICONERROR);
+            L"The Monolith UI could not be started.\n\nExpected location:\n"
+            + launch.exe.wstring();
+        MessageBoxW(owner, message.c_str(), L"Monolith", MB_ICONERROR);
         return;
     }
     CloseHandle(process_info.hThread);

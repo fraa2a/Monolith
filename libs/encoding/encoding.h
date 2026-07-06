@@ -8,6 +8,16 @@
 
 namespace encoding {
 
+// Decodes the first frame of an existing video file and writes it as a PNG
+// thumbnail. The frame is scaled so its longest side is at most max_dim
+// (aspect ratio preserved). Returns true on success. Thread-safe: opens its
+// own demuxer/decoder/scaler and touches no shared state, so it is safe to
+// call from the async clip-save thread or a background reconcile thread.
+// Never call it from the UI/tray message loop (it does blocking decode I/O).
+bool generate_thumbnail(const std::wstring& video_path,
+                        const std::wstring& thumb_path,
+                        int max_dim = 480);
+
 // Immutable encoded payload shared by replay snapshots, mux queues and
 // recording sinks. Copying EncodedPacket must not duplicate packet bytes.
 struct EncodedBytes {

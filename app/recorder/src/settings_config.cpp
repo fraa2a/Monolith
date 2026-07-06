@@ -10,10 +10,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <storage/storage.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace settings {
 namespace {
@@ -51,7 +55,11 @@ constexpr const char* kFallbackDefaultConfig = R"json(
         "enabled": true,
         "tracks": [1]
       }
-    ]
+    ],
+    "capture_mode": "all_pc_audio",
+    "separate_tracks": true,
+    "app_preferences": {},
+    "extra_microphones": []
   },
   "video_encoder": {
     "backend": "auto",
@@ -74,6 +82,13 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   "update": {
     "auto_check": true
   },
+  "capture_mode": {
+    "mode": "always",
+    "idle_timeout_seconds": 300
+  },
+  "discord": {
+    "rich_presence_enabled": false
+  },
   "active_game": {
     "detection_enabled": true,
     "poll_interval_ms": 5000,
@@ -83,7 +98,7 @@ constexpr const char* kFallbackDefaultConfig = R"json(
     "fast_scan_min_interval_ms": 1000,
     "blacklist_processes": [
       "Monolith.exe",
-      "Monolith.Settings.exe",
+      "Monolith.UI.exe",
       "Discord.exe",
       "chrome.exe",
       "msedge.exe",
@@ -563,10 +578,53 @@ Config config_from_json(
         parse_string_array("manual_games",         config.active_game.manual_games);
     }
 
+    {
+        auto cm = doc.find("capture_mode");
+        if (cm != doc.end() && cm->is_object()) {
+            auto m = cm->find("mode");
+            if (m != cm->end() && m->is_string()) config.capture_mode = m->get<std::string>();
+            auto t = cm->find("idle_timeout_seconds");
+            if (t != cm->end() && t->is_number_integer())
+                config.capture_idle_timeout_seconds = t->get<int>();
+        }
+        if (config.capture_mode != "always" && config.capture_mode != "game_only")
+            config.capture_mode = "always";
+        if (config.capture_idle_timeout_seconds < 30 ||
+            config.capture_idle_timeout_seconds > 3600)
+            config.capture_idle_timeout_seconds = 300;
+    }
+
     json sanitized = doc;
     write_runtime_fields(sanitized, config);
     config.merged_json = sanitized.dump(2);
     return config;
+}
+
+// Assembles a config-override JSON object from settings.db KV rows. Each row is
+// one top-level section (key = section name, value = that section's JSON). Rows
+// that fail to parse are skipped with a warning.
+json assemble_from_kv(const std::vector<std::pair<std::string, std::string>>& kv,
+                      std::vector<std::string>& warnings)
+{
+    json doc = json::object();
+    for (const auto& [key, value] : kv) {
+        try {
+            doc[key] = json::parse(value);
+        } catch (const std::exception& ex) {
+            warnings.push_back("settings.db key '" + key + "' parse failed: " + ex.what());
+        }
+    }
+    return doc;
+}
+
+// Splits a full config document into one KV row per top-level section.
+std::vector<std::pair<std::string, std::string>> split_to_kv(const json& doc)
+{
+    std::vector<std::pair<std::string, std::string>> kv;
+    if (!doc.is_object()) return kv;
+    for (auto it = doc.begin(); it != doc.end(); ++it)
+        kv.emplace_back(it.key(), it.value().dump());
+    return kv;
 }
 
 } // namespace
@@ -578,11 +636,13 @@ LoadResult load(
     const std::wstring& default_temp_directory)
 {
     LoadResult result;
-    const std::wstring user_config_path = app_data_dir.empty()
-        ? std::wstring()
-        : app_data_dir + L"\\config.json";
-    if (user_config_path.empty())
-        result.warnings.push_back("AppData path not available; user config persistence disabled");
+    if (app_data_dir.empty())
+        result.warnings.push_back("AppData path not available; settings persistence disabled");
+
+    // settings.db is the store of record (ADR-0009 rewrite). user_config_path is
+    // repurposed to point at it for logging.
+    const std::wstring settings_db_path = app_data_dir.empty()
+        ? std::wstring() : app_data_dir + L"\\settings.db";
 
     json merged = load_defaults(
         default_clips_directory,
@@ -590,30 +650,60 @@ LoadResult load(
         default_temp_directory,
         result.warnings);
 
-    const bool user_config_exists = !user_config_path.empty() && exists(user_config_path);
-    if (user_config_exists) {
-        try {
-            json user_config = json::parse(read_text(std::filesystem::path(user_config_path)));
-            merge_overrides(merged, user_config);
-        } catch (const std::exception& ex) {
-            result.warnings.push_back(std::string("user config parse failed; using defaults: ") + ex.what());
+    bool need_seed = false;       // no saved settings yet → seed defaults
+    bool imported_legacy = false; // migrated a legacy config.json this run
+
+    if (!app_data_dir.empty()) {
+        std::vector<std::pair<std::string, std::string>> kv;
+        std::string err;
+        if (!storage::settings_get_all(app_data_dir, kv, &err)) {
+            result.warnings.push_back("settings.db read failed; using defaults: " + err);
+        } else if (!kv.empty()) {
+            json overrides = assemble_from_kv(kv, result.warnings);
+            merge_overrides(merged, overrides);
+        } else {
+            // Empty DB. One-time migration: import a legacy config.json if present.
+            const std::wstring legacy = app_data_dir + L"\\config.json";
+            if (exists(legacy)) {
+                try {
+                    json user_config = json::parse(read_text(std::filesystem::path(legacy)));
+                    merge_overrides(merged, user_config);
+                    imported_legacy = true;
+                } catch (const std::exception& ex) {
+                    result.warnings.push_back(
+                        std::string("legacy config.json parse failed; using defaults: ") + ex.what());
+                }
+            }
+            need_seed = true;
         }
     }
 
     result.config = config_from_json(
         merged,
-        user_config_path,
+        settings_db_path,
         default_clips_directory,
         default_recordings_directory,
         default_temp_directory);
+    result.config.app_data_dir = app_data_dir;
 
-    if (!user_config_exists && !user_config_path.empty()) {
+    // Persist the seeded/migrated settings so subsequent loads read from the DB.
+    if (need_seed && !app_data_dir.empty()) {
         std::string error;
         Config copy = result.config;
-        if (!save(copy, &error))
-            result.warnings.push_back("failed to create user config: " + error);
-        else
+        if (!save(copy, &error)) {
+            result.warnings.push_back("failed to initialize settings.db: " + error);
+        } else {
             result.config = copy;
+            if (imported_legacy) {
+                // Keep the old file as a backup so it is not re-imported.
+                std::error_code ec;
+                std::filesystem::rename(
+                    std::filesystem::path(app_data_dir + L"\\config.json"),
+                    std::filesystem::path(app_data_dir + L"\\config.json.imported.bak"), ec);
+                result.warnings.push_back(
+                    "migrated legacy config.json into settings.db (backup: config.json.imported.bak)");
+            }
+        }
     }
 
     return result;
@@ -633,7 +723,12 @@ bool save(Config& config, std::string* error)
 
     write_runtime_fields(doc, config);
     config.merged_json = doc.dump(2);
-    return write_text(config.user_config_path, config.merged_json, error);
+
+    if (config.app_data_dir.empty()) {
+        if (error) *error = "app data dir unavailable; cannot persist settings";
+        return false;
+    }
+    return storage::settings_replace_all(config.app_data_dir, split_to_kv(doc), error);
 }
 
 std::string serialize_runtime_status(const RuntimeStatus& status)

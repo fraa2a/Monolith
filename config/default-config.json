@@ -28,7 +28,11 @@
         "enabled": true,
         "tracks": [1]
       }
-    ]
+    ],
+    "capture_mode": "all_pc_audio",
+    "separate_tracks": true,
+    "app_preferences": {},
+    "extra_microphones": []
   },
   "video_encoder": {
     "backend": "auto",
@@ -50,6 +54,13 @@
   "update": {
     "auto_check": true
   },
+  "capture_mode": {
+    "mode": "always",
+    "idle_timeout_seconds": 300
+  },
+  "discord": {
+    "rich_presence_enabled": false
+  },
   "active_game": {
     "detection_enabled": true,
     "poll_interval_ms": 5000,
@@ -59,7 +70,7 @@
     "fast_scan_min_interval_ms": 1000,
     "blacklist_processes": [
       "Monolith.exe",
-      "Monolith.Settings.exe",
+      "Monolith.UI.exe",
       "Discord.exe",
       "chrome.exe",
       "msedge.exe",

@@ -46,7 +46,7 @@ long-term target; the split is deferred to reduce early IPC complexity.
 - Win32 tray, message-only window, single-instance guard, and global hotkeys are implemented.
 - WGC display capture, WASAPI loopback/microphone/input-device ingress, FFmpeg H.264/AAC encoding, replay-buffer MKV clip save, and manual recording are implemented.
 - User-facing branding is Monolith. User video output defaults under `Videos\Monolith`; logs/runtime data default under `AppData\Local\Monolith`.
-- WinUI 3 Settings is implemented as `Monolith.Settings.exe`; it opens from the tray, persists config under `AppData\Local\Monolith\config.json`, lazy-loads expensive runtime status pages, and posts a settings-reload message to the recorder after save.
+- The UI is a Tauri v2 / WebView2 app (`Monolith.UI.exe`, `app/desktop-ui`); it opens from the tray (Home = clip grid, Settings = popup), reads clip catalogs read-only, and sends settings-reload / clip mutations to the recorder over JSON-RPC. See ADR-0011 / ADR-0012.
 - Audio V2 foundation is implemented: Default mode routes desktop audio to track 1 and the selected microphone to track 2; Custom mode persists source routing for desktop audio, input devices, process sessions, and Active Game; muxers can create up to six logical audio tracks.
 - IPC server/client, Stream Deck plugin, Desktop Duplication fallback, and GPU-resident encoder path are still pending.
 

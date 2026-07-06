@@ -52,6 +52,7 @@ target_link_libraries(monolith
         capture
         audio
         encoding
+        storage
         replay_buffer
         recording
         ipc

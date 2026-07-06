@@ -1,7 +1,10 @@
 # Development Rules
 
 1. No Electron.
-2. No WebView, WebView2, Chromium Embedded Framework, or browser-shell architecture.
+2. No WebView, WebView2, Chromium Embedded Framework, or browser-shell architecture
+   **in the capture/recording engine**. Narrow exception (ADR-0011): the *UI layer*
+   (`app/desktop-ui`, Deno Desktop) may use a system WebView2 window. The engine
+   (`app/recorder` + `libs/*`) stays fully native — no webview, no browser runtime.
 3. No large unreviewed rewrites.
 4. Keep modules isolated:
    - capture

@@ -17,6 +17,7 @@
 #include <capture/capture.h>
 #include <audio/audio.h>
 #include <encoding/encoding.h>
+#include <storage/storage.h>
 #include <replay-buffer/replay_buffer.h>
 #include <recording/recording.h>
 
@@ -35,10 +36,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -346,6 +349,13 @@ static std::wstring g_recordings_dir;
 static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
 static std::atomic<bool> g_recording_enabled{ true };
+
+// Snapshot of the two output folders, guarded so the IPC thread can resolve the
+// right clip DB for UI-driven mutations without racing settings reloads on the
+// UI thread. Updated in apply_runtime_settings().
+static std::mutex    g_dirs_mutex;
+static std::wstring  g_clips_dir_snapshot;
+static std::wstring  g_recs_dir_snapshot;
 static settings::Config g_settings;
 
 // Active-game audio source: re-evaluated every poll_interval_ms by a UI-thread timer
@@ -643,6 +653,12 @@ static void apply_runtime_settings()
     g_replay_enabled.store(g_settings.replay_buffer_enabled, std::memory_order_relaxed);
     g_recording_enabled.store(g_settings.recording_enabled, std::memory_order_relaxed);
 
+    {
+        std::lock_guard lk(g_dirs_mutex);
+        g_clips_dir_snapshot = g_settings.clips_directory;
+        g_recs_dir_snapshot  = g_settings.recordings_directory;
+    }
+
     char msg[192];
     snprintf(msg, sizeof(msg),
              "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s fps=%d quality=%d",
@@ -675,6 +691,159 @@ static void load_app_settings()
         log_msg("settings", warning.c_str());
 
     log_path("settings", "config path: ", g_settings.user_config_path);
+}
+
+// Generates the first-frame thumbnail and inserts a row into the co-located
+// clip DB for a freshly written clip. Runs off the UI/tray thread (blocking
+// decode + DB I/O). `video_path` is the full path returned by the writer;
+// `source` is "replay" or "manual". Failures are logged, never fatal — a clip
+// with no DB row/thumb still plays and gets picked up by reconcile later.
+static void catalog_clip(std::wstring video_path, std::string source,
+                         double duration_seconds)
+{
+    if (video_path.empty()) return;
+    std::error_code ec;
+    std::filesystem::path vp(video_path);
+    const std::wstring folder = vp.parent_path().wstring();
+    const std::wstring base   = vp.filename().wstring();
+    if (folder.empty() || base.empty()) return;
+
+    const std::wstring thumb_base = vp.stem().wstring() + L".png";
+    const std::wstring thumb_path = folder + L"\\.thumbs\\" + thumb_base;
+
+    std::wstring thumb_stored;
+    if (encoding::generate_thumbnail(video_path, thumb_path))
+        thumb_stored = thumb_base;
+    else
+        log_path("storage", "thumbnail generation failed for ", video_path);
+
+    std::string error;
+    auto dbh = storage::ClipDb::open(folder, source, &error);
+    if (!dbh) {
+        log_msg("storage", ("clip DB open failed: " + error).c_str());
+        return;
+    }
+
+    storage::ClipRow row;
+    row.video_file       = base;
+    row.thumbnail_file   = thumb_stored;
+    row.created_at_utc   = storage::now_iso8601_utc();
+    row.source           = source;
+    row.duration_seconds = duration_seconds;
+
+    // Best-effort game association: heuristic foreground detection at save time
+    // (self-contained, off the UI thread). Empty when no game qualifies.
+    audio::ProcessInfo game = audio::detect_active_game();
+    if (game.process_id != 0) {
+        row.game_process_name = wide_to_utf8(game.process_name);
+        row.game_display_name = wide_to_utf8(
+            game.display_name.empty() ? game.process_name : game.display_name);
+        row.game_source = "heuristic";
+    }
+
+    if (dbh->insert_clip(row, &error) <= 0)
+        log_msg("storage", ("clip DB insert failed: " + error).c_str());
+    else
+        log_path("storage", "clip cataloged: ", base);
+}
+
+// Self-heal both catalogs on startup: drop rows whose video vanished, rebuild
+// missing thumbnails, and import pre-existing videos that have no row yet.
+// Detached background thread — never blocks startup.
+static void reconcile_catalogs()
+{
+    const std::wstring clips_dir = g_settings.clips_directory;
+    const std::wstring recs_dir  = g_settings.recordings_directory;
+    std::thread([clips_dir, recs_dir]() {
+        auto run = [](const std::wstring& folder, const char* source) {
+            if (folder.empty()) return;
+            std::string error;
+            auto dbh = storage::ClipDb::open(folder, source, &error);
+            if (!dbh) {
+                log_msg("storage", ("reconcile skipped (" + std::string(source)
+                                    + "): " + error).c_str());
+                return;
+            }
+            storage::ReconcileStats st = dbh->reconcile(&error);
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "reconcile %s: removed=%d thumbs=%d imported=%d",
+                     source, st.removed, st.thumbs_regenerated, st.imported);
+            log_msg("storage", msg);
+        };
+        run(clips_dir, "replay");
+        run(recs_dir,  "manual");
+    }).detach();
+}
+
+// Performs a UI-driven clip mutation (favorite/hashtag/delete) on the IPC
+// thread. The recorder is the single writer, so the Deno UI routes these here
+// instead of writing the DB itself. Returns "" on success or an error message.
+static std::string handle_clip_mutation(const ipc::ClipMutation& m)
+{
+    std::wstring folder;
+    {
+        std::lock_guard lk(g_dirs_mutex);
+        folder = (m.source == "manual") ? g_recs_dir_snapshot : g_clips_dir_snapshot;
+    }
+    if (folder.empty()) return "output folder unknown";
+
+    std::string err;
+    auto db = storage::ClipDb::open(folder, m.source, &err);
+    if (!db) return "clip DB open failed: " + err;
+
+    bool ok = false;
+    if (m.method == "clip_set_favorite")       ok = db->set_favorite(m.id, m.favorite, &err);
+    else if (m.method == "clip_add_hashtag")    ok = db->add_hashtag(m.id, m.tag, &err);
+    else if (m.method == "clip_remove_hashtag") ok = db->remove_hashtag(m.id, m.tag, &err);
+    else if (m.method == "clip_rename")         ok = db->rename_clip(m.id, utf8_to_wide(m.new_name), &err);
+    else if (m.method == "clip_delete")         ok = db->remove_clip(m.id, /*remove_files=*/true, &err);
+    else return "unknown mutation: " + m.method;
+
+    return ok ? std::string() : err;
+}
+
+// capture_mode "game_only": stops the replay-capture pipeline after the idle
+// timeout with no detected game and resumes it when a game reappears. Runs on
+// the UI thread (WM_TIMER), like the reload path, so calling media_start/stop is
+// safe. Never touches an active manual recording. (deno.md §6)
+static uint64_t g_last_game_seen_ms  = 0;
+static bool     g_capture_mode_stopped = false; // capture idled off by game_only
+
+static void evaluate_capture_mode(HWND hwnd)
+{
+    if (g_settings.capture_mode != "game_only") {
+        g_capture_mode_stopped = false;
+        return;
+    }
+    if (!g_replay_enabled.load(std::memory_order_relaxed)) return;
+    if (g_recording.state() != recording::RecordingState::Idle) return; // never stop a recording
+
+    const uint64_t now = GetTickCount64();
+    if (g_last_game_seen_ms == 0) g_last_game_seen_ms = now; // grace on first tick
+
+    audio::ProcessInfo game = audio::detect_active_game();
+    if (game.process_id != 0) {
+        g_last_game_seen_ms = now;
+        if (g_capture_mode_stopped && !g_video.running()) {
+            log_msg("capture", "game_only: game detected, resuming capture");
+            media_start(hwnd);
+            g_capture_mode_stopped = false;
+        }
+        return;
+    }
+
+    if (g_video.running() && !g_capture_mode_stopped) {
+        const uint64_t idle_ms = now - g_last_game_seen_ms;
+        const uint64_t timeout_ms =
+            static_cast<uint64_t>(g_settings.capture_idle_timeout_seconds) * 1000ULL;
+        if (idle_ms >= timeout_ms) {
+            log_msg("capture", "game_only: idle timeout with no game, stopping capture");
+            media_stop();
+            g_replay.clear();
+            g_capture_mode_stopped = true;
+        }
+    }
 }
 
 static void show_settings(HWND hwnd)
@@ -2345,11 +2514,14 @@ static void dispatch(Cmd cmd, HWND hwnd)
             static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
         log_msg("replay", stats);
         feedback::play(feedback::Sound::ClipSaved);
-        g_replay.save_clip([](std::wstring path) {
+        const double clip_duration = g_settings.replay_duration_seconds;
+        g_replay.save_clip([clip_duration](std::wstring path) {
+            // Runs on the replay save thread (off the UI/tray loop).
             if (path.empty()) {
                 log_msg("replay", "WARNING: clip save failed or encoder not ready");
             } else {
                 log_path("replay", "clip saved: ", path);
+                catalog_clip(path, "replay", clip_duration);
             }
         });
         break;
@@ -2376,7 +2548,11 @@ static void dispatch(Cmd cmd, HWND hwnd)
         std::wstring path;
         if (g_recording.stop(&path)) {
             if (path.empty()) log_msg("recording", "recording stopped: no packets written");
-            else log_path("recording", "recording saved: ", path);
+            else {
+                log_path("recording", "recording saved: ", path);
+                // Catalog off the UI thread — decode + DB I/O must not block it.
+                std::thread(catalog_clip, path, std::string("manual"), 0.0).detach();
+            }
             feedback::play(feedback::Sound::RecordStop);
             tray_set_recording(false);
             if (!g_replay_enabled.load(std::memory_order_relaxed) && g_video.running())
@@ -2430,7 +2606,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_settings.replay_buffer_enabled,
                 g_settings.recording_enabled,
             };
-        });
+        }, handle_clip_mutation);
         publish_runtime_status();
         log_msg("app", "app shell ready");
         return 0;
@@ -2438,6 +2614,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == kActiveGameTimerId) {
             poll_active_game();
+            evaluate_capture_mode(hwnd);
             return 0;
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
@@ -2522,6 +2699,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     log_msg("app", "initializing (Monolith: replay + manual recording)");
     audio::set_log_sink([](const char* tag, const char* msg) { log_msg(tag, msg); });
     load_app_settings();
+    reconcile_catalogs(); // self-heal clip catalogs on a background thread
     updater::init(g_settings.update_auto_check);
     if (g_settings.update_auto_check)
         updater::check_silent(); // immediate check at startup

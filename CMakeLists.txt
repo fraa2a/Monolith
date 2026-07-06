@@ -8,7 +8,7 @@ if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
         CACHE STRING "vcpkg toolchain file")
 endif()
 
-project(monolith VERSION 1.3.2 LANGUAGES CXX)
+project(monolith VERSION 1.4.0 LANGUAGES CXX)
 
 # Single source of truth for the app version. CI overrides this from the git
 # tag with -DMONOLITH_VERSION=X.Y.Z; local builds fall back to project(VERSION).
@@ -30,8 +30,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_subdirectory(libs/capture)
 add_subdirectory(libs/audio)
 add_subdirectory(libs/encoding)
+add_subdirectory(libs/storage)
 add_subdirectory(libs/replay-buffer)
 add_subdirectory(libs/recording)
 add_subdirectory(libs/ipc)
 add_subdirectory(app/recorder)
+# Tauri v2 / WebView2 UI (Home = clip grid, Settings = popup). `deno` bundles the
+# frontend and `cargo build --release` compiles Monolith.UI.exe when both
+# toolchains are present. See ADR-0012.
 add_subdirectory(app/desktop-ui)

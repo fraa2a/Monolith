@@ -58,10 +58,18 @@ jobs:
             & $nuget setapikey "${{ secrets.GITHUB_TOKEN }}" -Source "$env:FEED_URL" -NonInteractive
           }
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
         with:
-          dotnet-version: 8.0.x
+          deno-version: v2.x
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build (Tauri UI)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/desktop-ui/src-tauri
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -121,8 +129,8 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
           "-DCMAKE_MT:FILEPATH=$env:CMAKE_MT"
 
-      # The CMake settings_app target runs `dotnet publish` for the WinUI
-      # settings sidecar into the recorder output directory.
+      # The CMake desktop_ui target bundles the Preact frontend (deno) and
+      # compiles the Tauri UI (cargo) into <recorder-output>/ui/Monolith.UI.exe.
       - name: Build Release
         shell: pwsh
         run: cmake --build build --config Release --parallel
@@ -144,14 +152,8 @@ jobs:
             Write-Error "Build output not found: build/app/recorder/Release/Monolith.exe"
             exit 1
           }
-          if (-not (Test-Path "build/app/recorder/Release/settings/Monolith.Settings.exe")) {
-            Write-Error "Build output not found: build/app/recorder/Release/settings/Monolith.Settings.exe"
-            exit 1
-          }
-          $forbidden = Get-ChildItem "build/app/recorder/Release/settings" -Recurse -File |
-            Where-Object { $_.Name -match '^(Microsoft\.Windows\.AI\.|onnxruntime|DirectML|Microsoft\.Windows\.Widgets|Microsoft\.Windows\.Workloads|NPU)' }
-          if ($forbidden) {
-            Write-Error "Unexpected AI/ML/Widgets files in Settings bundle: $($forbidden.Name -join ', ')"
+          if (-not (Test-Path "build/app/recorder/Release/ui/Monolith.UI.exe")) {
+            Write-Error "Build output not found: build/app/recorder/Release/ui/Monolith.UI.exe"
             exit 1
           }
           $plugin = Get-ChildItem "plugins/stream-deck/dist/*.streamDeckPlugin" -ErrorAction SilentlyContinue

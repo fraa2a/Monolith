@@ -22,6 +22,8 @@ static constexpr UINT kCmdSaveReplay     = 1001;
 static constexpr UINT kCmdRecordingStart = 1002;
 static constexpr UINT kCmdRecordingStop  = 1003;
 static constexpr UINT kCmdPauseResume    = 1004;
+// Matches WM_SETTINGS_RELOAD (WM_APP + 2) in main.cpp — kept in sync manually.
+static constexpr UINT kMsgSettingsReload = WM_APP + 2;
 
 namespace ipc {
 namespace {
@@ -31,6 +33,7 @@ SOCKET                          g_server_socket = INVALID_SOCKET;
 std::atomic<SOCKET>             g_client_socket{INVALID_SOCKET};
 HWND                            g_hwnd          = nullptr;
 std::function<RecordingState()> g_status_fn;
+ClipMutationFn                  g_mutation_fn;
 std::thread                     g_thread;
 
 std::string make_result(int id, const nlohmann::json& result)
@@ -98,6 +101,32 @@ void handle_client(SOCKET client)
                         {"replay_enabled",    st.replay_enabled},
                         {"recording_enabled", st.recording_enabled},
                     });
+                } else if (method == "reload_settings") {
+                    PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
+                    response = make_result(req_id, {{"status", "accepted"}});
+                } else if (method == "clip_set_favorite" ||
+                           method == "clip_add_hashtag" ||
+                           method == "clip_remove_hashtag" ||
+                           method == "clip_rename" ||
+                           method == "clip_delete") {
+                    if (!g_mutation_fn) {
+                        response = make_error(req_id, -32601, "Mutations unavailable");
+                    } else {
+                        const auto& p = req.contains("params") ? req["params"]
+                                                               : nlohmann::json::object();
+                        ClipMutation m;
+                        m.method   = method;
+                        m.source   = p.value("source", "replay");
+                        m.id       = p.value("id", static_cast<int64_t>(0));
+                        m.tag      = p.value("tag", std::string());
+                        m.favorite = p.value("favorite", false);
+                        m.new_name = p.value("new_name", std::string());
+                        std::string err = g_mutation_fn(m);
+                        if (err.empty())
+                            response = make_result(req_id, {{"status", "ok"}});
+                        else
+                            response = make_error(req_id, -32000, err.c_str());
+                    }
                 } else {
                     response = make_error(req_id, -32601, "Method not found");
                 }
@@ -129,10 +158,13 @@ void server_loop()
 
 } // namespace
 
-void start(HWND hwnd, std::function<RecordingState()> status_fn)
+void start(HWND hwnd,
+           std::function<RecordingState()> status_fn,
+           ClipMutationFn mutation_fn)
 {
-    g_hwnd      = hwnd;
-    g_status_fn = std::move(status_fn);
+    g_hwnd        = hwnd;
+    g_status_fn   = std::move(status_fn);
+    g_mutation_fn = std::move(mutation_fn);
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;

@@ -37,6 +37,7 @@ struct ActiveGameSettings {
 
 struct Config {
     std::wstring user_config_path;
+    std::wstring app_data_dir;     // holds settings.db (ADR-0009 rewrite)
     std::wstring clips_directory;
     std::wstring recordings_directory;
     std::wstring temp_directory;
@@ -54,6 +55,12 @@ struct Config {
 
     // Active game detection settings.
     ActiveGameSettings active_game;
+
+    // Capture mode: "always" keeps the replay buffer running; "game_only" stops
+    // it after idle_timeout_seconds with no detected game and restarts on detect.
+    // Never stops an active manual recording. (deno.md §6)
+    std::string capture_mode = "always"; // "always" | "game_only"
+    int capture_idle_timeout_seconds = 300; // clamped 30–3600
 
     // Capture (capture/encoder restart when no manual recording is active).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary

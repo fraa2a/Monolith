@@ -82,6 +82,229 @@ Bumped to 0.5.1 in `VERSION`, `CMakeLists.txt`, `installer/monolith.iss`.
 - Installer: `installer/monolith.iss` — per-user (`PrivilegesRequired=lowest`, `{localappdata}\Programs\Monolith`, no UAC so WinSparkle can update silently), stable AppId GUID for in-place upgrades, GPLv3 license page, optional desktop/startup tasks, full self-contained payload; uninstall never touches user config in AppData.
 - Release CI: `.github/workflows/version-tag.yml` extracts the version from tag `vX.Y.Z`, builds with pinned vcpkg, compiles the installer, signs it and generates `appcast.xml` (`scripts/generate-appcast.ps1`, Ed25519 via openssl), creates a GPLv3 source zip (`git archive`), and publishes everything to the public `fraa2a/Monolith-releases` repo via `RELEASES_REPO_PAT`.
 
+## UI Rewrite — Phase F1 (SQLite clip catalog + thumbnails + self-heal)
+
+Foundation phase of the deno.md UI rewrite. This phase is engine-only; no UI code
+yet. Plan phases F2–F6 (Deno UI, context-menu, detail view, settings→DB, audio/game)
+follow. Locked decisions: engine will read settings from a DB (config.json to be
+removed in F5); SQLite via vcpkg `sqlite3` + new `libs/storage`; phased delivery.
+
+Implemented in F1:
+- `vcpkg.json`: added `sqlite3` dependency (baseline unchanged).
+- New `libs/storage` (`storage.{h,cpp}`, `CMakeLists.txt`): `ClipDb` over a
+  per-folder SQLite DB in WAL mode. Schema = deno.md §5 `clips` table extended with
+  `favorite` + a `clip_hashtags(clip_id,tag)` table (+ `game_catalog` reserved for
+  F6). `ClipDb::open()` auto-creates/validates and refuses to overwrite a
+  non-Monolith/wrong-schema `.db`. API: `insert_clip`, `remove_clip(remove_files)`,
+  `set_favorite`, `add_hashtag`, `remove_hashtag`, `reconcile` (self-heal +
+  migration import). `now_iso8601_utc()` helper.
+- `libs/encoding/thumbnail.cpp`: `encoding::generate_thumbnail(video, thumb, max_dim)`
+  — libav first-frame decode → RGB24 scale → PNG. Added to the encoding target.
+- `app/recorder/src/main.cpp`: `catalog_clip()` generates the thumbnail + inserts
+  the clip row off the UI thread; wired into the replay `save_clip` callback
+  (`source="replay"`) and `CMD_RECORDING_STOP` (`source="manual"`, on a detached
+  thread). `reconcile_catalogs()` runs both catalogs' self-heal on a background
+  thread at startup (called from `wWinMain`). Game association fields left empty
+  until F6.
+- Layout choice: DB (`clips.db`/`recs.db`) and `.thumbs\` are co-located with the
+  existing video files inside the configured output folder; the video write path
+  and default dirs are unchanged (keeps blast radius small). See ADR-0010.
+- CMake: `add_subdirectory(libs/storage)` in root; `storage` linked into
+  `app/recorder`. `libs/storage` links `encoding` + `unofficial::sqlite3::sqlite3`.
+- Docs: ADR-0010 added to `docs/DECISIONS.md`.
+
+NOT yet verified: **the build was not run in this environment** (no vcpkg toolchain
+/ installed ffmpeg+sqlite reachable here; the local `build/` is stale from another
+source path). Code was reviewed for compile-correctness only. Next session must run
+`build.bat` (or the manual cmake configure+build) on a machine with vcpkg, then do
+the F1 runtime verification: save a clip → confirm `clips.db` row + `.thumbs\*.png`;
+delete an mp4 and restart → row removed; delete a thumb and restart → regenerated.
+
+## UI Rewrite — Phase F6 + Deno Desktop build (game, capture_mode, audio, Discord)
+
+Engine + UI. Game detection, capture_mode, audio redesign scaffold, Discord toggle,
+and the switch to **real Deno Desktop** (was the @webview/webview stopgap).
+
+Engine (C++):
+- `main.cpp` `catalog_clip`: fills clip game fields (heuristic `detect_active_game()`
+  at save) → the Home game filter populates. `evaluate_capture_mode(hwnd)` on the
+  WM_TIMER honors `capture_mode: game_only` (stops replay capture after
+  idle_timeout with no game, resumes on detect; never touches a manual recording).
+- `settings_config`: `capture_mode {mode, idle_timeout_seconds}` + `discord` +
+  new `audio` §7 fields (capture_mode/separate_tracks/app_preferences/extra_
+  microphones) added to defaults; parsed/clamped where the engine needs them,
+  round-tripped otherwise.
+
+Deno UI:
+- **Real Deno Desktop** (`deno desktop`): dropped `@webview/webview` and the manual
+  port/webview wiring. `main.ts` = set `DENO_SQLITE_PATH` if a bundled dll exists →
+  optional `Deno.BrowserWindow({title,width,height})` → `Deno.serve(handle)` (Deno
+  Desktop auto-binds the window). `deno.json` tasks use `deno desktop`.
+- Game catalog: `libs`-free — `scripts/download-game-db.ts` fetches the Discord
+  detectable list into `%LocalAppData%\Monolith\game_catalog.db` (weekly refresh from
+  `main.ts`); `bindings/game-catalog.ts` looks up display names + resolves icons
+  lazily (RPC→CDN, cached). `/api/game-catalog`, `/api/game-icon`. Cards show the
+  game icon (placeholder otherwise).
+- Settings popup: Game Detection page gained capture_mode controls; Advanced gained
+  the Discord toggle; Audio page redesigned (`settings/audio-settings.tsx`, Medal-
+  style: All PC / Specific apps, separate-tracks, dynamic app list from
+  runtime-status audio_sessions with enabled/volume, static Game/Mic, mic dropdown).
+- `settings_window.cpp`: launches the Deno Desktop **bundle**
+  (`ui/Monolith.UI/laufey_webview.exe --runtime Monolith.UI.dll`, cwd = bundle),
+  falling back to the legacy WinUI exe. `app/desktop-ui/CMakeLists.txt` runs
+  `deno desktop --icon MONOLITH.ico --include dist --output <out>/ui/Monolith.UI`.
+
+BUILD VERIFIED (this session, Deno 2.9.1):
+- `deno check` passes for backend (`main.ts`) and frontend (`ui/src/main.tsx`) and
+  all entry points. `deno task ui:build` bundles `dist/` (app.js ~37KB). Router
+  smoke (fake Requests to /, /api/*) returns without crashing.
+- `deno task compile` (= `deno desktop`) **succeeds**, producing
+  `build/app/desktop-ui/Monolith.UI/` (laufey_webview.exe + 82MB Monolith.UI.dll +
+  WebView2). Launching it: "Runtime loaded successfully / Runtime started",
+  WebView2 initializes. Only gap: `@db/sqlite` fetches `sqlite3.dll` on first run
+  and the sandbox blocked the download (os error 10013) — not a code bug. Ship the
+  denodrivers `sqlite3.dll` next to the launcher (main.ts auto-sets
+  DENO_SQLITE_PATH) for a fully offline app, or allow the one-time download.
+
+Remaining engine work (deferred, needs build+runtime verification on a full machine):
+- The **C++ engine is still unbuilt here** (no vcpkg toolchain): F1–F6 C++ changes
+  (storage, thumbnails, settings.db, IPC clip mutations + rename, capture_mode,
+  game fields) are review-only. Build with `build.bat` and run the per-phase checks.
+- Audio §7 deep engine (per-process volume/mixing via IAudioSessionManager2,
+  static-source routing) is scaffolded in config/UI only; libs/audio still consumes
+  the old audio model. Discord Rich Presence is config-only (no named-pipe client).
+
+## UI Rewrite — Phase F5 (settings popup + settings → SQLite)
+
+Engine + UI. Config store moves from `config.json` to `settings.db`. ADR-0009 rewritten.
+
+Engine (C++):
+- `libs/storage`: global settings KV store in `<app_data>\settings.db` (WAL) —
+  `settings_get_all` / `settings_replace_all` (generic string KV, JSON-agnostic;
+  table `settings(key,value)`).
+- `settings_config.cpp` `load()`/`save()` rewritten: persistence is now `settings.db`
+  (one KV row per top-level config section, split/assembled with nlohmann), **not**
+  `config.json`. All existing merge-over-defaults + validate/clamp logic is unchanged.
+  One-time migration: empty DB + legacy `config.json` present → import it, seed the
+  DB, rename the file to `config.json.imported.bak`. `Config` gained `app_data_dir`
+  (used by `save()`); `user_config_path` now points at `settings.db` for logging.
+  `config/default-config.json` is still the default seed / compiled fallback.
+- Reload path unchanged in shape: IPC `reload_settings` → WM_APP+2 →
+  `reload_settings_from_disk` → `settings::load()` (now reads `settings.db`).
+
+Deno UI:
+- `bindings/settings.ts`: read/write `settings.db` (section rows) via `@db/sqlite`;
+  UI is the settings writer. `bindings/config.ts` now resolves output dirs from
+  `settings.db` (not config.json). `bindings/runtime.ts`: reads `runtime-status.json`
+  for capability-gating.
+- `server/router.ts`: `/api/settings` GET/POST (POST writes settings.db then calls
+  `reloadSettings()` IPC) and `/api/runtime-status` GET.
+- `ui/src/settings/settings-popup.tsx`: custom overlay with left page nav
+  (General/Output/Clip/Capture/Audio/Hotkeys/Advanced/Game Detection) + right form.
+  Edits a draft of the whole config (generic get/set-by-path field helpers:
+  bool/text/num/select/list), Save POSTs it. Encoder/monitor选项 capability-gated by
+  runtime-status. Opened from the Filters gear (`onOpenSettings`). `ui/src/lib/
+  settings-api.ts` client. CSS added.
+
+Caveats / open: the Audio page covers the current schema (mode + primary mic); the
+full Medal-style audio redesign is F6. `flatten`-free per-section storage avoids the
+empty-array-drop pitfall. Config is edited whole and replace-written — concurrent
+engine writes don't happen (engine only writes at first-run seed).
+
+NOT verified: not built/run here. Next verify: open Settings from gear → change a
+live setting (e.g. clips folder) → Save → engine applies without restart (check log)
+and `settings.db` holds the value, `config.json` gone (backed up). Change a deferred
+setting during recording → deferred.
+
+## UI Rewrite — Phase F4 (detail view + inline rename)
+
+Engine + UI. Builds on F2/F3.
+
+Engine (C++):
+- `libs/storage` `ClipDb::rename_clip(id, new_stem)`: validates stem (rejects
+  path sep / dot / extension), collision-guards the target, moves the video file
+  first (source of truth) then the thumbnail (best-effort; on thumb-move failure
+  the stored thumbnail name is nulled so reconcile rebuilds it), updates the row.
+- `libs/ipc`: new `clip_rename` method + `new_name` param on `ClipMutation`.
+  `main.cpp::handle_clip_mutation` routes it to `rename_clip(utf8_to_wide(new_name))`.
+
+Deno UI:
+- `ui/src/home/detail-view.tsx`: centered (not fullscreen) overlay — player with
+  scrubbable timeline (seek) + volume slider, details panel with inline-editable
+  name (pencil → input + extension shown + Save; Enter/Esc; errors surfaced from
+  the engine), hashtags (opens the F3 HashtagDialog), and ◀ ▶ arrows (+ Left/Right
+  keys) to move between clips in the filtered list without closing. Clicking a card
+  opens it (`onOpenDetail` → `detailIndex`). Index is clamped to the live list and
+  the view closes when the list empties (handles rename/delete refetch).
+- `bindings/ipc-bridge.ts`, `server/router.ts` allow-list, `ui/src/lib/api.ts`
+  (`clipApi.rename`) extended for `clip_rename`.
+- `styles.css`: detail overlay, timeline/volume, nav arrows.
+
+Still open: F5 settings popup + settings→SQLite (rewrites ADR-0009, removes
+config.json), F6 game detection + audio redesign + Discord. Inline name edit on the
+card itself (deno.md §2.1 pencil) is currently handled via the detail view; a direct
+card-inline editor can be added later if wanted.
+
+NOT verified: not built/run here (no vcpkg / no Deno in this env). Review-only.
+Next verify (with toolchains): open a card → detail overlay; seek + volume work;
+◀ ▶ navigate; rename via pencil persists (video + thumb renamed on disk, DB row
+updated, grid reflects it); hashtags editable from detail.
+
+## UI Rewrite — Phases F2 + F3 (Deno UI: Home grid + clip context menu)
+
+Engine + new UI layer. Builds on F1's clip catalog. See ADR-0011.
+
+Engine (C++) changes:
+- Renamed `app/desktop-ui` (WinUI) → `app/OLD-settings-ui` (kept building during
+  migration). New `app/desktop-ui` = Deno app. Root `CMakeLists.txt` builds both.
+- `settings_window.cpp`: tray now launches `Monolith.UI.exe` (candidates under
+  `ui/`), falling back to the legacy `Monolith.Settings.exe`.
+- `libs/ipc`: new JSON-RPC methods `clip_set_favorite`, `clip_add_hashtag`,
+  `clip_remove_hashtag`, `clip_delete` (params: source/id/tag/favorite) and
+  `reload_settings`. `start()` now takes a `ClipMutationFn`. Implemented in
+  `main.cpp::handle_clip_mutation`, which opens the right `storage::ClipDb`
+  (clips/recs dir from a mutex-guarded snapshot `g_clips_dir_snapshot` /
+  `g_recs_dir_snapshot`, updated in `apply_runtime_settings`) — engine stays the
+  single writer.
+
+New Deno UI (`app/desktop-ui`, unverified — not built here):
+- Backend `main.ts`: WebView2 window (`jsr:@webview/webview`) + localhost
+  `Deno.serve` HTTP server. `server/router.ts` serves the built frontend, a JSON
+  API (`/api/clips|games|hashtags|mutate`), and range-streamed `/media` + `/thumb`
+  (`server/media.ts`). `bindings/clips.ts` reads `clips.db`/`recs.db` **read-only**
+  (`jsr:@db/sqlite`, WAL) and stat's file sizes; `bindings/ipc-bridge.ts` is the
+  JSON-RPC client for mutations; `bindings/config.ts` resolves output dirs from
+  `config.json` (→ settings.db in F5). `games.ts`/`audio.ts` are F6 stubs.
+- Frontend `ui/` (Preact + esbuild via Deno loader, bundled by `build.ts` → `dist/`):
+  Home grid, rounded clip cards (static PNG at rest, hover preview + mute/fullscreen
+  overlay, **placeholder + still-plays when thumb missing/broken** — user req #2 UI
+  side), metadata (name, game, 1-decimal size, Today/Yesterday/`Jun 23`/`Jun 23, 2025`
+  date). F3: global native-contextmenu suppression + custom **rounded** menu shown
+  only over cards (favorite / hashtags… / fullscreen / **delete in red**); delete →
+  custom secondary confirm popup; hashtag add/remove popup; filters by game/hashtag/
+  favorite/search; fullscreen overlay at original framerate. All mutations go through
+  `/api/mutate` → engine IPC.
+- CMake `app/desktop-ui/CMakeLists.txt`: `deno task ui:build` + `deno compile` →
+  `<recorder-output>/ui/Monolith.UI.exe` when `deno` is on PATH; warns+skips otherwise.
+- Docs: ADR-0011 added; DEVELOPMENT_RULES rule 2 narrowed (webview = UI only);
+  CLAUDE.md target list updated.
+
+Not done in F2/F3 (later phases): F4 detail view (§2.2) + inline rename (needs a
+rename IPC + file move); F5 settings popup + settings→SQLite (rewrites ADR-0009,
+removes config.json, engine reads settings.db); F6 game detection + audio redesign +
+Discord. The hover "15 fps preview" currently plays the full clip (a dedicated
+low-fps preview asset is a future optimization). Autoplay-with-audio on hover may be
+blocked by WebView2 until a user gesture — mute toggle provided.
+
+NOT verified: **neither the C++ nor the Deno app was built/run here** (no vcpkg
+toolchain and no Deno reachable in this environment). Code reviewed for
+compile/type consistency only. Next session with the toolchains must: `build.bat`
+(engine), then in `app/desktop-ui` `deno task ui:build` + `deno task dev` (with the
+engine running), and verify F2/F3 end-to-end: grid shows clips + thumbnails +
+placeholder; right-click card → rounded menu; elsewhere → nothing; favorite/hashtag
+persist (query DB); delete asks for confirm then removes row+files; hashtag filter
+works; fullscreen plays.
+
 ## Latest Continuation Notes
 
 - `libs/encoding/mux_common.cpp`: removed `+faststart` for mp4. It relocated the
