@@ -803,6 +803,11 @@ static std::string handle_clip_mutation(const ipc::ClipMutation& m)
     return ok ? std::string() : err;
 }
 
+// media_start/media_stop are defined far below; forward-declare them here since
+// evaluate_capture_mode (game_only path) calls them before their definition.
+static void media_start(HWND hwnd);
+static void media_stop();
+
 // capture_mode "game_only": stops the replay-capture pipeline after the idle
 // timeout with no detected game and resumes it when a game reappears. Runs on
 // the UI thread (WM_TIMER), like the reload path, so calling media_start/stop is
@@ -855,8 +860,6 @@ static void hotkeys_register(HWND hwnd);
 static void hotkeys_unregister(HWND hwnd);
 static void stop_audio_system();
 static void start_audio_system();
-static void media_start(HWND hwnd);
-static void media_stop();
 static void poll_active_game();
 static std::vector<int> valid_tracks(const std::vector<int>& tracks);
 
