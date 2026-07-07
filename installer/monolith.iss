@@ -64,6 +64,8 @@ Source: "{#PayloadDir}\WinSparkle.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\av*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\sw*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\lib*.dll"; DestDir: "{app}"; Flags: ignoreversion
+; SQLite (vcpkg, dynamically linked by the engine for settings.db + clip DBs).
+Source: "{#PayloadDir}\sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Self-contained Tauri UI (Monolith.UI.exe) lives in a subfolder.
 Source: "{#PayloadDir}\ui\*"; DestDir: "{app}\ui"; Flags: recursesubdirs ignoreversion
 ; Default config is resolved from <exe dir>\config\default-config.json.
