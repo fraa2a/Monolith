@@ -567,6 +567,8 @@ bool ClipDb::rename_clip(int64_t id, const std::wstring& new_stem, std::string* 
     if (!ok && error) *error = sqlite3_errmsg(impl_->db);
     return ok;
 }
+
+ReconcileStats ClipDb::reconcile(std::string* error)
 {
     ReconcileStats stats;
     std::error_code ec;
