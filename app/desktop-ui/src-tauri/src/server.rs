@@ -150,6 +150,8 @@ fn handle(mut request: Request) {
                 "clip_add_hashtag",
                 "clip_remove_hashtag",
                 "clip_rename",
+                "clip_set_title",
+                "clip_regen_thumb",
                 "clip_delete",
             ];
             let method_name = body.get("method").and_then(Value::as_str).unwrap_or("");
@@ -163,6 +165,7 @@ fn handle(mut request: Request) {
                 "tag": body.get("tag"),
                 "favorite": body.get("favorite"),
                 "new_name": body.get("new_name"),
+                "title": body.get("title"),
             });
             let result = engine_rpc::mutate_clip(method_name, params);
             let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
@@ -171,6 +174,31 @@ fn handle(mut request: Request) {
 
         (Method::Get, "/api/runtime-status") => {
             respond_json(request, 200, &json!({ "status": settings_store::read_runtime_status() }));
+        }
+
+        // ── Native folder picker (directory settings never use manual entry) ──
+        (Method::Post, "/api/pick-folder") => {
+            let body = read_body(&mut request).unwrap_or_else(|| json!({}));
+            let start = body.get("current").and_then(Value::as_str).unwrap_or("");
+            let mut dialog = rfd::FileDialog::new();
+            if !start.is_empty() && std::path::Path::new(start).is_dir() {
+                dialog = dialog.set_directory(start);
+            }
+            match dialog.pick_folder() {
+                Some(path) => respond_json(
+                    request,
+                    200,
+                    &json!({ "ok": true, "path": path.to_string_lossy() }),
+                ),
+                None => respond_json(request, 200, &json!({ "ok": false })), // cancelled
+            }
+        }
+
+        // ── Live clip-list updates (Server-Sent Events) ─────────────────────
+        // Streams a `clips` event whenever the engine's clip-generation counter
+        // changes, so the library refreshes in real time after a save.
+        (Method::Get, "/api/events") => {
+            serve_events(request);
         }
 
         (Method::Get, "/api/game-catalog") => {
@@ -225,6 +253,61 @@ fn handle(mut request: Request) {
 
         _ => respond_json(request, 404, &json!({ "error": "not found" })),
     }
+}
+
+// Holds an SSE connection open and pushes a `clips` event whenever the engine's
+// clip-generation counter advances (a clip was saved/stopped). Polls the engine
+// over the existing RPC channel on a light cadence — cheap for a single local
+// user and avoids adding a push channel to the engine's line-oriented protocol.
+// The loop exits when the socket write fails (webview navigated away/closed).
+fn serve_events(request: Request) {
+    use std::io::Write;
+    use std::time::Duration;
+
+    // Move the socket to a dedicated thread so the long-lived stream never ties
+    // up one of the small worker pool's threads.
+    let mut writer = request.into_writer();
+    thread::spawn(move || {
+        // Minimal SSE response head. `retry` tells EventSource the reconnect delay.
+        let head = "HTTP/1.1 200 OK\r\n\
+                    Content-Type: text/event-stream\r\n\
+                    Cache-Control: no-cache\r\n\
+                    Connection: keep-alive\r\n\
+                    \r\n\
+                    retry: 2000\n\n";
+        if writer.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        let _ = writer.flush();
+
+        // Seed with the current generation so we only fire on genuine changes.
+        let mut last = engine_rpc::clip_generation();
+        let mut since_ping = 0u32;
+        loop {
+            thread::sleep(Duration::from_millis(1000));
+            if let Some(gen) = engine_rpc::clip_generation() {
+                if last != Some(gen) {
+                    last = Some(gen);
+                    if writer.write_all(b"event: clips\ndata: {}\n\n").is_err() {
+                        return;
+                    }
+                    let _ = writer.flush();
+                    since_ping = 0;
+                    continue;
+                }
+            }
+            // Periodic comment keeps the connection alive and surfaces a dead
+            // socket promptly (write fails once the webview has gone away).
+            since_ping += 1;
+            if since_ping >= 15 {
+                since_ping = 0;
+                if writer.write_all(b": ping\n\n").is_err() {
+                    return;
+                }
+                let _ = writer.flush();
+            }
+        }
+    });
 }
 
 // Routes `/media/<source>/<file>` and `/thumb/<source>/<file>`; the file segment

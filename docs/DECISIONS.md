@@ -209,6 +209,62 @@ This file is the architecture decision record index for the project.
     of `settings/`, and CI dropped the .NET toolchain for Deno + Rust. Deno is
     retained as the build-only frontend bundler (not shipped).
 
+## ADR-0013: Settings + clip-library overhaul — simplified schema, real wiring
+
+- Status: accepted.
+- Context: the Settings UI exposed raw, engineer-facing knobs (encoder backend
+  strings, CQP/CRF quality, memory budget, free-form resolution, active-game
+  poll/fast-scan/blacklist tunables, manual folder paths) and several controls
+  were cosmetic (per-source audio volume was persisted but never applied). The
+  clip library conflated the clip's display name with its on-disk filename, had
+  no live refresh after a save, and had a fragile hover-preview player.
+- Decision — **config schema** (`settings_config.{h,cpp}`, `default-config.json`,
+  bumped to `schema_version: 3`):
+  - **Encoder** is now `video_encoder.device` (`gpu`/`cpu`) + `codec`
+    (`h264`/`h265`) + `bitrate_kbps`. The engine resolves the concrete FFmpeg
+    encoder from what the machine supports (`encoding::resolve_video_encoder`)
+    and always encodes **CBR** (`video_encoder.cpp` sets `bit_rate` +
+    `rc_max_rate`/`rc_min_rate`/`rc_buffer_size` and per-vendor `rc=cbr`). The
+    old `backend`/`quality` (CQP/CRF) keys are dropped and scrubbed on save.
+  - **Resolution** is a preset (`source`/`480p`/`720p`/`1080p`/`1440p`); the
+    engine derives width from the captured monitor's aspect ratio and never
+    upscales beyond native. Custom width/height removed.
+  - **FPS** is constrained to {24,30,60,120,144}; **replay duration** to presets
+    {15,30,60,120} + custom (5–600).
+  - **Memory budget** removed from the schema/UI and fixed internally at 512 MB
+    (`kReplayMemoryBudgetMb` in `main.cpp`). **Temp folder** removed from the UI
+    and managed internally. **Active-game** poll is fixed at 5 s
+    (`kActiveGamePollMs`); `poll_interval_ms`/`fast_scan*`/blacklist/whitelist/
+    manual-games tunables are no longer exposed (detection stays automatic; the
+    internal blacklist is retained as seed data).
+  - **Per-source audio volume** (`audio.sources[].volume`, 0–1) is now applied to
+    the recording in both the direct-encoder path (`apply_gain_inplace` in
+    `main.cpp`) and the `TrackMixer` (per-source gain in `encoding.cpp`).
+- Decision — **clip catalog** (`libs/storage`): new `title TEXT` column
+  (default `"Untitled"`, added by an `ALTER TABLE` migration mirroring
+  `favorite`). Title is the user-facing name, **independent of the filename**;
+  `clip_rename` still renames the file (advanced action), `clip_set_title`
+  edits only the title.
+- Decision — **IPC contract** (`libs/ipc`, contract change):
+  - New clip mutations `clip_set_title` and `clip_regen_thumb` (the engine owns
+    the ffmpeg decode for thumbnail regeneration).
+  - `get_status` now returns a monotonic `clip_generation` counter, bumped on
+    every catalog insert. The UI host (`server.rs`) exposes a
+    **`GET /api/events` SSE** stream that polls this counter and pushes a
+    `clips` event, so the library refreshes **live** after a save with no restart.
+  - The Rust host gained a native **folder picker** (`rfd`) at
+    `POST /api/pick-folder` — directory settings never use manual path entry.
+- Decision — **frontend**: Settings rebuilt with Section/Card/Field primitives,
+  toggles, segmented CPU/GPU control, friendly codec names, a bitrate dropdown
+  (70/100 Mbps flagged red), and a real keydown-based **hotkey capture** widget
+  (fixes chords like Ctrl+Alt+3 the old text box dropped). The clip player starts
+  previews after a 1 s hover dwell, muted, fading in on first frame (no black
+  flash), fully resets audio between clips, and enables all audio tracks. Detail
+  prev/next navigate in place and disable at the edges. All emoji replaced by the
+  inlined Lucide icon set.
+- Notes: WebView2 multi-track audio depends on `HTMLVideoElement.audioTracks`;
+  where unavailable, previews play the default track (documented limitation).
+
 ## Open decisions
 
 - Final output/remux policy details for MP4 handling

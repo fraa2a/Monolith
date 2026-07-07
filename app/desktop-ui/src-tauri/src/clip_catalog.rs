@@ -32,6 +32,7 @@ pub struct Clip {
     pub id: i64,
     pub source: String,
     pub video_file: String,
+    pub title: String,
     pub thumbnail_file: Option<String>,
     pub created_at_utc: String,
     pub duration_seconds: Option<f64>,
@@ -98,9 +99,12 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
     let folder = media_folder(source);
     let tags = clip_hashtags(&conn);
 
+    // COALESCE keeps this query working against DBs written before the `title`
+    // column migration landed (older rows read back as the filename stem).
     let Ok(mut stmt) = conn.prepare(
         "SELECT id, video_file, thumbnail_file, created_at_utc, duration_seconds,
-                game_process_name, game_display_name, favorite
+                game_process_name, game_display_name, favorite,
+                COALESCE(NULLIF(title, ''), 'Untitled')
          FROM clips ORDER BY datetime(created_at_utc) DESC",
     ) else {
         return Vec::new();
@@ -119,6 +123,7 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
             id,
             source: source.as_str().to_string(),
             video_file,
+            title: row.get::<_, String>(8).unwrap_or_else(|_| "Untitled".to_string()),
             thumbnail_file,
             created_at_utc: row.get(3)?,
             duration_seconds: row.get(4)?,
@@ -149,12 +154,13 @@ fn matches_filter(clip: &Clip, filter: &ClipFilter) -> bool {
     }
     if let Some(search) = &filter.search {
         let query = search.to_lowercase();
+        let in_title = clip.title.to_lowercase().contains(&query);
         let in_file = clip.video_file.to_lowercase().contains(&query);
         let in_game = clip
             .game_display_name
             .as_ref()
             .is_some_and(|game| game.to_lowercase().contains(&query));
-        if !in_file && !in_game {
+        if !in_title && !in_file && !in_game {
             return false;
         }
     }

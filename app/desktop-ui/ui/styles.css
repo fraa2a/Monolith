@@ -723,6 +723,156 @@ body {
 .audio-name { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .audio-vol { font-family: var(--mono); font-size: 12px; color: var(--text-dim); width: 40px; text-align: right; }
 
+/* ── Hover-preview fade (no black flash) ─────────────────────────────────── */
+.card-video {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity .22s ease;
+}
+.card-video.ready { opacity: 1; }
+.game-icon.placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: none;
+  opacity: .7;
+}
+.game-icon.placeholder svg { width: 13px; height: 13px; }
+.fav-badge svg, .ov-btn svg, .ctx-ico svg, .icon-btn svg { display: block; }
+.icon-btn.active { color: #fff; }
+
+/* ── Detail view: title + filename ──────────────────────────────────────── */
+.detail-filename {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  word-break: break-all;
+  margin-top: -10px;
+}
+
+/* ── Settings: sections + cards ─────────────────────────────────────────── */
+.set-section { margin-bottom: 26px; }
+.set-section:last-child { margin-bottom: 4px; }
+.set-section-head { margin-bottom: 12px; padding: 0 2px; }
+.set-section-title { margin: 0; font-size: 15px; font-weight: 700; }
+.set-section-desc { margin: 4px 0 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+
+.set-card {
+  background: var(--mid);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.set-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.set-field:last-child { border-bottom: none; }
+.set-field-label { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.set-field-label label { font-size: 14px; font-weight: 600; }
+.set-field-help { font-size: 12px; color: var(--text-dim); line-height: 1.45; }
+.set-field-control { flex: none; display: flex; align-items: center; justify-content: flex-end; }
+.set-field-control > .input,
+.set-field-control > .select { min-width: 210px; }
+.set-field-control input[type="number"] { min-width: 120px; text-align: right; }
+.set-empty-row { padding: 2px 0; }
+.opt-danger { color: #e5776e; }
+
+/* ── Toggle switch ──────────────────────────────────────────────────────── */
+.toggle {
+  width: 42px; height: 24px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  transition: background .16s, border-color .16s;
+}
+.toggle:hover { border-color: var(--light); }
+.toggle.on { background: var(--light-hi); border-color: var(--light-hi); }
+.toggle-knob {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #cfcfcf;
+  transition: transform .16s cubic-bezier(.2,.7,.3,1), background .16s;
+}
+.toggle.on .toggle-knob { transform: translateX(18px); background: #fff; }
+
+/* ── Segmented control ──────────────────────────────────────────────────── */
+.segmented {
+  display: inline-flex;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 3px;
+  gap: 3px;
+}
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 6px 15px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--ui);
+  font-size: 13.5px;
+  transition: background .12s, color .12s;
+}
+.seg:hover { color: var(--text); }
+.seg.active { background: var(--light-hi); color: #fff; }
+
+/* ── Folder picker ──────────────────────────────────────────────────────── */
+.folder-picker { display: flex; gap: 8px; align-items: center; min-width: 340px; }
+.folder-path { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12.5px; }
+.btn-ghost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.btn-ghost svg { display: block; }
+
+/* ── Volume slider ──────────────────────────────────────────────────────── */
+.volume { display: flex; align-items: center; gap: 12px; }
+.volume input[type="range"] { width: 140px; accent-color: #fff; cursor: pointer; }
+.volume.disabled { opacity: .4; }
+.volume-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  width: 40px;
+  text-align: right;
+}
+.audio-other-control { display: flex; align-items: center; gap: 16px; }
+
+/* ── Hotkey capture ─────────────────────────────────────────────────────── */
+.hotkey-capture {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 9px 13px;
+  min-width: 220px;
+  cursor: pointer;
+  transition: border-color .14s, box-shadow .14s;
+}
+.hotkey-capture svg { flex: none; opacity: .8; }
+.hotkey-capture:hover { border-color: var(--light); }
+.hotkey-capture.capturing { border-color: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, .08); }
+.hotkey-value { font-family: var(--mono); font-size: 13px; }
+.hotkey-capture.capturing .hotkey-value { color: var(--text-dim); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

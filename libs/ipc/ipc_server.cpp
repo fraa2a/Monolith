@@ -100,6 +100,7 @@ void handle_client(SOCKET client)
                         {"paused",            st.is_paused},
                         {"replay_enabled",    st.replay_enabled},
                         {"recording_enabled", st.recording_enabled},
+                        {"clip_generation",   st.clip_generation},
                     });
                 } else if (method == "reload_settings") {
                     PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
@@ -108,6 +109,8 @@ void handle_client(SOCKET client)
                            method == "clip_add_hashtag" ||
                            method == "clip_remove_hashtag" ||
                            method == "clip_rename" ||
+                           method == "clip_set_title" ||
+                           method == "clip_regen_thumb" ||
                            method == "clip_delete") {
                     if (!g_mutation_fn) {
                         response = make_error(req_id, -32601, "Mutations unavailable");
@@ -121,6 +124,7 @@ void handle_client(SOCKET client)
                         m.tag      = p.value("tag", std::string());
                         m.favorite = p.value("favorite", false);
                         m.new_name = p.value("new_name", std::string());
+                        m.title    = p.value("title", std::string());
                         std::string err = g_mutation_fn(m);
                         if (err.empty())
                             response = make_result(req_id, {{"status", "ok"}});

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { type Clip, clipApi } from "../lib/api.ts";
+import { Icon } from "../shell/icons.tsx";
 
 interface Props {
   clip: Clip;
@@ -61,7 +62,9 @@ export function HashtagDialog({ clip, onClose, onChanged }: Props) {
           {tags.map((t) => (
             <span class="tag removable" key={t}>
               #{t}
-              <button class="tag-x" disabled={busy} onClick={() => remove(t)}>×</button>
+              <button class="tag-x" disabled={busy} onClick={() => remove(t)}>
+                <Icon name="x" size={12} />
+              </button>
             </span>
           ))}
         </div>

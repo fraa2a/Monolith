@@ -6,6 +6,9 @@ export interface Clip {
   id: number;
   source: ClipSource;
   video_file: string;
+  // User-facing display name, independent of the on-disk filename. Defaults to
+  // "Untitled" for new clips; renaming edits this, not the file.
+  title: string;
   thumbnail_file: string | null;
   created_at_utc: string;
   duration_seconds: number | null;
@@ -49,6 +52,8 @@ type MutationMethod =
   | "clip_add_hashtag"
   | "clip_remove_hashtag"
   | "clip_rename"
+  | "clip_set_title"
+  | "clip_regen_thumb"
   | "clip_delete";
 
 async function mutate(
@@ -70,10 +75,38 @@ export const clipApi = {
     mutate("clip_add_hashtag", { source: c.source, id: c.id, tag }),
   removeHashtag: (c: Clip, tag: string) =>
     mutate("clip_remove_hashtag", { source: c.source, id: c.id, tag }),
+  // Renames the on-disk file (advanced action). new_name is a stem, no extension.
   rename: (c: Clip, new_name: string) =>
     mutate("clip_rename", { source: c.source, id: c.id, new_name }),
+  // Edits the display title only; the file on disk is untouched.
+  setTitle: (c: Clip, title: string) =>
+    mutate("clip_set_title", { source: c.source, id: c.id, title }),
+  // Asks the engine to rebuild a missing/corrupt thumbnail.
+  regenThumb: (c: Clip) =>
+    mutate("clip_regen_thumb", { source: c.source, id: c.id }),
   delete: (c: Clip) => mutate("clip_delete", { source: c.source, id: c.id }),
 };
+
+// Subscribes to live clip-list changes via Server-Sent Events. Calls `onChange`
+// whenever the engine reports a new clip. Returns an unsubscribe function.
+export function subscribeClips(onChange: () => void): () => void {
+  let source: EventSource | null = null;
+  let closed = false;
+  const connect = () => {
+    if (closed) return;
+    source = new EventSource("/api/events");
+    source.addEventListener("clips", () => onChange());
+    source.onerror = () => {
+      // EventSource auto-reconnects; nothing to do. Guard against tight loops
+      // by letting the browser honour the server's `retry` hint.
+    };
+  };
+  connect();
+  return () => {
+    closed = true;
+    source?.close();
+  };
+}
 
 export function mediaUrl(c: Clip): string {
   return `/media/${c.source}/${encodeURIComponent(c.video_file)}`;

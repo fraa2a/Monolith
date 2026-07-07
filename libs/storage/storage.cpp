@@ -126,6 +126,7 @@ const char* kCreateSchema =
     "  id INTEGER PRIMARY KEY,"
     "  video_file TEXT NOT NULL,"
     "  thumbnail_file TEXT,"
+    "  title TEXT NOT NULL DEFAULT 'Untitled',"
     "  created_at_utc TEXT NOT NULL,"
     "  source TEXT NOT NULL,"
     "  duration_seconds REAL,"
@@ -335,6 +336,12 @@ std::unique_ptr<ClipDb> ClipDb::open(const std::wstring& folder,
     if (!has_column(db, "clips", "favorite"))
         exec(db, "ALTER TABLE clips ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;",
              nullptr);
+    // Forward-compat: add the title column if an older DB predates it. Existing
+    // rows get "Untitled"; the UI lets the user rename them independently of the
+    // on-disk filename.
+    if (!has_column(db, "clips", "title"))
+        exec(db, "ALTER TABLE clips ADD COLUMN title TEXT NOT NULL DEFAULT 'Untitled';",
+             nullptr);
 
     std::unique_ptr<ClipDb> out(new ClipDb());
     out->impl_->db      = db;
@@ -349,10 +356,10 @@ std::wstring ClipDb::thumbs_dir() const { return impl_->thumbs_dir(); }
 int64_t ClipDb::insert_clip(const ClipRow& row, std::string* error)
 {
     static const char* sql =
-        "INSERT INTO clips (video_file, thumbnail_file, created_at_utc, source, "
+        "INSERT INTO clips (video_file, thumbnail_file, title, created_at_utc, source, "
         "duration_seconds, game_process_name, game_display_name, game_source, "
         "steam_app_id, confidence, favorite) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(impl_->db, sql, -1, &st, nullptr) != SQLITE_OK) {
         if (error) *error = sqlite3_errmsg(impl_->db);
@@ -361,21 +368,23 @@ int64_t ClipDb::insert_clip(const ClipRow& row, std::string* error)
 
     const std::string video = wide_to_utf8(row.video_file);
     const std::string thumb = wide_to_utf8(row.thumbnail_file);
+    const std::string title = row.title.empty() ? "Untitled" : row.title;
     const std::string created = row.created_at_utc.empty()
         ? now_iso8601_utc() : row.created_at_utc;
 
     sqlite3_bind_text(st, 1, video.c_str(), -1, SQLITE_TRANSIENT);
     if (thumb.empty()) sqlite3_bind_null(st, 2);
     else sqlite3_bind_text(st, 2, thumb.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 3, created.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 4, row.source.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_double(st, 5, row.duration_seconds);
-    sqlite3_bind_text(st, 6, row.game_process_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 7, row.game_display_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 8, row.game_source.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 9, row.steam_app_id);
-    sqlite3_bind_int(st, 10, row.confidence);
-    sqlite3_bind_int(st, 11, row.favorite ? 1 : 0);
+    sqlite3_bind_text(st, 3, title.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, created.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 5, row.source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(st, 6, row.duration_seconds);
+    sqlite3_bind_text(st, 7, row.game_process_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 8, row.game_display_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 9, row.game_source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 10, row.steam_app_id);
+    sqlite3_bind_int(st, 11, row.confidence);
+    sqlite3_bind_int(st, 12, row.favorite ? 1 : 0);
 
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
@@ -460,6 +469,23 @@ bool ClipDb::set_favorite(int64_t id, bool favorite, std::string* error)
     return ok;
 }
 
+bool ClipDb::set_title(int64_t id, const std::string& title, std::string* error)
+{
+    const std::string value = title.empty() ? "Untitled" : title;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, "UPDATE clips SET title=? WHERE id=?",
+                           -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        return false;
+    }
+    sqlite3_bind_text(st, 1, value.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    return ok;
+}
+
 bool ClipDb::add_hashtag(int64_t id, const std::string& tag, std::string* error)
 {
     if (tag.empty()) { if (error) *error = "empty tag"; return false; }
@@ -493,6 +519,53 @@ bool ClipDb::remove_hashtag(int64_t id, const std::string& tag, std::string* err
     sqlite3_finalize(st);
     if (!ok && error) *error = sqlite3_errmsg(impl_->db);
     return ok;
+}
+
+bool ClipDb::regenerate_thumbnail(int64_t id, std::string* error)
+{
+    std::wstring video_base, thumb_base;
+    {
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(impl_->db,
+                "SELECT video_file, thumbnail_file FROM clips WHERE id=?",
+                -1, &st, nullptr) != SQLITE_OK) {
+            if (error) *error = sqlite3_errmsg(impl_->db);
+            return false;
+        }
+        sqlite3_bind_int64(st, 1, id);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            if (const unsigned char* v = sqlite3_column_text(st, 0))
+                video_base = utf8_to_wide(reinterpret_cast<const char*>(v));
+            if (const unsigned char* t = sqlite3_column_text(st, 1))
+                thumb_base = utf8_to_wide(reinterpret_cast<const char*>(t));
+        }
+        sqlite3_finalize(st);
+    }
+    if (video_base.empty()) { if (error) *error = "clip not found"; return false; }
+
+    std::error_code ec;
+    fs::create_directories(impl_->thumbs_dir(), ec);
+    const std::wstring thumb = thumb_base.empty()
+        ? thumb_basename_for(video_base) : thumb_base;
+    const std::wstring vpath = impl_->video_path(video_base);
+    const std::wstring tpath = impl_->thumb_path(thumb);
+    if (!fs::exists(vpath, ec)) { if (error) *error = "video file missing"; return false; }
+
+    if (!encoding::generate_thumbnail(vpath, tpath)) {
+        if (error) *error = "thumbnail generation failed";
+        return false;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, "UPDATE clips SET thumbnail_file=? WHERE id=?",
+                           -1, &st, nullptr) == SQLITE_OK) {
+        const std::string tb = wide_to_utf8(thumb);
+        sqlite3_bind_text(st, 1, tb.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, id);
+        sqlite3_step(st);
+        sqlite3_finalize(st);
+    }
+    return true;
 }
 
 bool ClipDb::rename_clip(int64_t id, const std::wstring& new_stem, std::string* error)

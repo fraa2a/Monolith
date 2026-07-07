@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { type Config, getConfig, getRuntimeStatus, type RuntimeStatus, saveConfig } from "../lib/settings-api.ts";
 import { AudioSettings } from "./audio-settings.tsx";
+import {
+  Field,
+  FolderPicker,
+  HotkeyCapture,
+  Section,
+  Segmented,
+  Select,
+  TextInput,
+  Toggle,
+} from "./controls.tsx";
 import { Icon } from "../shell/icons.tsx";
 
 type Page =
@@ -24,6 +34,12 @@ const PAGES: { id: Page; label: string; icon: string }[] = [
   { id: "game", label: "Game Detection", icon: "gamepad" },
 ];
 
+// Bitrate presets (Mbps). The heaviest two are flagged so the UI can warn about
+// disk usage.
+const BITRATE_PRESETS = [3, 5, 7, 10, 15, 20, 25, 30, 35, 40, 50, 70, 100];
+const FPS_PRESETS = [24, 30, 60, 120, 144];
+const REPLAY_PRESETS = [15, 30, 60, 120];
+
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 interface Props {
@@ -35,7 +51,6 @@ function getPath(obj: any, path: string): any {
   return path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
 }
 
-// Returns a deep-ish clone with `path` set to `value` (mutates a fresh copy).
 // deno-lint-ignore no-explicit-any
 function setPath(obj: any, path: string, value: any): any {
   const copy = structuredClone(obj);
@@ -50,10 +65,6 @@ function setPath(obj: any, path: string, value: any): any {
   return copy;
 }
 
-// The settings popup: a custom overlay with a page list on the left and the
-// current page's controls on the right. Every edit is auto-saved (debounced):
-// it writes the whole config to settings.db and triggers the engine reload.
-// Capability-gated by runtime-status (encoders/monitors/devices).
 export function SettingsPopup({ onClose }: Props) {
   const [draft, setDraft] = useState<Config | null>(null);
   const [rs, setRs] = useState<RuntimeStatus>({});
@@ -61,7 +72,6 @@ export function SettingsPopup({ onClose }: Props) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  // Skip auto-save for the freshly-loaded config (only user edits should save).
   const skipSave = useRef(true);
   const saveTimer = useRef<number | undefined>(undefined);
   const savedTimer = useRef<number | undefined>(undefined);
@@ -82,7 +92,6 @@ export function SettingsPopup({ onClose }: Props) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  // Debounced auto-save: fires ~500ms after the last edit.
   useEffect(() => {
     if (!draft || skipSave.current) return;
     setSaveState("saving");
@@ -93,12 +102,12 @@ export function SettingsPopup({ onClose }: Props) {
         setSaveState("saved");
         setError(null);
         clearTimeout(savedTimer.current);
-        savedTimer.current = setTimeout(() => setSaveState("idle"), 1600);
+        savedTimer.current = setTimeout(() => setSaveState("idle"), 1600) as unknown as number;
       } else {
         setSaveState("error");
         setError(res.error ?? "save failed");
       }
-    }, 500);
+    }, 500) as unknown as number;
     return () => clearTimeout(saveTimer.current);
   }, [draft]);
 
@@ -140,23 +149,66 @@ export function SettingsPopup({ onClose }: Props) {
         <div class="settings-body">
           {!draft
             ? <div class="empty">Loading settings… (is the engine running?)</div>
-            : (
-              <Fields
-                page={page}
-                cfg={draft}
-                rs={rs}
-                update={update}
-              />
-            )}
+            : <Pages page={page} cfg={draft} rs={rs} update={update} />}
         </div>
       </div>
     </div>
   );
 }
 
-// ── Field controls ────────────────────────────────────────────────────────────
+// Replay duration: a preset dropdown (15/30/60/120) plus Custom, which enables a
+// number field. Custom mode is tracked locally so it stays selected even when the
+// custom value happens to equal a preset number.
+function ReplayDurationSection(
+  { value, onChange }: { value: number; onChange: (v: number) => void },
+) {
+  const [custom, setCustom] = useState(!REPLAY_PRESETS.includes(value));
+  const mode = custom ? "custom" : String(value);
+  return (
+    <Section
+      title="Replay Duration"
+      description="How much gameplay the replay buffer keeps for instant clips."
+    >
+      <Field
+        label="Duration"
+        help="Choose a preset, or Custom to enter your own length."
+        control={
+          <Select
+            value={mode}
+            options={[
+              ...REPLAY_PRESETS.map((s) => ({ value: String(s), label: `${s} seconds` })),
+              { value: "custom", label: "Custom" },
+            ]}
+            onChange={(v) => {
+              if (v === "custom") {
+                setCustom(true);
+              } else {
+                setCustom(false);
+                onChange(Number(v));
+              }
+            }}
+          />
+        }
+      />
+      <Field
+        label="Custom length (seconds)"
+        help="Enabled only when Custom is selected (5–600)."
+        control={
+          <TextInput
+            type="number"
+            min={5}
+            max={600}
+            value={value}
+            disabled={!custom}
+            onInput={(v) => onChange(Number(v))}
+          />
+        }
+      />
+    </Section>
+  );
+}
 
-interface FieldsProps {
+interface PagesProps {
   page: Page;
   cfg: Config;
   rs: RuntimeStatus;
@@ -164,111 +216,97 @@ interface FieldsProps {
   update: (path: string, value: any) => void;
 }
 
-function Fields({ page, cfg, rs, update }: FieldsProps) {
-  const bool = (path: string, label: string, help?: string) => (
-    <label class="field field-row">
-      <input
-        type="checkbox"
-        checked={!!getPath(cfg, path)}
-        onChange={(e) => update(path, (e.target as HTMLInputElement).checked)}
-      />
-      <span>
-        <span class="field-label">{label}</span>
-        {help && <span class="field-help">{help}</span>}
-      </span>
-    </label>
-  );
-
-  const text = (path: string, label: string, help?: string) => (
-    <div class="field">
-      <label class="field-label">{label}</label>
-      <input
-        class="input"
-        value={getPath(cfg, path) ?? ""}
-        onInput={(e) => update(path, (e.target as HTMLInputElement).value)}
-      />
-      {help && <span class="field-help">{help}</span>}
-    </div>
-  );
-
-  const num = (path: string, label: string, min?: number, max?: number, help?: string) => (
-    <div class="field">
-      <label class="field-label">{label}</label>
-      <input
-        class="input"
-        type="number"
-        min={min}
-        max={max}
-        value={getPath(cfg, path) ?? 0}
-        onInput={(e) => update(path, Number((e.target as HTMLInputElement).value))}
-      />
-      {help && <span class="field-help">{help}</span>}
-    </div>
-  );
-
-  const select = (path: string, label: string, opts: { value: string; label: string }[], help?: string) => (
-    <div class="field">
-      <label class="field-label">{label}</label>
-      <select
-        class="select"
-        value={String(getPath(cfg, path) ?? "")}
-        onChange={(e) => update(path, (e.target as HTMLSelectElement).value)}
-      >
-        {opts.map((o) => <option value={o.value} key={o.value}>{o.label}</option>)}
-      </select>
-      {help && <span class="field-help">{help}</span>}
-    </div>
-  );
-
-  // Edits a string[] as newline-separated text.
-  const list = (path: string, label: string, help?: string) => (
-    <div class="field">
-      <label class="field-label">{label}</label>
-      <textarea
-        class="input textarea"
-        value={(getPath(cfg, path) ?? []).join("\n")}
-        onInput={(e) =>
-          update(
-            path,
-            (e.target as HTMLTextAreaElement).value.split("\n").map((s) => s.trim()).filter(Boolean),
-          )}
-      />
-      {help && <span class="field-help">{help}</span>}
-    </div>
-  );
+function Pages({ page, cfg, rs, update }: PagesProps) {
+  const val = (p: string) => getPath(cfg, p);
 
   switch (page) {
     case "general":
       return (
-        <>
-          {bool("update.auto_check", "Automatic update checks")}
-          {bool("replay_buffer.enabled", "Replay buffer enabled", "Rolling clip buffer")}
-          {bool("recording.enabled", "Manual recording enabled")}
-        </>
+        <Section title="General" description="App-wide behaviour.">
+          <Field
+            label="Automatic update checks"
+            help="Check for new Monolith releases in the background."
+            control={
+              <Toggle checked={!!val("update.auto_check")} onChange={(v) => update("update.auto_check", v)} />
+            }
+          />
+          <Field
+            label="Replay buffer"
+            help="Keep a rolling buffer so you can save the last moments."
+            control={
+              <Toggle
+                checked={!!val("replay_buffer.enabled")}
+                onChange={(v) => update("replay_buffer.enabled", v)}
+              />
+            }
+          />
+          <Field
+            label="Manual recording"
+            help="Allow starting and stopping full recordings."
+            control={
+              <Toggle
+                checked={!!val("recording.enabled")}
+                onChange={(v) => update("recording.enabled", v)}
+              />
+            }
+          />
+        </Section>
       );
 
     case "output":
       return (
         <>
-          {text("output.clips_directory", "Clips folder")}
-          {text("output.recordings_directory", "Recordings folder")}
-          {select("replay_buffer.save_container", "Clip container", [
-            { value: "mkv", label: "MKV" },
-            { value: "mp4", label: "MP4" },
-          ])}
-          {select("recording.container", "Recording container", [
-            { value: "mkv", label: "MKV" },
-            { value: "mp4", label: "MP4" },
-          ])}
+          <Section title="Folders" description="Where clips and recordings are saved.">
+            <Field
+              label="Clips folder"
+              control={
+                <FolderPicker
+                  value={val("output.clips_directory") ?? ""}
+                  onPick={(p) => update("output.clips_directory", p)}
+                />
+              }
+            />
+            <Field
+              label="Recordings folder"
+              control={
+                <FolderPicker
+                  value={val("output.recordings_directory") ?? ""}
+                  onPick={(p) => update("output.recordings_directory", p)}
+                />
+              }
+            />
+          </Section>
+          <Section title="Containers" description="File format for saved media.">
+            <Field
+              label="Clip container"
+              control={
+                <Select
+                  value={String(val("replay_buffer.save_container") ?? "mkv")}
+                  options={[{ value: "mkv", label: "MKV" }, { value: "mp4", label: "MP4" }]}
+                  onChange={(v) => update("replay_buffer.save_container", v)}
+                />
+              }
+            />
+            <Field
+              label="Recording container"
+              control={
+                <Select
+                  value={String(val("recording.container") ?? "mkv")}
+                  options={[{ value: "mkv", label: "MKV" }, { value: "mp4", label: "MP4" }]}
+                  onChange={(v) => update("recording.container", v)}
+                />
+              }
+            />
+          </Section>
         </>
       );
 
     case "clip":
       return (
-        <>
-          {num("replay_buffer.duration_seconds", "Replay duration (s)", 5, 600)}
-          {num("replay_buffer.memory_budget_mb", "Memory budget (MB)", 32, 4096)}
-        </>
+        <ReplayDurationSection
+          value={Number(val("replay_buffer.duration_seconds") ?? 30)}
+          onChange={(v) => update("replay_buffer.duration_seconds", v)}
+        />
       );
 
     case "capture": {
@@ -278,80 +316,251 @@ function Fields({ page, cfg, rs, update }: FieldsProps) {
           label: `${m.device} (${m.width}×${m.height})${m.primary ? " • primary" : ""}`,
         })),
       );
+      // Hide presets larger than the selected monitor to prevent upscaling.
+      const selDev = String(val("capture.monitor_device") ?? "");
+      const mon = (rs.monitors ?? []).find((m) => m.device === selDev) ??
+        (rs.monitors ?? []).find((m) => m.primary);
+      const nativeH = mon?.height ?? 0;
+      const resOpts = [{ value: "source", label: "Match source (native)" }].concat(
+        [480, 720, 1080, 1440]
+          .filter((h) => nativeH === 0 || h < nativeH)
+          .map((h) => ({ value: `${h}p`, label: `${h}p` })),
+      );
       return (
-        <>
-          {select("capture.monitor_device", "Monitor", monOpts)}
-          {select("capture.resolution_mode", "Resolution", [
-            { value: "source", label: "Match source" },
-            { value: "custom", label: "Custom" },
-          ])}
-          {getPath(cfg, "capture.resolution_mode") === "custom" && (
-            <>
-              {num("capture.resolution_width", "Width", 320, 7680)}
-              {num("capture.resolution_height", "Height", 240, 4320)}
-            </>
-          )}
-          {bool("capture.show_capture_border", "Show capture border")}
-        </>
+        <Section title="Capture" description="Which display to record and at what resolution.">
+          <Field
+            label="Monitor"
+            control={
+              <Select
+                value={selDev}
+                options={monOpts}
+                onChange={(v) => update("capture.monitor_device", v)}
+              />
+            }
+          />
+          <Field
+            label="Resolution"
+            help="Aspect ratio follows the monitor; options above native are hidden."
+            control={
+              <Select
+                value={String(val("capture.resolution_preset") ?? "source")}
+                options={resOpts}
+                onChange={(v) => update("capture.resolution_preset", v)}
+              />
+            }
+          />
+          <Field
+            label="Show capture border"
+            help="Draw the yellow border around the captured display."
+            control={
+              <Toggle
+                checked={!!val("capture.show_capture_border")}
+                onChange={(v) => update("capture.show_capture_border", v)}
+              />
+            }
+          />
+        </Section>
       );
     }
 
     case "audio":
-      return <AudioSettings cfg={cfg} update={update} />;
+      return <AudioSettings cfg={cfg} rs={rs} update={update} />;
 
     case "hotkeys":
       return (
-        <>
-          {text("hotkeys.save_replay", "Save replay")}
-          {text("hotkeys.recording_start", "Start recording")}
-          {text("hotkeys.recording_stop", "Stop recording")}
-          {text("hotkeys.pause_resume", "Pause / resume")}
-        </>
+        <Section title="Hotkeys" description="Click a field and press the key combination.">
+          <Field
+            label="Save replay"
+            control={
+              <HotkeyCapture
+                value={String(val("hotkeys.save_replay") ?? "")}
+                onChange={(v) => update("hotkeys.save_replay", v)}
+              />
+            }
+          />
+          <Field
+            label="Start recording"
+            control={
+              <HotkeyCapture
+                value={String(val("hotkeys.recording_start") ?? "")}
+                onChange={(v) => update("hotkeys.recording_start", v)}
+              />
+            }
+          />
+          <Field
+            label="Stop recording"
+            control={
+              <HotkeyCapture
+                value={String(val("hotkeys.recording_stop") ?? "")}
+                onChange={(v) => update("hotkeys.recording_stop", v)}
+              />
+            }
+          />
+          <Field
+            label="Pause / resume"
+            control={
+              <HotkeyCapture
+                value={String(val("hotkeys.pause_resume") ?? "")}
+                onChange={(v) => update("hotkeys.pause_resume", v)}
+              />
+            }
+          />
+        </Section>
       );
 
     case "advanced": {
-      const encOpts = [{ value: "auto", label: "Auto (probe best)" }].concat(
-        (rs.available_encoders ?? []).map((e) => ({ value: e, label: e })),
+      const device = String(val("video_encoder.device") ?? "gpu");
+      const codec = String(val("video_encoder.codec") ?? "h264");
+      const bitrate = Number(val("video_encoder.bitrate_kbps") ?? 20000);
+      // Capability-gate: only offer GPU when the machine actually has a hardware
+      // encoder (nvenc/amf/qsv). Otherwise GPU would silently fall back to CPU.
+      const hasHwEncoder = (rs.available_encoders ?? []).some((e) =>
+        /nvenc|amf|qsv/.test(e)
       );
+      const deviceOpts = [{ value: "cpu", label: "CPU", icon: "cpu" }];
+      if (hasHwEncoder) deviceOpts.unshift({ value: "gpu", label: "GPU", icon: "monitor" });
+      // Friendly codec names; the technical encoder name is a secondary detail.
+      const codecOpts = [
+        { value: "h264", label: "H.264 (AVC) — best compatibility" },
+        { value: "h265", label: "H.265 (HEVC) — smaller files" },
+      ];
+      const bitrateOpts = BITRATE_PRESETS.map((mbps) => ({
+        value: String(mbps * 1000),
+        label: `${mbps} Mbps${mbps >= 70 ? "  •  high disk usage" : ""}`,
+        danger: mbps >= 70,
+      }));
       return (
         <>
-          {select("video_encoder.backend", "Encoder backend", encOpts,
-            rs.active_encoder ? `Active: ${rs.active_encoder}` : undefined)}
-          {num("video_encoder.fps", "FPS", 15, 120)}
-          {num("video_encoder.quality", "Quality (CQP/CRF)", 10, 30)}
-          {select("video_encoder.scaling_filter", "Scaling filter", [
-            { value: "bilinear", label: "Bilinear" },
-            { value: "bicubic", label: "Bicubic" },
-            { value: "lanczos", label: "Lanczos" },
-          ])}
-          {text("video_encoder.extra_ffmpeg_options", "Extra FFmpeg options",
-            "key=value:key=value")}
-          {text("output.temp_directory", "Temp folder")}
-          {bool("discord.rich_presence_enabled", "Discord Rich Presence",
-            "Show Monolith + current game in Discord (engine support pending)")}
+          <Section title="Encoder" description="Pick where encoding runs, then the codec.">
+            <Field
+              label="Encoder device"
+              help={rs.active_encoder ? `Active: ${rs.active_encoder}` : "GPU is faster; CPU is more compatible."}
+              control={
+                <Segmented
+                  value={hasHwEncoder ? device : "cpu"}
+                  options={deviceOpts}
+                  onChange={(v) => update("video_encoder.device", v)}
+                />
+              }
+            />
+            <Field
+              label="Codec"
+              control={
+                <Select value={codec} options={codecOpts} onChange={(v) => update("video_encoder.codec", v)} />
+              }
+            />
+          </Section>
+
+          <Section title="Quality" description="Constant bitrate (CBR). Higher bitrate = better quality and larger files.">
+            <Field
+              label="Bitrate"
+              control={
+                <Select
+                  value={String(bitrate)}
+                  options={bitrateOpts}
+                  onChange={(v) => update("video_encoder.bitrate_kbps", Number(v))}
+                />
+              }
+            />
+            <Field
+              label="Frame rate"
+              control={
+                <Select
+                  value={String(val("video_encoder.fps") ?? 60)}
+                  options={FPS_PRESETS.map((f) => ({ value: String(f), label: `${f} FPS` }))}
+                  onChange={(v) => update("video_encoder.fps", Number(v))}
+                />
+              }
+            />
+            <Field
+              label="Scaling filter"
+              help="Used only when the output resolution differs from native."
+              control={
+                <Select
+                  value={String(val("video_encoder.scaling_filter") ?? "bilinear")}
+                  options={[
+                    { value: "bilinear", label: "Bilinear" },
+                    { value: "bicubic", label: "Bicubic" },
+                    { value: "lanczos", label: "Lanczos" },
+                  ]}
+                  onChange={(v) => update("video_encoder.scaling_filter", v)}
+                />
+              }
+            />
+          </Section>
+
+          <Section title="Extras">
+            <Field
+              label="Extra FFmpeg options"
+              help="Advanced: key=value:key=value passed to the encoder."
+              control={
+                <TextInput
+                  value={String(val("video_encoder.extra_ffmpeg_options") ?? "")}
+                  onInput={(v) => update("video_encoder.extra_ffmpeg_options", v)}
+                  placeholder="key=value:key=value"
+                />
+              }
+            />
+            <Field
+              label="Discord Rich Presence"
+              help="Show Monolith + current game in Discord (engine support pending)."
+              control={
+                <Toggle
+                  checked={!!val("discord.rich_presence_enabled")}
+                  onChange={(v) => update("discord.rich_presence_enabled", v)}
+                />
+              }
+            />
+          </Section>
         </>
       );
     }
 
     case "game":
       return (
-        <>
-          {select("capture_mode.mode", "Capture mode", [
-            { value: "always", label: "Always capture" },
-            { value: "game_only", label: "Only while a game is running" },
-          ], "game_only stops the replay buffer when idle; never stops a recording")}
-          {getPath(cfg, "capture_mode.mode") === "game_only" &&
-            num("capture_mode.idle_timeout_seconds", "Idle timeout (s)", 30, 3600)}
-          {bool("active_game.detection_enabled", "Detect active game")}
-          {num("active_game.poll_interval_ms", "Poll interval (ms)", 3000, 30000)}
-          {num("active_game.switch_debounce_ms", "Switch debounce (ms)", 1000, 15000)}
-          {num("active_game.min_confidence", "Min confidence", 0, 100)}
-          {bool("active_game.fast_scan_enabled", "Fast scan on foreground change")}
-          {num("active_game.fast_scan_min_interval_ms", "Fast scan min interval (ms)", 500, 5000)}
-          {list("active_game.blacklist_processes", "Blacklist (one exe per line)")}
-          {list("active_game.whitelist_processes", "Whitelist (one exe per line)")}
-          {list("active_game.manual_games", "Manual games (one exe per line)")}
-        </>
+        <Section
+          title="Game Detection"
+          description="Detection is automatic (Discord + running processes) and runs every 5 seconds."
+        >
+          <Field
+            label="Capture mode"
+            help="Only-while-gaming stops the buffer when idle; never stops a recording."
+            control={
+              <Select
+                value={String(val("capture_mode.mode") ?? "always")}
+                options={[
+                  { value: "always", label: "Always capture" },
+                  { value: "game_only", label: "Only while a game is running" },
+                ]}
+                onChange={(v) => update("capture_mode.mode", v)}
+              />
+            }
+          />
+          {val("capture_mode.mode") === "game_only" && (
+            <Field
+              label="Idle timeout (seconds)"
+              control={
+                <TextInput
+                  type="number"
+                  min={30}
+                  max={3600}
+                  value={Number(val("capture_mode.idle_timeout_seconds") ?? 300)}
+                  onInput={(v) => update("capture_mode.idle_timeout_seconds", Number(v))}
+                />
+              }
+            />
+          )}
+          <Field
+            label="Detect active game"
+            help="Automatically switch game-audio capture to the foreground game."
+            control={
+              <Toggle
+                checked={!!val("active_game.detection_enabled")}
+                onChange={(v) => update("active_game.detection_enabled", v)}
+              />
+            }
+          />
+        </Section>
       );
   }
 }

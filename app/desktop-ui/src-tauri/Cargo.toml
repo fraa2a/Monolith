@@ -17,6 +17,9 @@ tiny_http = "0.12"
 include_dir = "0.7"
 url = "2"
 percent-encoding = "2"
+# Native Windows folder picker for directory settings (no manual path entry).
+# xdg-portal is Linux-only; on Windows this pulls the Win32 IFileDialog backend.
+rfd = "0.15"
 
 [[bin]]
 name = "monolith_ui"

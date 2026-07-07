@@ -301,7 +301,10 @@ static std::array<std::unique_ptr<encoding::TrackMixer>, 7> g_track_mixers;
 
 // One output route for a source: which track, and (when that track is mixed) the
 // source's id within the mixer. mixer_src == -1 means push directly to encoder.
-struct AudioRoute { int track = 0; int mixer_src = -1; };
+// gain is the source's linear volume (0.0–1.0), applied to the recorded audio:
+// for mixed tracks it lives in the mixer source; for direct tracks it is applied
+// in-place before push_pcm.
+struct AudioRoute { int track = 0; int mixer_src = -1; float gain = 1.0f; };
 
 // A live capture plus the routes its callback writes to. Routes are kept so that
 // when a capture is removed (e.g. Active Game swap) its mixer slots are released.
@@ -358,11 +361,24 @@ static std::wstring  g_clips_dir_snapshot;
 static std::wstring  g_recs_dir_snapshot;
 static settings::Config g_settings;
 
+// Bumped each time a clip is cataloged (replay save or manual stop). Read by the
+// IPC get_status handler so the UI host can push a live clip-list refresh.
+static std::atomic<uint64_t>     g_clip_generation{0};
+
 // Active-game audio source: re-evaluated every poll_interval_ms by a UI-thread timer
 // and also on foreground-window changes (fast scan, rate-limited).
 static constexpr UINT_PTR kActiveGameTimerId = 1;
 
+// Replay-buffer memory budget, fixed internally (no UI knob). 512 MB is a safe
+// ceiling for the encoded-packet ring across supported bitrates/durations.
+static constexpr int64_t kReplayMemoryBudgetMb = 512;
+
+// Active-game detection runs on a fixed 5 s cadence; detection itself is fully
+// automatic (Discord API + running-process heuristic), no user configuration.
+static constexpr int kActiveGamePollMs = 5000;
+
 static std::vector<int>          g_active_game_tracks;
+static float                     g_active_game_gain    = 1.0f; // volume of the active-game source
 static uint32_t                  g_active_game_pid     = 0;
 static audio::WasapiCapture*     g_active_game_capture = nullptr;
 static std::string               g_active_game_capture_mode; // "process_loopback"|"unavailable"|"none"
@@ -643,7 +659,8 @@ static void apply_runtime_settings()
 
     replay_buffer::ReplayBuffer::Config rbcfg;
     rbcfg.duration_sec  = g_settings.replay_duration_seconds;
-    rbcfg.memory_cap_mb = g_settings.replay_memory_budget_mb;
+    // Memory budget is fixed internally (no longer user-configurable).
+    rbcfg.memory_cap_mb = kReplayMemoryBudgetMb;
     rbcfg.output_dir    = g_settings.clips_directory;
     rbcfg.container     = g_settings.replay_clip_container;
     g_replay.configure(rbcfg);
@@ -659,17 +676,20 @@ static void apply_runtime_settings()
         g_recs_dir_snapshot  = g_settings.recordings_directory;
     }
 
-    char msg[192];
+    char msg[224];
     snprintf(msg, sizeof(msg),
-             "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s fps=%d quality=%d",
+             "settings applied: replay=%ds / %lldMB / %s%s recording=%s%s "
+             "encoder=%s/%s fps=%d bitrate=%dkbps (CBR)",
              g_settings.replay_duration_seconds,
-             static_cast<long long>(g_settings.replay_memory_budget_mb),
+             static_cast<long long>(kReplayMemoryBudgetMb),
              g_settings.replay_clip_container.c_str(),
              g_settings.replay_buffer_enabled ? "" : " (DISABLED)",
              g_recording_container.c_str(),
              g_settings.recording_enabled ? "" : " (DISABLED)",
+             g_settings.encoder_device.c_str(),
+             g_settings.encoder_codec.c_str(),
              g_settings.video_fps,
-             g_settings.video_quality);
+             g_settings.video_bitrate_kbps);
     log_msg("settings", msg);
     log_path("replay", "clips dir: ", g_settings.clips_directory);
     log_path("recording", "recordings dir: ", g_recordings_dir);
@@ -743,8 +763,10 @@ static void catalog_clip(std::wstring video_path, std::string source,
 
     if (dbh->insert_clip(row, &error) <= 0)
         log_msg("storage", ("clip DB insert failed: " + error).c_str());
-    else
+    else {
+        g_clip_generation.fetch_add(1, std::memory_order_relaxed);
         log_path("storage", "clip cataloged: ", base);
+    }
 }
 
 // Self-heal both catalogs on startup: drop rows whose video vanished, rebuild
@@ -797,6 +819,8 @@ static std::string handle_clip_mutation(const ipc::ClipMutation& m)
     else if (m.method == "clip_add_hashtag")    ok = db->add_hashtag(m.id, m.tag, &err);
     else if (m.method == "clip_remove_hashtag") ok = db->remove_hashtag(m.id, m.tag, &err);
     else if (m.method == "clip_rename")         ok = db->rename_clip(m.id, utf8_to_wide(m.new_name), &err);
+    else if (m.method == "clip_set_title")      ok = db->set_title(m.id, m.title, &err);
+    else if (m.method == "clip_regen_thumb")    ok = db->regenerate_thumbnail(m.id, &err);
     else if (m.method == "clip_delete")         ok = db->remove_clip(m.id, /*remove_files=*/true, &err);
     else return "unknown mutation: " + m.method;
 
@@ -879,6 +903,7 @@ static bool same_audio_source(const settings::AudioSourceConfig& a,
         && a.process_name == b.process_name
         && a.executable_path == b.executable_path
         && a.enabled == b.enabled
+        && a.volume == b.volume
         && same_tracks(a.tracks, b.tracks);
 }
 
@@ -901,13 +926,12 @@ static bool capture_encoder_config_changed(const settings::Config& a,
                                            const settings::Config& b)
 {
     return a.monitor_device != b.monitor_device
-        || a.resolution_mode != b.resolution_mode
-        || a.output_width != b.output_width
-        || a.output_height != b.output_height
+        || a.resolution_preset != b.resolution_preset
         || a.show_capture_border != b.show_capture_border
-        || a.encoder_backend != b.encoder_backend
+        || a.encoder_device != b.encoder_device
+        || a.encoder_codec != b.encoder_codec
+        || a.video_bitrate_kbps != b.video_bitrate_kbps
         || a.video_fps != b.video_fps
-        || a.video_quality != b.video_quality
         || a.scaling_filter != b.scaling_filter
         || a.extra_ffmpeg_options != b.extra_ffmpeg_options;
 }
@@ -1088,18 +1112,22 @@ static encoding::TrackMixer* ensure_track_mixer(int track)
 // Build output routes for a source given its requested tracks. A single source
 // on a track pushes directly to the encoder. Only tracks with multiple sources
 // pay the continuous mixer cost.
-static std::vector<AudioRoute> make_routes(const std::vector<int>& requested)
+static std::vector<AudioRoute> make_routes(const std::vector<int>& requested,
+                                           float gain = 1.0f)
 {
+    if (gain < 0.0f) gain = 0.0f;
     std::vector<AudioRoute> routes;
     for (int track : valid_tracks(requested)) {
         if (!open_audio_track(track)) continue;
         AudioRoute r;
         r.track = track;
         r.mixer_src = -1;
+        r.gain = gain;
         if (g_track_plan_count[track] > 1) {
             encoding::TrackMixer* mixer = ensure_track_mixer(track);
             if (!mixer) continue;
-            r.mixer_src = mixer->add_source();
+            // Mixed track: gain lives in the mixer source so summing is correct.
+            r.mixer_src = mixer->add_source(gain);
             if (r.mixer_src < 0) continue;
         }
         routes.push_back(r);
@@ -1136,6 +1164,34 @@ static void publish_audio_params()
     log_msg("audio", buf);
 }
 
+// Applies a linear gain to a raw PCM buffer in place. Handles the two formats
+// WASAPI delivers: 32-bit IEEE float and 16-bit signed integer. Other bit depths
+// are left untouched (gain simply doesn't apply). Clamps to the format range.
+static void apply_gain_inplace(uint8_t* data, int bytes, int bit_depth,
+                               bool is_float, float gain)
+{
+    if (!data || bytes <= 0 || gain == 1.0f) return;
+    if (is_float && bit_depth == 32) {
+        float* s = reinterpret_cast<float*>(data);
+        const int n = bytes / static_cast<int>(sizeof(float));
+        for (int i = 0; i < n; ++i) {
+            float v = s[i] * gain;
+            if (v >  1.0f) v =  1.0f;
+            else if (v < -1.0f) v = -1.0f;
+            s[i] = v;
+        }
+    } else if (!is_float && bit_depth == 16) {
+        int16_t* s = reinterpret_cast<int16_t*>(data);
+        const int n = bytes / static_cast<int>(sizeof(int16_t));
+        for (int i = 0; i < n; ++i) {
+            int v = static_cast<int>(std::lround(s[i] * gain));
+            if (v >  32767) v =  32767;
+            else if (v < -32768) v = -32768;
+            s[i] = static_cast<int16_t>(v);
+        }
+    }
+}
+
 static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
                                  const audio::PacketInfo& p,
                                  const char* log_tag)
@@ -1150,16 +1206,31 @@ static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
     }
 
     if (p.data_bytes == 0) return;
+
+    // Scratch buffer reused across direct-route gain application. thread_local so
+    // concurrent capture callbacks (each on its own capture thread) don't clash.
+    thread_local std::vector<uint8_t> gain_buf;
+
     for (const auto& r : routes) {
         if (r.track < 1 || r.track > 6) continue;
         if (r.mixer_src >= 0 && g_track_mixers[r.track]) {
+            // Mixed track: the mixer source already carries the gain.
             g_track_mixers[r.track]->push(
                 r.mixer_src, p.data, static_cast<int>(p.data_bytes),
                 static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
                 static_cast<int>(p.bit_depth), p.is_float);
         } else if (r.mixer_src < 0) {
+            const uint8_t* out_data = p.data;
+            int out_bytes = static_cast<int>(p.data_bytes);
+            // Direct track: apply per-source gain in place on a scratch copy.
+            if (r.gain != 1.0f && p.data) {
+                gain_buf.assign(p.data, p.data + p.data_bytes);
+                apply_gain_inplace(gain_buf.data(), out_bytes,
+                                   static_cast<int>(p.bit_depth), p.is_float, r.gain);
+                out_data = gain_buf.data();
+            }
             g_audio_encoders[r.track - 1].push_pcm(
-                p.data, static_cast<int>(p.data_bytes),
+                out_data, out_bytes,
                 static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
                 static_cast<int>(p.bit_depth), p.is_float);
         }
@@ -1170,9 +1241,10 @@ static bool start_endpoint_source(audio::WasapiCapture::Mode mode,
                                   const std::wstring& device_id,
                                   std::vector<int> tracks,
                                   const char* log_tag,
-                                  const char* label)
+                                  const char* label,
+                                  float gain = 1.0f)
 {
-    std::vector<AudioRoute> routes = make_routes(tracks);
+    std::vector<AudioRoute> routes = make_routes(tracks, gain);
     if (routes.empty()) return false;
 
     auto capture = std::make_unique<audio::WasapiCapture>();
@@ -1195,10 +1267,11 @@ static bool start_endpoint_source(audio::WasapiCapture::Mode mode,
 static bool start_process_source(uint32_t pid,
                                  std::vector<int> tracks,
                                  const char* log_tag,
-                                 const char* label)
+                                 const char* label,
+                                 float gain = 1.0f)
 {
     if (pid == 0) return false;
-    std::vector<AudioRoute> routes = make_routes(tracks);
+    std::vector<AudioRoute> routes = make_routes(tracks, gain);
     if (routes.empty()) return false;
 
     auto capture = std::make_unique<audio::WasapiCapture>();
@@ -1384,6 +1457,7 @@ static void stop_audio_system()
         encoder.close();
     g_track_plan_count.fill(0);
     g_active_game_tracks.clear();
+    g_active_game_gain          = 1.0f;
     g_active_game_pid           = 0;
     g_active_game_capture       = nullptr;
     g_active_game_capture_mode  = "none";
@@ -1453,20 +1527,21 @@ static void start_custom_audio_system()
         if (source.type == "desktop") {
             start_endpoint_source(audio::WasapiCapture::Mode::Loopback, L"",
                                   tracks, "audio.sys",
-                                  "custom desktop audio started");
+                                  "custom desktop audio started", source.volume);
         } else if (source.type == "input") {
             start_endpoint_source(audio::WasapiCapture::Mode::Microphone,
                                   source.device_id,
                                   tracks, "audio.in",
-                                  "custom input device started");
+                                  "custom input device started", source.volume);
         } else if (source.type == "process") {
             uint32_t pid = resolve_configured_process(source);
             if (!start_process_source(pid, tracks, "audio.app",
-                                      "custom process audio started")) {
+                                      "custom process audio started", source.volume)) {
                 log_msg("audio.app", "configured process not running or not capturable");
             }
         } else if (source.type == "active_game") {
             g_active_game_tracks = tracks;
+            g_active_game_gain = source.volume;
             // Initial acquire: call poll_active_game() inline after audio start to pick
             // up any game already running.  poll_active_game() uses the configured
             // blacklist/whitelist and will set g_active_game_pid/capture/mode.
@@ -1593,7 +1668,8 @@ static void poll_active_game_impl()
     // ── No current capture and a valid candidate: acquire immediately ──────────
     if (g_active_game_pid == 0) {
         bool ok = start_process_source(best_pid, g_active_game_tracks,
-                                       "audio.game", "active game audio started");
+                                       "audio.game", "active game audio started",
+                                       g_active_game_gain);
         if (ok) {
             g_active_game_pid          = best_pid;
             g_active_game_capture      = g_audio_captures.back().capture.get();
@@ -1643,7 +1719,8 @@ static void poll_active_game_impl()
     // Debounce passed → swap the Active Game capture.
     // Start the new capture first (so there is minimal gap), then stop the old one.
     bool ok = start_process_source(best_pid, g_active_game_tracks,
-                                   "audio.game", "active game switched");
+                                   "audio.game", "active game switched",
+                                   g_active_game_gain);
     if (!ok) {
         g_active_game_capture_mode = "unavailable";
         log_msg("audio.game", "process-loopback unavailable for new game; switch aborted");
@@ -1790,11 +1867,10 @@ static void media_start(HWND hwnd)
     g_main_hwnd = hwnd;
     start_audio_system();
     if (active_game_source_configured()) {
-        UINT poll_ms = static_cast<UINT>(
-            std::max(3000, std::min(30000, g_settings.active_game.poll_interval_ms)));
-        SetTimer(hwnd, kActiveGameTimerId, poll_ms, nullptr);
-        if (g_settings.active_game.fast_scan_enabled)
-            install_fg_hook();
+        // Fixed 5 s cadence; detection is fully automatic (no user config).
+        SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
+        // Foreground-change fast scan is always on for snappy game switches.
+        install_fg_hook();
         // Initial detection pass (doesn't wait for first timer tick).
         poll_active_game();
     }
@@ -1924,23 +2000,42 @@ static void media_start(HWND hwnd)
                     return;
                 }
 
-                // Output resolution: capture-native unless config requests custom.
-                if (g_settings.resolution_mode == "custom" &&
-                    g_settings.output_width > 0 && g_settings.output_height > 0) {
-                    g_enc_w = g_settings.output_width;
-                    g_enc_h = g_settings.output_height;
+                // Output resolution derives from a preset target height while
+                // preserving the captured monitor's aspect ratio. Never upscale
+                // beyond native (a preset taller than the monitor falls back to
+                // source), so we never invent pixels.
+                const int src_w = static_cast<int>(f.width  & ~1u);
+                const int src_h = static_cast<int>(f.height & ~1u);
+                int target_h = 0;
+                const std::string& rp = g_settings.resolution_preset;
+                if (rp == "480p")  target_h = 480;
+                else if (rp == "720p")  target_h = 720;
+                else if (rp == "1080p") target_h = 1080;
+                else if (rp == "1440p") target_h = 1440;
+                if (target_h > 0 && src_h > 0 && target_h < src_h) {
+                    g_enc_h = target_h & ~1;
+                    g_enc_w = (static_cast<int>(std::lround(
+                        static_cast<double>(src_w) * target_h / src_h))) & ~1;
                 } else {
-                    g_enc_w = static_cast<int>(f.width & ~1u);
-                    g_enc_h = static_cast<int>(f.height & ~1u);
+                    // "source", or a preset >= native: keep native (no upscale).
+                    g_enc_w = src_w;
+                    g_enc_h = src_h;
                 }
+
+                // Resolve the concrete FFmpeg encoder from the user's CPU/GPU +
+                // codec choice, given what this machine can actually open.
+                std::string resolved = encoding::resolve_video_encoder(
+                    g_settings.encoder_device, g_settings.encoder_codec,
+                    g_enc_w, g_enc_h);
 
                 encoding::VideoEncoder::Config vcfg;
                 vcfg.width             = g_enc_w;
                 vcfg.height            = g_enc_h;
                 vcfg.fps               = g_settings.video_fps;
-                vcfg.quality           = g_settings.video_quality;
+                vcfg.quality           = 0; // 0 = CBR
+                vcfg.bitrate           = static_cast<int64_t>(g_settings.video_bitrate_kbps) * 1000;
                 vcfg.scaling_filter    = g_settings.scaling_filter;
-                vcfg.preferred_encoder = g_settings.encoder_backend;
+                vcfg.preferred_encoder = resolved; // "" → probe order fallback
                 vcfg.extra_options     = g_settings.extra_ffmpeg_options;
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
@@ -1955,10 +2050,10 @@ static void media_start(HWND hwnd)
                 if (enc_ok) {
                     char enc_msg[256];
                     snprintf(enc_msg, sizeof(enc_msg),
-                        "%s %dx%d @%dfps quality=%d%s%s",
+                        "%s %dx%d @%dfps %dkbps CBR%s%s",
                         g_video_enc.encoder_name().c_str(), g_enc_w, g_enc_h,
                         g_settings.video_fps,
-                        g_settings.video_quality,
+                        g_settings.video_bitrate_kbps,
                         g_settings.extra_ffmpeg_options.empty() ? "" :
                             (g_video_enc.extra_options_rejected()
                                 ? "  extra_options=REJECTED (opened without them)"
@@ -1985,12 +2080,12 @@ static void media_start(HWND hwnd)
                     publish_runtime_status();
                 } else {
                     {
-                        char err[160];
+                        char err[176];
                         snprintf(err, sizeof(err),
-                            "No usable video encoder for %dx%d @%dfps (backend: %s). Retrying…",
+                            "No usable video encoder for %dx%d @%dfps (%s/%s). Retrying…",
                             g_enc_w, g_enc_h, g_settings.video_fps,
-                            g_settings.encoder_backend.empty()
-                                ? "auto" : g_settings.encoder_backend.c_str());
+                            g_settings.encoder_device.c_str(),
+                            g_settings.encoder_codec.c_str());
                         std::lock_guard<std::mutex> lk(g_status_mutex);
                         g_runtime_status.active_encoder.clear();
                         g_runtime_status.video_encoder_error = err;
@@ -2226,7 +2321,7 @@ static void tray_show_menu(HWND hwnd)
     AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  stop_text.c_str());
     AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
-    AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Settings\x2026");
+    AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Open Monolith");
     AppendMenuW(menu, MF_STRING,             CMD_CHECK_UPDATE,    L"Check for Updates\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_EXIT,            L"Exit");
@@ -2290,11 +2385,13 @@ static UINT key_vk(const std::string& token)
         int n = atoi(key.c_str() + 1);
         if (n >= 1 && n <= 24) return VK_F1 + static_cast<UINT>(n - 1);
     }
-    if (key == "SPACE") return VK_SPACE;
+    if (key == "SPACE" || key == "SPACEBAR" || key == " ") return VK_SPACE;
     if (key == "TAB") return VK_TAB;
-    if (key == "ENTER") return VK_RETURN;
+    if (key == "ENTER" || key == "RETURN") return VK_RETURN;
     if (key == "BACKSPACE") return VK_BACK;
     if (key == "ESC" || key == "ESCAPE") return VK_ESCAPE;
+    if (key == "PLUS") return VK_OEM_PLUS;
+    if (key == "MINUS") return VK_OEM_MINUS;
     if (key == "INSERT" || key == "INS") return VK_INSERT;
     if (key == "DELETE" || key == "DEL") return VK_DELETE;
     if (key == "HOME") return VK_HOME;
@@ -2340,7 +2437,8 @@ static bool parse_hotkey(const std::string& text, HotkeySpec* out)
         if (upper == "CTRL" || upper == "CONTROL") vk = VK_CONTROL;
         else if (upper == "SHIFT") vk = VK_SHIFT;
         else if (upper == "ALT") vk = VK_MENU;
-        else if (upper == "WIN" || upper == "WINDOWS") vk = VK_LWIN;
+        else if (upper == "WIN" || upper == "WINDOWS" || upper == "META" ||
+                 upper == "CMD" || upper == "SUPER") vk = VK_LWIN;
         else vk = key_vk(token);
 
         if (vk == 0) return false;
@@ -2608,6 +2706,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 st == recording::RecordingState::Paused,
                 g_settings.replay_buffer_enabled,
                 g_settings.recording_enabled,
+                g_clip_generation.load(std::memory_order_relaxed),
             };
         }, handle_clip_mutation);
         publish_runtime_status();
@@ -2622,19 +2721,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
 
-    case WM_FAST_SCAN:
-        // Foreground-change fast scan: rate-limited by fast_scan_min_interval_ms.
+    case WM_FAST_SCAN: {
+        // Foreground-change fast scan, rate-limited to one pass per second.
         g_fast_scan_pending = false;
-        if (g_settings.active_game.fast_scan_enabled) {
-            DWORD now_ms = GetTickCount();
-            DWORD min_gap = static_cast<DWORD>(
-                std::max(500, std::min(5000, g_settings.active_game.fast_scan_min_interval_ms)));
-            if ((now_ms - g_last_fast_scan_ms) >= min_gap) {
-                g_last_fast_scan_ms = now_ms;
-                poll_active_game();
-            }
+        constexpr DWORD kFastScanMinGapMs = 1000;
+        DWORD now_ms = GetTickCount();
+        if ((now_ms - g_last_fast_scan_ms) >= kFastScanMinGapMs) {
+            g_last_fast_scan_ms = now_ms;
+            poll_active_game();
         }
         return 0;
+    }
 
     case WM_DESTROY:
         settings_window::close_running();

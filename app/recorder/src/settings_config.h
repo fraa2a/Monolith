@@ -17,6 +17,7 @@ struct AudioSourceConfig {
     std::wstring window_title;
     std::wstring window_class;
     bool enabled = true;
+    float volume = 1.0f;            // linear gain 0.0–1.0, applied to the recording
     std::vector<int> tracks;
 };
 
@@ -40,9 +41,8 @@ struct Config {
     std::wstring app_data_dir;     // holds settings.db (ADR-0009 rewrite)
     std::wstring clips_directory;
     std::wstring recordings_directory;
-    std::wstring temp_directory;
-    int replay_duration_seconds = 30;
-    int64_t replay_memory_budget_mb = 128;
+    std::wstring temp_directory;      // managed internally; not user-configurable
+    int replay_duration_seconds = 30; // presets 15/30/60/120, or custom 5–600
     std::string replay_clip_container = "mkv"; // "mkv" | "mp4"
     bool replay_buffer_enabled = true;
     std::string recording_container = "mkv"; // "mkv" | "mp4"
@@ -64,15 +64,20 @@ struct Config {
 
     // Capture (capture/encoder restart when no manual recording is active).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
-    std::string resolution_mode = "source"; // "source" | "custom"
-    int output_width = 0;                 // used when resolution_mode == "custom"
-    int output_height = 0;
+    // Resolution is chosen as a preset height; the width is derived from the
+    // captured monitor's aspect ratio and never upscaled beyond the monitor.
+    // "source" keeps the native monitor resolution.
+    std::string resolution_preset = "source"; // source | 480p | 720p | 1080p | 1440p
     bool show_capture_border = false;
 
     // Encoder (capture/encoder restart when no manual recording is active).
-    std::string encoder_backend = "auto"; // auto | h264_* | hevc_* | libx264 | libx265
-    int video_fps = 60;                   // clamped 15-120
-    int video_quality = 20;               // 10-30 → CQP(HW)/CRF(SW)
+    // Simplified surface: user picks CPU/GPU + codec; the engine resolves the
+    // concrete FFmpeg encoder from what the machine actually supports. Rate
+    // control is always CBR with the configured bitrate.
+    std::string encoder_device = "gpu";   // "gpu" | "cpu"
+    std::string encoder_codec  = "h264";  // "h264" | "h265"
+    int video_bitrate_kbps = 20000;       // CBR target, clamped 1000–200000
+    int video_fps = 60;                   // presets 24/30/60/120/144
     std::string scaling_filter = "bilinear"; // "bilinear" | "bicubic" | "lanczos"
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
 
@@ -137,7 +142,7 @@ struct ActiveGameStatus {
     std::string capture_mode;               // "process_loopback" | "unavailable" | "none"
     bool process_loopback_available = false;
     std::string last_switch_time;           // ISO-8601 local time of last switch
-    int poll_interval_ms = 30000;
+    int poll_interval_ms = 5000;            // fixed cadence (informational)
     bool fast_scan_enabled = true;
 };
 

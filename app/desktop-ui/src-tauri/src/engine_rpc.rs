@@ -46,3 +46,14 @@ pub fn mutate_clip(method: &str, params: Value) -> Value {
 pub fn reload_settings() {
     let _ = rpc("reload_settings", None);
 }
+
+/// Returns the engine's clip-generation counter, bumped each time a clip is
+/// cataloged. Used by the SSE bridge to detect new clips and push a refresh.
+/// Returns None if the engine is unreachable (not running yet).
+pub fn clip_generation() -> Option<u64> {
+    let response = rpc("get_status", None).ok()?;
+    response
+        .get("result")
+        .and_then(|r| r.get("clip_generation"))
+        .and_then(Value::as_u64)
+}

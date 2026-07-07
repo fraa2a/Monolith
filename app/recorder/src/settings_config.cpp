@@ -26,18 +26,15 @@ using json = nlohmann::json;
 
 constexpr const char* kFallbackDefaultConfig = R"json(
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "capture": {
     "monitor_device": "",
-    "resolution_mode": "source",
-    "resolution_width": 0,
-    "resolution_height": 0,
+    "resolution_preset": "source",
     "show_capture_border": false
   },
   "replay_buffer": {
     "enabled": true,
     "duration_seconds": 30,
-    "memory_budget_mb": 128,
     "save_container": "mkv"
   },
   "recording": {
@@ -62,16 +59,16 @@ constexpr const char* kFallbackDefaultConfig = R"json(
     "extra_microphones": []
   },
   "video_encoder": {
-    "backend": "auto",
+    "device": "gpu",
+    "codec": "h264",
+    "bitrate_kbps": 20000,
     "fps": 60,
-    "quality": 20,
     "scaling_filter": "bilinear",
     "extra_ffmpeg_options": ""
   },
   "output": {
     "clips_directory": "",
-    "recordings_directory": "",
-    "temp_directory": ""
+    "recordings_directory": ""
   },
   "hotkeys": {
     "save_replay": "Ctrl+Shift+F8",
@@ -91,11 +88,6 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   },
   "active_game": {
     "detection_enabled": true,
-    "poll_interval_ms": 5000,
-    "switch_debounce_ms": 3000,
-    "min_confidence": 50,
-    "fast_scan_enabled": true,
-    "fast_scan_min_interval_ms": 1000,
     "blacklist_processes": [
       "Monolith.exe",
       "Monolith.UI.exe",
@@ -109,9 +101,7 @@ constexpr const char* kFallbackDefaultConfig = R"json(
       "SearchHost.exe",
       "StartMenuExperienceHost.exe",
       "ShellExperienceHost.exe"
-    ],
-    "whitelist_processes": [],
-    "manual_games": []
+    ]
   }
 }
 )json";
@@ -271,16 +261,6 @@ int int_at(const json& doc, const char* section, const char* key, int fallback)
     return value_it->get<int>();
 }
 
-int64_t int64_at(const json& doc, const char* section, const char* key, int64_t fallback)
-{
-    auto section_it = doc.find(section);
-    if (section_it == doc.end() || !section_it->is_object()) return fallback;
-    auto value_it = section_it->find(key);
-    if (value_it == section_it->end() || !value_it->is_number_integer()) return fallback;
-
-    return value_it->get<int64_t>();
-}
-
 bool bool_at(const json& doc, const char* section, const char* key, bool fallback)
 {
     auto section_it = doc.find(section);
@@ -329,6 +309,9 @@ AudioSourceConfig audio_source_from_json(const json& item)
     source.window_title = utf8_to_wide(item.value("window_title", ""));
     source.window_class = utf8_to_wide(item.value("window_class", ""));
     source.enabled = item.value("enabled", true);
+    source.volume = item.value("volume", 1.0f);
+    if (source.volume < 0.0f) source.volume = 0.0f;
+    if (source.volume > 1.0f) source.volume = 1.0f;
     auto tracks_it = item.find("tracks");
     if (tracks_it != item.end())
         source.tracks = sanitize_tracks(*tracks_it);
@@ -387,6 +370,7 @@ json audio_source_to_json(const AudioSourceConfig& source)
     item["type"] = source.type;
     item["name"] = source.name;
     item["enabled"] = source.enabled;
+    item["volume"] = source.volume;
     item["tracks"] = source.tracks;
     if (!source.device_id.empty())
         item["device_id"] = wide_to_utf8(source.device_id);
@@ -407,31 +391,56 @@ void write_runtime_fields(json& doc, const Config& config)
 {
     doc["output"]["clips_directory"] = wide_to_utf8(config.clips_directory);
     doc["output"]["recordings_directory"] = wide_to_utf8(config.recordings_directory);
-    doc["output"]["temp_directory"] = wide_to_utf8(config.temp_directory);
+    // temp_directory is managed internally; scrub any stale key from older configs.
+    if (doc.contains("output") && doc["output"].is_object())
+        doc["output"].erase("temp_directory");
     doc["replay_buffer"]["enabled"] = config.replay_buffer_enabled;
     doc["replay_buffer"]["duration_seconds"] = config.replay_duration_seconds;
-    doc["replay_buffer"]["memory_budget_mb"] = config.replay_memory_budget_mb;
     doc["replay_buffer"]["save_container"] = config.replay_clip_container;
+    // memory_budget_mb is fixed internally (512 MB); scrub any stale key.
+    if (doc.contains("replay_buffer") && doc["replay_buffer"].is_object())
+        doc["replay_buffer"].erase("memory_budget_mb");
     doc["recording"]["enabled"] = config.recording_enabled;
     doc["recording"]["container"] = config.recording_container;
     // Dead key removed from the schema; scrub it from older configs.
     if (doc.contains("recording") && doc["recording"].is_object())
         doc["recording"].erase("pause_behavior");
-    doc["video_encoder"]["backend"] = config.encoder_backend;
+    doc["video_encoder"]["device"] = config.encoder_device;
+    doc["video_encoder"]["codec"] = config.encoder_codec;
+    doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
     doc["video_encoder"]["fps"] = config.video_fps;
-    doc["video_encoder"]["quality"] = config.video_quality;
     doc["video_encoder"]["scaling_filter"] = config.scaling_filter;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
+    // Legacy encoder keys scrubbed from older configs.
+    if (doc.contains("video_encoder") && doc["video_encoder"].is_object()) {
+        doc["video_encoder"].erase("backend");
+        doc["video_encoder"].erase("quality");
+    }
     doc["audio"]["mode"] = config.audio_mode;
     doc["audio"]["primary_microphone_device_id"] = wide_to_utf8(config.primary_microphone_device_id);
     doc["audio"]["sources"] = json::array();
     for (const auto& source : config.audio_sources)
         doc["audio"]["sources"].push_back(audio_source_to_json(source));
+    doc["capture"]["resolution_preset"] = config.resolution_preset;
+    // Legacy capture keys scrubbed from older configs.
+    if (doc.contains("capture") && doc["capture"].is_object()) {
+        doc["capture"].erase("resolution_mode");
+        doc["capture"].erase("resolution_width");
+        doc["capture"].erase("resolution_height");
+    }
     doc["hotkeys"]["save_replay"] = config.hotkey_save_replay;
     doc["hotkeys"]["recording_start"] = config.hotkey_recording_start;
     doc["hotkeys"]["recording_stop"] = config.hotkey_recording_stop;
     doc["hotkeys"]["pause_resume"] = config.hotkey_pause_resume;
     doc["update"]["auto_check"] = config.update_auto_check;
+    // Active-game timing tunables are now fixed internally; scrub stale keys.
+    if (doc.contains("active_game") && doc["active_game"].is_object()) {
+        doc["active_game"].erase("poll_interval_ms");
+        doc["active_game"].erase("switch_debounce_ms");
+        doc["active_game"].erase("min_confidence");
+        doc["active_game"].erase("fast_scan_enabled");
+        doc["active_game"].erase("fast_scan_min_interval_ms");
+    }
 }
 
 Config config_from_json(
@@ -451,13 +460,10 @@ Config config_from_json(
         doc, "output", "temp_directory", default_temp_directory);
     config.replay_duration_seconds = int_at(
         doc, "replay_buffer", "duration_seconds", 30);
-    config.replay_memory_budget_mb = int64_at(
-        doc, "replay_buffer", "memory_budget_mb", 128);
 
+    // Presets are 15/30/60/120; a custom value is still accepted within 5–600.
     if (config.replay_duration_seconds < 5 || config.replay_duration_seconds > 600)
         config.replay_duration_seconds = 30;
-    if (config.replay_memory_budget_mb < 64 || config.replay_memory_budget_mb > 16384)
-        config.replay_memory_budget_mb = 128;
 
     config.replay_clip_container = utf8_at(doc, "replay_buffer", "save_container", "mkv");
     if (config.replay_clip_container != "mkv" && config.replay_clip_container != "mp4")
@@ -490,44 +496,28 @@ Config config_from_json(
 
     config.monitor_device = utf8_to_wide(
         utf8_at(doc, "capture", "monitor_device", ""));
-    config.resolution_mode = utf8_at(doc, "capture", "resolution_mode", "source");
-    config.output_width  = int_at(doc, "capture", "resolution_width", 0);
-    config.output_height = int_at(doc, "capture", "resolution_height", 0);
+    config.resolution_preset = utf8_at(doc, "capture", "resolution_preset", "source");
+    if (config.resolution_preset != "source" && config.resolution_preset != "480p" &&
+        config.resolution_preset != "720p" && config.resolution_preset != "1080p" &&
+        config.resolution_preset != "1440p")
+        config.resolution_preset = "source";
     config.show_capture_border = bool_at(doc, "capture", "show_capture_border", false);
 
-    if (config.resolution_mode != "source" && config.resolution_mode != "custom")
-        config.resolution_mode = "source";
-    if (config.resolution_mode == "custom") {
-        // Even-align; reject sizes outside a sane encode range.
-        config.output_width  &= ~1;
-        config.output_height &= ~1;
-        if (config.output_width  < 128 || config.output_width  > 7680 ||
-            config.output_height < 128 || config.output_height > 4320) {
-            config.resolution_mode = "source";
-            config.output_width   = 0;
-            config.output_height  = 0;
-        }
-    }
+    config.encoder_device = utf8_at(doc, "video_encoder", "device", "gpu");
+    if (config.encoder_device != "gpu" && config.encoder_device != "cpu")
+        config.encoder_device = "gpu";
+    config.encoder_codec = utf8_at(doc, "video_encoder", "codec", "h264");
+    if (config.encoder_codec != "h264" && config.encoder_codec != "h265")
+        config.encoder_codec = "h264";
 
-    config.encoder_backend = utf8_at(doc, "video_encoder", "backend", "auto");
-    if (config.encoder_backend != "auto" &&
-        config.encoder_backend != "h264_nvenc" &&
-        config.encoder_backend != "h264_amf" &&
-        config.encoder_backend != "h264_qsv" &&
-        config.encoder_backend != "libx264" &&
-        config.encoder_backend != "hevc_nvenc" &&
-        config.encoder_backend != "hevc_amf" &&
-        config.encoder_backend != "hevc_qsv" &&
-        config.encoder_backend != "libx265")
-        config.encoder_backend = "auto";
-
-    config.video_quality = int_at(doc, "video_encoder", "quality", 20);
-    if (config.video_quality < 10 || config.video_quality > 30)
-        config.video_quality = 20;
+    config.video_bitrate_kbps = int_at(doc, "video_encoder", "bitrate_kbps", 20000);
+    if (config.video_bitrate_kbps < 1000 || config.video_bitrate_kbps > 200000)
+        config.video_bitrate_kbps = 20000;
     config.scaling_filter = utf8_at(doc, "video_encoder", "scaling_filter", "bilinear");
 
     config.video_fps = int_at(doc, "video_encoder", "fps", 60);
-    if (config.video_fps < 15 || config.video_fps > 120)
+    if (config.video_fps != 24 && config.video_fps != 30 && config.video_fps != 60 &&
+        config.video_fps != 120 && config.video_fps != 144)
         config.video_fps = 60;
 
     config.extra_ffmpeg_options = utf8_at(doc, "video_encoder", "extra_ffmpeg_options", "");
@@ -538,33 +528,18 @@ Config config_from_json(
     config.hotkey_pause_resume = utf8_at(doc, "hotkeys", "pause_resume", "Ctrl+Shift+F11");
 
     // ── active_game detection settings ───────────────────────────────────────────
+    // Detection is fully automatic (Discord API + running-process heuristic) and
+    // polls on a fixed 5s cadence. Only detection_enabled and the internal
+    // process blacklist survive as configurable data; the timing tunables are
+    // hardcoded (ActiveGameSettings defaults) and no longer exposed in the UI.
     {
         auto ag_it = doc.find("active_game");
         const json* ag = (ag_it != doc.end() && ag_it->is_object()) ? &(*ag_it) : nullptr;
-        auto ag_bool  = [&](const char* key, bool fallback) -> bool {
-            if (!ag) return fallback;
-            auto it = ag->find(key); return (it != ag->end() && it->is_boolean()) ? it->get<bool>() : fallback;
-        };
-        auto ag_int   = [&](const char* key, int fallback) -> int {
-            if (!ag) return fallback;
-            auto it = ag->find(key); return (it != ag->end() && it->is_number_integer()) ? it->get<int>() : fallback;
-        };
-        config.active_game.detection_enabled         = ag_bool("detection_enabled",         true);
-        config.active_game.fast_scan_enabled         = ag_bool("fast_scan_enabled",         true);
-        config.active_game.poll_interval_ms          = ag_int ("poll_interval_ms",          5000);
-        config.active_game.switch_debounce_ms        = ag_int ("switch_debounce_ms",        3000);
-        config.active_game.min_confidence            = ag_int ("min_confidence",            50);
-        config.active_game.fast_scan_min_interval_ms = ag_int ("fast_scan_min_interval_ms", 1000);
-
-        // Clamp to safe ranges.
-        if (config.active_game.poll_interval_ms < 3000 || config.active_game.poll_interval_ms > 30000)
-            config.active_game.poll_interval_ms = 5000;
-        if (config.active_game.switch_debounce_ms < 1000 || config.active_game.switch_debounce_ms > 15000)
-            config.active_game.switch_debounce_ms = 3000;
-        if (config.active_game.min_confidence < 0 || config.active_game.min_confidence > 100)
-            config.active_game.min_confidence = 50;
-        if (config.active_game.fast_scan_min_interval_ms < 500 || config.active_game.fast_scan_min_interval_ms > 5000)
-            config.active_game.fast_scan_min_interval_ms = 1000;
+        if (ag) {
+            auto it = ag->find("detection_enabled");
+            if (it != ag->end() && it->is_boolean())
+                config.active_game.detection_enabled = it->get<bool>();
+        }
 
         auto parse_string_array = [&](const char* key, std::vector<std::string>& dest) {
             if (!ag) return;

@@ -6,6 +6,7 @@ import {
   fetchGames,
   fetchHashtags,
   type Filter,
+  subscribeClips,
 } from "./lib/api.ts";
 import { ClipCard } from "./home/clip-card.tsx";
 import { ContextMenu, type MenuAction } from "./home/context-menu.tsx";
@@ -38,8 +39,10 @@ export function App() {
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  // silent=true skips the loading spinner (used by live SSE refreshes so the
+  // grid updates in place without flashing).
+  const reload = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     const [c, g, h] = await Promise.all([
       fetchClips(filter),
       fetchGames(),
@@ -53,6 +56,13 @@ export function App() {
 
   useEffect(() => {
     reload();
+  }, [reload]);
+
+  // Live updates: refresh the library in real time when the engine reports a
+  // new clip (replay saved / recording stopped), so no app restart is needed.
+  useEffect(() => {
+    const unsubscribe = subscribeClips(() => reload(true));
+    return unsubscribe;
   }, [reload]);
 
   // Suppress the native/browser context menu everywhere. The custom menu is
@@ -178,7 +188,7 @@ export function App() {
       {confirmDel && (
         <ConfirmDialog
           title="Delete clip"
-          message={`Permanently delete "${confirmDel.video_file}"? This removes the video and its thumbnail from disk.`}
+          message={`Permanently delete "${confirmDel.title || confirmDel.video_file}"? This removes the video and its thumbnail from disk.`}
           confirmLabel="Delete"
           danger
           onConfirm={doDelete}

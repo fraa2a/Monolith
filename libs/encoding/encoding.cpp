@@ -15,6 +15,8 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <climits>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -105,6 +107,40 @@ std::vector<std::string> available_video_encoders(int width, int height)
 
     av_log_set_level(saved_level);
     return result;
+}
+
+std::string resolve_video_encoder(const std::string& device,
+                                  const std::string& codec,
+                                  int width, int height)
+{
+    const bool h265 = (codec == "h265" || codec == "hevc");
+    // HW candidates for the codec, in vendor-preference order.
+    const std::vector<std::string> hw = h265
+        ? std::vector<std::string>{"hevc_nvenc", "hevc_amf", "hevc_qsv"}
+        : std::vector<std::string>{"h264_nvenc", "h264_amf", "h264_qsv"};
+    const std::string sw = h265 ? "libx265" : "libx264";
+
+    auto first_openable = [&](const std::vector<std::string>& names) -> std::string {
+        const int saved_level = av_log_get_level();
+        av_log_set_level(AV_LOG_QUIET);
+        std::string found;
+        for (const auto& n : names) {
+            if (try_open_probe(n.c_str(), width, height)) { found = n; break; }
+        }
+        av_log_set_level(saved_level);
+        return found;
+    };
+
+    if (device == "cpu") {
+        std::string r = first_openable({sw});
+        if (!r.empty()) return r;
+        return first_openable(hw); // fall back to HW if SW somehow fails
+    }
+
+    // device == "gpu" (default): try HW encoders, then fall back to SW.
+    std::string r = first_openable(hw);
+    if (!r.empty()) return r;
+    return first_openable({sw});
 }
 
 // ── VideoEncoder ──────────────────────────────────────────────────────────────
@@ -230,7 +266,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         bool is_sw = (name == "libx264" || name == "libx265");
 
         if (cfg.quality > 0 && (is_hw || is_sw)) {
-            // Rate control: CQP for HW, CRF for SW (OBS-style).
+            // Legacy path (probe/back-compat only): CQP for HW, CRF for SW.
             if (is_hw) {
                 if (name.find("nvenc") != std::string::npos) {
                     av_dict_set(&opts, "rc",  "constqp", 0);
@@ -248,7 +284,34 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
                 av_dict_set_int(&opts, "crf", cfg.quality, 0);
             }
         } else {
-            ctx->bit_rate = cfg.bitrate;
+            // CBR: pin the average, ceiling and floor to the same target so the
+            // muxed file honours the exact bitrate the user picked, with a 1 s
+            // VBV buffer. Per-vendor RC hints keep HW encoders in true CBR.
+            const int64_t br = cfg.bitrate;
+            ctx->bit_rate     = br;
+            ctx->rc_max_rate  = br;
+            ctx->rc_min_rate  = br;
+            ctx->rc_buffer_size = static_cast<int>(std::min<int64_t>(br, INT_MAX));
+            if (is_hw) {
+                if (name.find("nvenc") != std::string::npos) {
+                    av_dict_set(&opts, "rc", "cbr", 0);
+                } else if (name.find("amf") != std::string::npos) {
+                    av_dict_set(&opts, "rc", "cbr", 0);
+                } else if (name.find("qsv") != std::string::npos) {
+                    av_dict_set_int(&opts, "maxrate", br, 0);
+                }
+            } else if (is_sw) {
+                // libx264/libx265: nal-hrd=cbr forces constant-rate output.
+                av_dict_set(&opts, "nal-hrd", "cbr", 0);
+                if (name == "libx265") {
+                    char x265[128];
+                    std::snprintf(x265, sizeof(x265),
+                        "vbv-maxrate=%lld:vbv-bufsize=%lld:strict-cbr=1",
+                        static_cast<long long>(br / 1000),
+                        static_cast<long long>(br / 1000));
+                    av_dict_set(&opts, "x265-params", x265, 0);
+                }
+            }
         }
 
         if (is_sw) {
@@ -704,6 +767,7 @@ struct MixSource {
     int            src_rate = 0;
     int            src_ch   = 0;
     AVSampleFormat src_fmt  = AV_SAMPLE_FMT_NONE;
+    float          gain     = 1.0f;  // linear gain applied before summing
 };
 
 struct TrackMixer::Impl {
@@ -788,7 +852,12 @@ bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
                     int got = av_audio_fifo_read(sp->fifo, dst, take);
                     if (got <= 0) continue;
                     size_t n = static_cast<size_t>(got) * ch;
-                    for (size_t i = 0; i < n; ++i) acc[i] += tmp[i];
+                    const float g = sp->gain;
+                    if (g == 1.0f) {
+                        for (size_t i = 0; i < n; ++i) acc[i] += tmp[i];
+                    } else {
+                        for (size_t i = 0; i < n; ++i) acc[i] += tmp[i] * g;
+                    }
                 }
             }
 
@@ -812,7 +881,7 @@ bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
     return true;
 }
 
-int TrackMixer::add_source()
+int TrackMixer::add_source(float gain)
 {
     if (!is_open()) return -1;
     std::lock_guard lk(impl_->mutex);
@@ -820,8 +889,17 @@ int TrackMixer::add_source()
     auto src = std::make_unique<MixSource>();
     src->fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLT, impl_->out_ch, impl_->out_rate);
     if (!src->fifo) return -1;
+    src->gain = (gain < 0.0f) ? 0.0f : gain;
     impl_->sources.emplace(id, std::move(src));
     return id;
+}
+
+void TrackMixer::set_source_gain(int source_id, float gain)
+{
+    std::lock_guard lk(impl_->mutex);
+    auto it = impl_->sources.find(source_id);
+    if (it == impl_->sources.end()) return;
+    it->second->gain = (gain < 0.0f) ? 0.0f : gain;
 }
 
 void TrackMixer::remove_source(int source_id)

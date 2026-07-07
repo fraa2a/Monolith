@@ -28,6 +28,14 @@ export interface RuntimeStatus {
   active_encoder?: string;
   monitors?: { device: string; width: number; height: number; primary: boolean }[];
   input_devices?: { id: string; name: string; default_device: boolean }[];
+  audio_sessions?: {
+    process_id: number;
+    process_name: string;
+    display_name: string;
+    executable_path?: string;
+    window_title?: string;
+    window_class?: string;
+  }[];
 }
 
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {
@@ -36,5 +44,22 @@ export async function getRuntimeStatus(): Promise<RuntimeStatus> {
     return (await res.json()).status ?? {};
   } catch {
     return {};
+  }
+}
+
+// Opens the native Windows folder picker via the Rust host and returns the chosen
+// absolute path, or null if the user cancelled. `current` seeds the dialog's
+// starting directory when it points at an existing folder.
+export async function pickFolder(current?: string): Promise<string | null> {
+  try {
+    const res = await fetch("/api/pick-folder", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ current: current ?? "" }),
+    });
+    const data = await res.json();
+    return data.ok ? (data.path as string) : null;
+  } catch {
+    return null;
   }
 }

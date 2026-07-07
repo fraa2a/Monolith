@@ -79,6 +79,16 @@ std::string probe_video_encoder(int width, int height);
 // in probe order.  Used to populate the Settings UI encoder list.
 std::vector<std::string> available_video_encoders(int width, int height);
 
+// Resolves the user-facing choice (device: "gpu"/"cpu", codec: "h264"/"h265")
+// to a concrete FFmpeg encoder name the current machine can actually open at
+// the given dimensions. GPU tries the vendor HW encoders (NVENC → AMF → QSV)
+// for the codec; CPU uses libx264/libx265. If the preferred device yields no
+// working encoder, falls back to the other device for the same codec. Returns
+// "" if nothing opens.
+std::string resolve_video_encoder(const std::string& device,
+                                   const std::string& codec,
+                                   int width, int height);
+
 struct VideoEncoderPerfStats {
     uint64_t frames_submitted = 0;
     uint64_t packets_output = 0;
@@ -98,8 +108,11 @@ public:
         int     width;               // output (encoded) width
         int     height;              // output (encoded) height
         int     fps     = 60;
-        int64_t bitrate = 0;          // legacy: CBR bitrate (0 = use quality)
-        int     quality = 20;         // 0=bitrate-mode, 10-30→CQP(HW)/CRF(SW)
+        // Rate control is always CBR at this target bitrate (bits per second).
+        // quality is retained only for probe/back-compat and is unused by the
+        // recorder path.
+        int64_t bitrate = 20'000'000; // CBR target, bits/s
+        int     quality = 0;          // 0 = CBR (default); >0 = legacy CQP/CRF
         // Scaling filter (OBS-style): "bilinear", "bicubic", "lanczos".
         // Used by sws_scale when capture and output resolutions differ.
         std::string scaling_filter = "bilinear";
@@ -203,8 +216,12 @@ public:
     bool open(int out_sample_rate, int out_channels, Sink sink);
 
     // Registers a source and returns its id (>= 0), or -1 if not open.
-    // Thread-safe.
-    int add_source();
+    // Thread-safe. Optional linear gain (0.0–1.0+) applied to this source's
+    // samples before they are summed into the mix.
+    int add_source(float gain = 1.0f);
+
+    // Updates a source's linear gain. Thread-safe; no-op for unknown ids.
+    void set_source_gain(int source_id, float gain);
 
     // Removes a previously added source. Thread-safe.
     void remove_source(int source_id);

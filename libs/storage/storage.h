@@ -51,6 +51,7 @@ bool settings_replace_all(const std::wstring& app_data_dir,
 struct ClipRow {
     std::wstring video_file;       // basename, e.g. L"20260706_...clip.mkv"
     std::wstring thumbnail_file;   // basename in .thumbs, or empty if none
+    std::string  title;            // user-facing display name; "" -> "Untitled"
     std::string  created_at_utc;   // ISO-8601; empty -> now_iso8601_utc()
     std::string  source;           // "replay" | "manual"
     double       duration_seconds = 0.0;
@@ -93,13 +94,26 @@ public:
     bool remove_clip(int64_t id, bool remove_files, std::string* error);
 
     bool set_favorite(int64_t id, bool favorite, std::string* error);
+
+    // Updates the clip's display title only. Does NOT touch the video file on
+    // disk — title is independent of the filename. Empty title becomes "Untitled".
+    bool set_title(int64_t id, const std::string& title, std::string* error);
+
     bool add_hashtag(int64_t id, const std::string& tag, std::string* error);
     bool remove_hashtag(int64_t id, const std::string& tag, std::string* error);
 
-    // Renames the clip: moves the video file and its thumbnail to <new_stem> +
-    // original extension (in place, same folder/.thumbs) and updates the row.
-    // new_stem is a base name with no path/extension; invalid or colliding names
-    // fail without touching disk. Returns false + *error on any failure.
+    // Regenerates the first-frame thumbnail for a single clip (used when the UI
+    // finds a thumbnail missing or corrupt). Decodes the video and rewrites the
+    // .png, updating the stored thumbnail_file. Returns false + *error if the
+    // clip/video is missing or decoding fails. Blocking; call off the UI thread.
+    bool regenerate_thumbnail(int64_t id, std::string* error);
+
+    // Renames the clip FILE on disk: moves the video file and its thumbnail to
+    // <new_stem> + original extension (in place, same folder/.thumbs) and updates
+    // the row. new_stem is a base name with no path/extension; invalid or
+    // colliding names fail without touching disk. This is a distinct, optional
+    // action from set_title — the on-screen name is the title, not the filename.
+    // Returns false + *error on any failure.
     bool rename_clip(int64_t id, const std::wstring& new_stem, std::string* error);
 
     // Self-heal + migration. Safe to call from a background thread:

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { type Clip, fetchGameIcon, mediaUrl, thumbUrl } from "../lib/api.ts";
+import { type Clip, clipApi, fetchGameIcon, mediaUrl, thumbUrl } from "../lib/api.ts";
 import { formatDate, formatDuration, formatSize } from "../lib/format.ts";
+import { Icon } from "../shell/icons.tsx";
+import { enableAllAudioTracks } from "../lib/player.ts";
 
 interface Props {
   clip: Clip;
@@ -9,18 +11,21 @@ interface Props {
   onOpenDetail: (clip: Clip) => void;
 }
 
-// A rounded clip card: mini-player on top (static PNG at rest, hover preview
-// with audio + mute/fullscreen overlay), metadata below. Missing/broken
-// thumbnails fall back to a placeholder, and the mini-player still starts on
-// hover (deno.md §2.1 + user self-heal requirement #2, UI side).
+// Delay before a hover preview starts, so brushing across the grid doesn't fire
+// dozens of videos and cause the black-flash the user reported.
+const HOVER_DELAY_MS = 1000;
+
 export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Props) {
-  const [hover, setHover] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [preview, setPreview] = useState(false); // video mounted
+  const [ready, setReady] = useState(false); // first frame decoded → fade in
+  const [muted, setMuted] = useState(true); // previews always start muted
   const [thumbBroken, setThumbBroken] = useState(false);
+  const [thumbBust, setThumbBust] = useState(0); // cache-buster after regen
   const [gameIcon, setGameIcon] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
+  const regenTried = useRef(false);
 
-  // Lazily resolve the game icon (Discord CDN) once per card.
   useEffect(() => {
     let active = true;
     if (clip.game_process_name) {
@@ -33,22 +38,49 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
     };
   }, [clip.game_process_name]);
 
+  // Clean up any pending hover timer on unmount.
+  useEffect(() => () => clearTimeout(hoverTimer.current), []);
+
   const thumb = thumbUrl(clip);
   const showPlaceholder = !thumb || thumbBroken;
+  const thumbSrc = thumb ? `${thumb}${thumbBust ? `?v=${thumbBust}` : ""}` : null;
 
   function enter() {
-    setHover(true);
-    // Attempt to play the lightweight preview; autoplay-with-audio may be
-    // rejected — that's fine, the user can click unmute/play.
-    queueMicrotask(() => videoRef.current?.play().catch(() => {}));
+    clearTimeout(hoverTimer.current);
+    hoverTimer.current = setTimeout(() => {
+      setPreview(true);
+      setReady(false);
+      setMuted(true);
+    }, HOVER_DELAY_MS) as unknown as number;
   }
+
   function leave() {
-    setHover(false);
+    clearTimeout(hoverTimer.current);
     const v = videoRef.current;
     if (v) {
+      // Fully reset audio/playback so nothing bleeds into the next preview.
       v.pause();
-      v.currentTime = 0;
+      v.muted = true;
+      try {
+        v.currentTime = 0;
+      } catch { /* not seekable yet */ }
     }
+    setPreview(false);
+    setReady(false);
+    setMuted(true);
+  }
+
+  // On the thumbnail failing to load, ask the engine to regenerate it once, then
+  // retry with a cache-busting query. If that fails too, show the placeholder.
+  async function onThumbError() {
+    if (regenTried.current) {
+      setThumbBroken(true);
+      return;
+    }
+    regenTried.current = true;
+    const res = await clipApi.regenThumb(clip);
+    if (res.ok) setThumbBust(Date.now());
+    else setThumbBroken(true);
   }
 
   return (
@@ -62,36 +94,41 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
       onMouseLeave={leave}
     >
       <div class="card-media" onClick={() => onOpenDetail(clip)}>
-        {hover
-          ? (
-            <video
-              ref={videoRef}
-              class="card-video"
-              src={mediaUrl(clip)}
-              muted={muted}
-              loop
-              playsInline
-            />
-          )
-          : showPlaceholder
+        {/* Poster stays mounted underneath the preview to avoid a black flash. */}
+        {showPlaceholder
           ? (
             <div class="thumb-placeholder" title="Thumbnail unavailable">
-              <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v8l4-4 3 3 3-3 4 4V7H5z"
-                />
-              </svg>
+              <Icon name="film" size={34} />
             </div>
           )
-          : <img class="card-thumb" src={thumb!} onError={() => setThumbBroken(true)} />}
+          : <img class="card-thumb" src={thumbSrc!} onError={onThumbError} />}
 
-        {clip.favorite && <div class="fav-badge" title="Favorite">★</div>}
+        {preview && (
+          <video
+            ref={videoRef}
+            class={`card-video ${ready ? "ready" : ""}`}
+            src={mediaUrl(clip)}
+            muted={muted}
+            loop
+            playsInline
+            onLoadedMetadata={(e) => enableAllAudioTracks(e.currentTarget)}
+            onLoadedData={(e) => {
+              setReady(true);
+              e.currentTarget.play().catch(() => {});
+            }}
+          />
+        )}
+
+        {clip.favorite && (
+          <div class="fav-badge" title="Favorite">
+            <Icon name="star" size={14} filled />
+          </div>
+        )}
         {clip.duration_seconds
           ? <div class="dur-badge">{formatDuration(clip.duration_seconds)}</div>
           : null}
 
-        {hover && (
+        {preview && (
           <div class="card-overlay">
             <button
               class="ov-btn"
@@ -101,7 +138,7 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
                 setMuted((m) => !m);
               }}
             >
-              {muted ? "🔇" : "🔊"}
+              <Icon name={muted ? "volume-x" : "volume-2"} size={16} />
             </button>
             <button
               class="ov-btn"
@@ -111,18 +148,18 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
                 onFullscreen(clip);
               }}
             >
-              ⛶
+              <Icon name="maximize" size={16} />
             </button>
           </div>
         )}
       </div>
 
       <div class="card-meta">
-        <div class="card-name" title={clip.video_file}>{clip.video_file}</div>
+        <div class="card-name" title={clip.title}>{clip.title || "Untitled"}</div>
         <div class="card-sub">
           {gameIcon
             ? <img class="game-icon" src={gameIcon} alt="" />
-            : <span class="game-icon placeholder">🎮</span>}
+            : <span class="game-icon placeholder"><Icon name="gamepad" size={13} /></span>}
           <span class="game">
             {clip.game_display_name ?? clip.game_process_name ?? "Unknown"}
           </span>

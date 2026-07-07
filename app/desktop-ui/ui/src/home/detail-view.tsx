@@ -1,19 +1,21 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi, mediaUrl } from "../lib/api.ts";
 import { formatDate, formatDuration, formatSize } from "../lib/format.ts";
+import { Icon } from "../shell/icons.tsx";
+import { enableAllAudioTracks } from "../lib/player.ts";
 
 interface Props {
-  clips: Clip[];      // current filtered list, for prev/next navigation
-  index: number;      // position of the shown clip within clips
+  clips: Clip[]; // current filtered list, for prev/next navigation
+  index: number; // position of the shown clip within clips
   onIndex: (i: number) => void;
   onClose: () => void;
-  onChanged: () => void; // refetch after rename/hashtag mutation
+  onChanged: () => void; // refetch after a mutation
   onOpenHashtags: (clip: Clip) => void;
 }
 
-// Centered detail overlay (NOT fullscreen, deno.md §2.2): player with volume +
-// scrubbable timeline, details panel with inline-editable name + hashtags, and
-// ◀ ▶ arrows to move between clips without closing.
+// Centered detail overlay: player with volume + scrubbable timeline, a details
+// panel with an inline-editable TITLE (independent of the filename) + hashtags +
+// favorite, and ◀ ▶ arrows that move between clips without closing.
 export function DetailView(
   { clips, index, onIndex, onClose, onChanged, onOpenHashtags }: Props,
 ) {
@@ -21,14 +23,17 @@ export function DetailView(
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const [editing, setEditing] = useState(false);
-  const [nameInput, setNameInput] = useState("");
-  const [renameErr, setRenameErr] = useState<string | null>(null);
+  const [titleInput, setTitleInput] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Playback state driven by the <video> element.
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
+
+  const hasPrev = index > 0;
+  const hasNext = index < clips.length - 1;
+  const prev = () => hasPrev && onIndex(index - 1);
+  const next = () => hasNext && onIndex(index + 1);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -44,41 +49,34 @@ export function DetailView(
   // Reset transient state when the shown clip changes.
   useEffect(() => {
     setEditing(false);
-    setRenameErr(null);
     setCurrent(0);
     setDuration(0);
   }, [clip?.id, clip?.source]);
 
   if (!clip) return null;
 
-  const hasPrev = index > 0;
-  const hasNext = index < clips.length - 1;
-  const prev = () => hasPrev && onIndex(index - 1);
-  const next = () => hasNext && onIndex(index + 1);
-
-  const stem = clip.video_file.replace(/\.[^.]+$/, "");
-  const ext = clip.video_file.slice(stem.length);
+  async function toggleFavorite() {
+    await clipApi.setFavorite(clip, !clip.favorite);
+    onChanged();
+  }
 
   function startEdit() {
-    setNameInput(stem);
-    setRenameErr(null);
+    setTitleInput(clip.title || "Untitled");
     setEditing(true);
   }
 
-  async function commitRename() {
-    const next = nameInput.trim();
-    if (!next || next === stem) {
+  async function commitTitle() {
+    const value = titleInput.trim();
+    if (!value || value === clip.title) {
       setEditing(false);
       return;
     }
     setBusy(true);
-    const res = await clipApi.rename(clip, next);
+    const res = await clipApi.setTitle(clip, value);
     setBusy(false);
     if (res.ok) {
       setEditing(false);
       onChanged();
-    } else {
-      setRenameErr(res.error ?? "rename failed");
     }
   }
 
@@ -99,29 +97,34 @@ export function DetailView(
     <div class="detail-backdrop" onMouseDown={onClose}>
       <button
         class={`detail-nav left ${hasPrev ? "" : "disabled"}`}
+        disabled={!hasPrev}
+        onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
           prev();
         }}
         title="Previous"
       >
-        ◀
+        <Icon name="chevron-left" size={22} />
       </button>
 
       <div class="detail" onMouseDown={(e) => e.stopPropagation()}>
         <div class="detail-player">
+          {/* key forces a fresh element per clip so no audio bleeds across. */}
           <video
+            key={`${clip.source}:${clip.id}`}
             ref={videoRef}
             src={mediaUrl(clip)}
             autoPlay
             onLoadedMetadata={(e) => {
-              const v = e.target as HTMLVideoElement;
+              const v = e.currentTarget;
               setDuration(v.duration || 0);
               v.volume = volume;
+              enableAllAudioTracks(v);
             }}
-            onTimeUpdate={(e) => setCurrent((e.target as HTMLVideoElement).currentTime)}
+            onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
             onClick={(e) => {
-              const v = e.target as HTMLVideoElement;
+              const v = e.currentTarget;
               v.paused ? v.play() : v.pause();
             }}
           />
@@ -140,7 +143,7 @@ export function DetailView(
                 {formatDuration(current)} / {formatDuration(duration)}
               </span>
               <div class="vol">
-                <span>🔊</span>
+                <Icon name="volume-2" size={16} />
                 <input
                   class="vol-slider"
                   type="range"
@@ -163,28 +166,36 @@ export function DetailView(
                   <input
                     class="input"
                     autoFocus
-                    value={nameInput}
+                    value={titleInput}
                     disabled={busy}
-                    onInput={(e) => setNameInput((e.target as HTMLInputElement).value)}
+                    onInput={(e) => setTitleInput((e.target as HTMLInputElement).value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") commitRename();
+                      if (e.key === "Enter") commitTitle();
                       if (e.key === "Escape") setEditing(false);
                     }}
                   />
-                  <span class="ext">{ext}</span>
-                  <button class="btn btn-primary" disabled={busy} onClick={commitRename}>
+                  <button class="btn btn-primary" disabled={busy} onClick={commitTitle}>
                     Save
                   </button>
                 </div>
               )
               : (
-                <div class="detail-name" title={clip.video_file}>
-                  <span class="name-text">{clip.video_file}</span>
-                  <button class="icon-btn small" title="Rename" onClick={startEdit}>✎</button>
+                <div class="detail-name" title={clip.title}>
+                  <span class="name-text">{clip.title || "Untitled"}</span>
+                  <button class="icon-btn small" title="Rename" onClick={startEdit}>
+                    <Icon name="pencil" size={15} />
+                  </button>
+                  <button
+                    class={`icon-btn small ${clip.favorite ? "active" : ""}`}
+                    title={clip.favorite ? "Remove from favorites" : "Add to favorites"}
+                    onClick={toggleFavorite}
+                  >
+                    <Icon name="star" size={15} filled={clip.favorite} />
+                  </button>
                 </div>
               )}
           </div>
-          {renameErr && <div class="err">{renameErr}</div>}
+          <div class="detail-filename" title={clip.video_file}>{clip.video_file}</div>
 
           <div class="detail-meta">
             <div>
@@ -211,7 +222,7 @@ export function DetailView(
             <div class="detail-tags-head">
               <span class="k">Hashtags</span>
               <button class="icon-btn small" title="Edit hashtags" onClick={() => onOpenHashtags(clip)}>
-                #
+                <Icon name="hash" size={15} />
               </button>
             </div>
             <div class="tag-list">
@@ -221,18 +232,27 @@ export function DetailView(
           </div>
         </div>
 
-        <button class="detail-close" onClick={onClose} title="Close (Esc)">×</button>
+        <button
+          class="detail-close"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={onClose}
+          title="Close (Esc)"
+        >
+          <Icon name="x" size={18} />
+        </button>
       </div>
 
       <button
         class={`detail-nav right ${hasNext ? "" : "disabled"}`}
+        disabled={!hasNext}
+        onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
           next();
         }}
         title="Next"
       >
-        ▶
+        <Icon name="chevron-right" size={22} />
       </button>
     </div>
   );
