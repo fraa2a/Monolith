@@ -1,87 +1,158 @@
-# CLAUDE.md
+﻿# CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the working guide for agents and maintainers in this repository.
 
-## What this is
+## What This Is
 
-Monolith is a Windows-only, recorder-first screen capture/replay-buffer app (an OBS alternative narrowed to recording + clip saving). Native C++23 engine + Win32 tray host in one process, with a Tauri v2 / WebView2 UI sidecar (`Monolith.UI.exe`). Windows 11, x64 only.
+Monolith is a Windows-only, recorder-first screen capture and replay-buffer app.
+It targets Windows 11 x64 and is built around a native C++23 recording engine,
+a Win32 tray/message-loop host, a Tauri v2/WebView2 desktop UI sidecar, and an
+Elgato Stream Deck controller plugin.
+
+Current app version source is the root `CMakeLists.txt` project version
+(`1.4.1` locally unless CI overrides `MONOLITH_VERSION` from a tag).
 
 ## Build
 
-The native engine and the Tauri UI build together through CMake. Building requires Windows with MSVC, vcpkg, the Rust toolchain (cargo), and Deno (used only to bundle the UI frontend).
+Use the root build script on Windows with MSVC, vcpkg, Rust/Cargo, and Deno:
 
 ```bat
 build.bat
 ```
 
-`build.bat` locates `mt.exe` and vcpkg, configures with the Visual Studio 17 2022 generator into `build/`, and builds Release. Equivalent manual invocation:
+Manual native build:
 
 ```bat
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
 cmake --build build --config Release --parallel
 ```
 
-- Dependencies are vcpkg manifest-mode (`vcpkg.json`), pinned via `builtin-baseline`: `nlohmann-json`, `winsparkle`, and `ffmpeg` (with `amf`, `nvcodec`, `qsv`, `x264`, `x265`, `gpl` features). To bump deps, change the baseline SHA deliberately.
-- The new UI (`app/desktop-ui`) is a **Tauri v2 / WebView2** app: `deno` (2.9+) bundles the Preact frontend into `dist/` (`build.ts`) and `cargo build --release` compiles the self-contained `src-tauri/target/release/monolith_ui.exe`, which a CMake custom target copies to `<recorder-output>/ui/Monolith.UI.exe` (skipped with a warning if `deno` or `cargo` is absent; the tauri-cli is not needed). A missing toolchain is non-fatal — the recorder still builds.
+The C++ build uses vcpkg manifest mode (`vcpkg.json`) with pinned dependencies:
+`nlohmann-json`, `sqlite3`, `winsparkle`, and FFmpeg with hardware-encoder
+features (`amf`, `nvcodec`, `qsv`) plus `x264`, `x265`, and `gpl`.
 
-## Tests
+The desktop UI lives in `app/desktop-ui`:
 
-There are no automated tests yet — `tests/` is a placeholder. Do not claim a build is verified by tests. Verification is manual (run the app, save a clip, check output files/logs).
+- Deno is build-only and bundles the Preact frontend (`build.ts` to `dist/`).
+- Cargo builds the Tauri v2 host (`src-tauri/`).
+- The resulting `monolith_ui.exe` is copied by CMake to
+  `<recorder-output>/ui/Monolith.UI.exe`.
+- If Deno or Cargo is missing, CMake warns and skips the UI target; the recorder
+  can still build.
 
-## Releasing
+## Tests And Verification
 
-Releases are tag-driven; CI does the real build. See `docs/RELEASING.md`.
+There is no complete automated test suite yet. Do not claim test verification
+unless a specific command was run.
 
-```powershell
-git tag vX.Y.Z
-git push origin vX.Y.Z
+Useful checks:
+
+```bat
+cmake --build build --config Release --parallel
+cd app\desktop-ui
+deno run -A build.ts
+cargo build --release --manifest-path src-tauri\Cargo.toml
+cd plugins\stream-deck
+npm run build
 ```
 
-`.github/workflows/version-tag.yml` extracts the version, passes `-DMONOLITH_VERSION=X.Y.Z` to CMake (the single source of truth, flowing into the exe VERSIONINFO, C# assembly version, and installer), builds, runs Inno Setup (`installer/monolith.iss`), Ed25519-signs the installer, generates the WinSparkle appcast (`scripts/generate-appcast.ps1`), and publishes to the **public** `fraa2a/Monolith-releases` repo (this repo is private). Do not commit the WinSparkle private key; the public key is pinned in `app/recorder/src/updater.cpp`.
+Manual runtime smoke:
+
+- Start `Monolith.exe`.
+- Confirm tray icon appears and log reaches "app shell ready".
+- Save a replay (`Ctrl+Shift+F8`) and confirm a clip plus catalog row.
+- Start/stop manual recording and confirm output plus catalog row.
+- Open `Monolith.UI.exe`, verify clip grid/settings, and save a setting.
+- Use Stream Deck plugin build output against IPC on `127.0.0.1:45991`.
 
 ## Architecture
 
-Single-process MVP. Module boundaries are enforced by library separation under `libs/`, not by process separation. The `app/recorder` executable links all libs and owns the Win32 message loop, tray, hotkeys, and lifecycle.
+The recorder remains a single-process MVP. Internal boundaries are enforced by
+CMake libraries under `libs/`; the future headless-engine split is deferred.
 
-Actual targets (see root `CMakeLists.txt` — note this differs from the larger module list in `PROJECT_PLAN.md`, which is aspirational):
+Main modules:
 
-- `app/recorder` — the `Monolith.exe` engine + tray host. `src/main.cpp` (~2200 lines) is the orchestrator: message-only window, single-instance guard, global hotkeys, the recording/replay state, audio-source wiring, and Active Game polling. `settings_config.cpp` owns config schema/load/validate/clamp; `settings_window.cpp` bridges to the sidecar; `updater.cpp` is WinSparkle.
-- `app/desktop-ui` — the new UI layer (`Monolith.UI.exe`), a **Tauri v2** (WebView2) app: Home = clip grid, Settings = popup. Launched from the tray; not always-on. Rust host (`src-tauri/`: `main.rs`, `server.rs`, `media.rs`, plus data modules `clip_catalog.rs`/`settings_store.rs`/`engine_rpc.rs`/`game_catalog.rs`/`paths.rs`) + Preact frontend (`ui/`). The host runs a loopback HTTP server and the window loads `http://127.0.0.1:<port>/`, so the frontend keeps its `fetch()`/`/media` route contract. Reads the clip DBs read-only; clip mutations + settings-reload go to the engine over JSON-RPC. See ADR-0011 / ADR-0012. (The old Deno host — `main.ts`, `server/`, `bindings/` — is being removed.)
-- `libs/capture` — WGC (`Windows.Graphics.Capture`) display capture.
-- `libs/audio` — WASAPI loopback/microphone/input + process-loopback capture, plus `detect_active_game()`.
-- `libs/encoding` — FFmpeg H.264/AAC encode wrappers; `mux_common` for muxing.
-- `libs/replay-buffer` — encoded-packet ring buffer + keyframe-safe MKV clip extraction.
-- `libs/recording` — manual recording state/flow.
-- `libs/ipc` — JSON-RPC server (Stream Deck transport; not fully wired yet).
+- `app/recorder`: `Monolith.exe`, Win32 tray, message-only window, hotkeys,
+  lifecycle, recording/replay orchestration, runtime status, updater.
+- `app/desktop-ui`: `Monolith.UI.exe`, Tauri v2/WebView2 host plus Preact UI.
+  Rust modules serve the bundled frontend, expose local HTTP APIs, read clip
+  catalogs read-only, write settings, and call engine JSON-RPC.
+- `libs/capture`: Windows.Graphics.Capture D3D11 capture with CPU-readable BGRA
+  staging path.
+- `libs/audio`: WASAPI desktop/microphone/input/process-loopback capture and
+  heuristic active-game detection.
+- `libs/encoding`: FFmpeg video/audio encoders, thumbnail decode/generation,
+  mux helpers, and `TrackMixer`.
+- `libs/replay-buffer`: encoded-packet ring buffer and clip save.
+- `libs/recording`: manual recording writer.
+- `libs/storage`: SQLite clip catalogs and `settings.db` key/value store.
+- `libs/ipc`: localhost JSON-RPC server on `127.0.0.1:45991`.
+- `plugins/stream-deck`: Node.js/TypeScript Stream Deck plugin using the IPC
+  contract.
 
-Data crosses module boundaries as **encoded packets**, not raw frames. The replay buffer holds encoded packets and walks back to the nearest keyframe on clip save.
+Data crossing recording boundaries should be encoded packets, not raw frames.
+The current capture path still performs BGRA CPU readback and software
+conversion; GPU-resident encode remains the main performance target.
 
-### Cross-cutting invariants
+## Runtime State
 
-- **Never block the UI/tray thread** on capture, encode, disk I/O, or IPC.
-- **Avoid CPU/GPU copies**; GPU-resident frame flow is the default design constraint. Prefer encoded-packet buffering over raw-frame buffering.
-- **MKV is the active-write container** (salvageable after crash); MP4 only via remux after successful finalization.
-- **Capability-gate the UI**: never expose encoder/UI options that runtime probing can't actually support on the current machine.
-- No Electron, WebView2/CEF, or browser-shell anything (`docs/DEVELOPMENT_RULES.md`).
+- User media defaults: `Videos\Monolith\Clips` and
+  `Videos\Monolith\Recordings`.
+- Runtime data: `%LocalAppData%\Monolith`.
+- Settings store of record: `%LocalAppData%\Monolith\settings.db`.
+- Legacy `%LocalAppData%\Monolith\config.json` is imported once, then renamed to
+  `config.json.imported.bak`.
+- Runtime capability/status file: `%LocalAppData%\Monolith\runtime-status.json`.
+- Installed app path: `%LocalAppData%\Programs\Monolith`.
+- Default seed config: `config/default-config.json`.
 
-### Settings apply scopes
+## Settings Apply Scopes
 
-Settings is a sidecar: on Save it writes `settings.db` and posts `WM_APP + 2` to the recorder's message window. Changes apply at different scopes — output folders/hotkeys are live; replay duration restarts the replay buffer (the memory budget is fixed internally at 512 MB, not a setting); audio mode/routing/volume and capture/encoder changes restart their pipelines **only when no manual recording is active** (unsafe changes are deferred during recording). Avoid forcing a full app restart for reloadable settings. The encoder is configured as CPU/GPU + H.264/H.265 + CBR bitrate (see ADR-0013); resolution is a monitor-aspect preset.
+The settings UI writes `settings.db` and calls engine JSON-RPC
+`reload_settings`, which posts `WM_APP + 2` to the recorder.
 
-### Audio V2 + Active Game
+- Output folders and hotkeys apply live for future operations.
+- Replay duration restarts/reconfigures the replay buffer.
+- Replay memory budget is fixed internally at 512 MB.
+- Audio, capture, and encoder changes restart their pipelines only when manual
+  recording is not active; unsafe changes are deferred during recording.
+- A full app restart should be reserved for future settings that cannot be
+  reloaded safely.
 
-Default mode = desktop audio → track 1, primary mic → track 2. Custom mode persists routing for desktop audio, input devices, process sessions, and "Active Game" across up to six logical tracks, each with a per-source `volume` (0–1) that is **applied to the recording** — direct-track sources get gain via `apply_gain_inplace()` in `main.cpp`, mixed tracks via per-source gain in `TrackMixer` (`libs/encoding`). Multiple sources on one track ARE mixed (summed) by the `TrackMixer`; a single source on a track bypasses the mixer and feeds its encoder directly. `audio::detect_active_game()` is heuristic (fullscreen/foreground/audio-session/whitelist scoring); `poll_active_game()` in `main.cpp` is the single switch decision point (30 s timer + foreground-change fast scan) and swaps only the Active Game capture, never the replay buffer. Details in `docs/ARCHITECTURE.md`.
+## IPC Contract
 
-## Paths at runtime
+Transport: newline-delimited JSON-RPC over TCP at `127.0.0.1:45991`.
 
-- User video output: `Videos\Monolith\` (Clips, Recordings).
-- Config + logs + runtime data: `%LocalAppData%\Monolith\` (`config.json`, `runtime-status.json`, `settings-startup.log`).
-- Installed (per-user, no admin): `%LocalAppData%\Programs\Monolith\`.
-- `config/default-config.json` is the seed schema; the live config lives under `%LocalAppData%\Monolith`.
+Recorder commands:
 
-## Working conventions
+- `save_replay`
+- `recording_start`
+- `recording_stop`
+- `pause_resume`
+- `get_status`
+- `reload_settings`
 
-- MSVC builds with `/W4 /permissive-`; keep new code warning-clean.
-- Document non-obvious Windows API choices in an ADR (`docs/DECISIONS.md`) or a nearby comment with rationale. Do not change architecture direction, process model, config schema shape, or the IPC contract without updating `docs/DECISIONS.md`.
-- Keep modules isolated — no UI logic inside capture/audio/encoding/replay-buffer libs.
-- Don't add heavy dependencies or broad abstractions before a concrete module needs them.
+Clip mutations:
+
+- `clip_set_favorite`
+- `clip_add_hashtag`
+- `clip_remove_hashtag`
+- `clip_rename`
+- `clip_set_title`
+- `clip_regen_thumb`
+- `clip_delete`
+
+`get_status` returns recording state plus `clip_generation`, a monotonic counter
+used by the UI host to refresh the clip grid.
+
+## Working Rules
+
+- Keep MSVC `/W4 /permissive-` clean.
+- Do not block the tray/UI message loop on capture, encode, mux, disk I/O, or
+  IPC.
+- Keep capture/audio/encoding/storage/replay/recording/UI/plugin boundaries
+  intact.
+- Do not add heavy dependencies without a concrete module need.
+- Document non-obvious Windows API or architecture choices in `docs/DECISIONS.md`
+  or nearby source comments.
+- Update `docs/handover/ACTIVE_HANDOVER.md` at the end of a session.

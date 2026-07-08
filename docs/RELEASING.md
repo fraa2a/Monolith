@@ -1,87 +1,106 @@
-# Releasing Monolith
+﻿# Releasing Monolith
 
-## Distribution model
+## Distribution Model
 
-- Code repo (`fraa2a/Monolith`) is **private**.
-- Installer, appcast, and GPLv3 corresponding-source zip are published to the
-  **public** release repo `fraa2a/Monolith-releases` by CI.
-- Installs are **per-user** (`%LocalAppData%\Programs\Monolith`, no admin) and
-  the payload is **self-contained** (.NET + Windows App SDK bundled — no
-  prerequisites on the target machine).
-- Auto-update: WinSparkle inside `Monolith.exe` polls
-  `https://github.com/fraa2a/Monolith-releases/releases/latest/download/appcast.xml`,
-  verifies the EdDSA signature, downloads the new installer, and runs it
-  silently (`/SILENT /SP- /NOCANCEL`). User config under
-  `%LocalAppData%\Monolith` survives updates and uninstalls.
+- Code repo: private `fraa2a/Monolith`.
+- Public release repo: `fraa2a/Monolith-releases`.
+- Published artifacts: installer, WinSparkle appcast, and GPLv3 corresponding
+  source archive.
+- Install path: `%LocalAppData%\Programs\Monolith`.
+- User data path: `%LocalAppData%\Monolith`.
+- Install is per-user and should not require admin.
 
-## One-time setup (before the first release)
+The shipped payload includes:
 
-1. **Create the public release repo** `fraa2a/Monolith-releases` (empty, with a
-   README explaining it hosts Monolith binaries + GPL source archives).
+- `Monolith.exe`.
+- `ui\Monolith.UI.exe`.
+- Native dependency DLLs from vcpkg.
+- Installer metadata and updater support.
 
-2. **Generate the WinSparkle EdDSA key pair** (any machine with openssl):
+Deno is not shipped. It is only a build-time frontend bundler for
+`app/desktop-ui`.
+
+## One-Time Setup
+
+1. Create public repo `fraa2a/Monolith-releases`.
+
+2. Generate WinSparkle Ed25519 key pair:
 
    ```powershell
    openssl genpkey -algorithm ed25519 -out monolith-ed25519-priv.pem
-   # Base64 raw 32-byte public key for the app:
-   $der = openssl pkey -in monolith-ed25519-priv.pem -pubout -outform DER | % { $_ }
-   # or, reliably:
    openssl pkey -in monolith-ed25519-priv.pem -pubout -outform DER -out pub.der
    [Convert]::ToBase64String((Get-Content pub.der -AsByteStream)[-32..-1])
    ```
 
-   - Paste the base64 **public** key into `kEdDsaPublicKey` in
-     `app/recorder/src/updater.cpp`.
-   - Store the **private** PEM text as repo secret `WINSPARKLE_ED_PRIVATE_KEY`.
-     The secret must contain the full file contents including the `BEGIN`/`END`
-     marker lines and the line breaks between them. On Windows, copy with
-     newlines preserved:
-     ```powershell
-     Get-Content monolith-ed25519-priv.pem -Raw | Set-Clipboard
-     ```
-     Then paste into the GitHub secret field. The CI script can also recover
-     from a newline-stripped value, but storing the PEM verbatim is preferred.
-   - Never commit the private key. Losing it means shipped clients will reject
-     future updates (they pin the public key), so back it up securely.
+3. Paste the base64 public key into `kEdDsaPublicKey` in
+   `app/recorder/src/updater.cpp`.
 
-3. **Create a fine-grained PAT** with `contents: write` on
-   `fraa2a/Monolith-releases` only; store it as repo secret `RELEASES_REPO_PAT`.
+4. Store the private PEM as repo secret `WINSPARKLE_ED_PRIVATE_KEY`.
 
-## Releasing a version
+   ```powershell
+   Get-Content monolith-ed25519-priv.pem -Raw | Set-Clipboard
+   ```
+
+5. Create a fine-grained PAT with `contents: write` on
+   `fraa2a/Monolith-releases` only. Store it as `RELEASES_REPO_PAT`.
+
+Never commit the private key. Losing it means already-shipped clients reject
+future updates signed by a new key.
+
+## Versioning
+
+Source of truth:
+
+- CI release: git tag `vX.Y.Z`.
+- Local default: root `CMakeLists.txt` `project(monolith VERSION ...)`.
+
+CI passes `-DMONOLITH_VERSION=X.Y.Z` to CMake. That version flows into the
+generated `version.h`, the Windows VERSIONINFO resource, installer metadata, and
+appcast version.
+
+## Release Command
 
 ```powershell
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-CI (`.github/workflows/version-tag.yml`) then:
+CI then:
 
-1. Extracts `X.Y.Z` from the tag and passes `-DMONOLITH_VERSION=X.Y.Z` to CMake
-   (flows into the exe VERSIONINFO, the C# assembly version, and the installer).
-2. Builds the full self-contained payload.
-3. Compiles `installer/monolith.iss` → `MonolithSetup-X.Y.Z.exe`.
-4. Signs the installer (Ed25519) and generates `appcast.xml`
-   (`scripts/generate-appcast.ps1`).
-5. Zips the source (`git archive`) for GPLv3 compliance.
-6. Publishes everything as a GitHub Release on `fraa2a/Monolith-releases`.
+1. Extracts version from tag.
+2. Configures CMake with the pinned vcpkg baseline.
+3. Builds `Monolith.exe` and `Monolith.UI.exe`.
+4. Compiles `installer/monolith.iss` into `MonolithSetup-X.Y.Z.exe`.
+5. Signs installer metadata and generates `appcast.xml` via
+   `scripts/generate-appcast.ps1`.
+6. Creates GPLv3 source archive from `git archive`.
+7. Publishes all artifacts to `fraa2a/Monolith-releases`.
 
-## Local installer build (testing)
+## Local Installer Build
 
 ```powershell
 cmake --build build --config Release --parallel
-& "$env:LocalAppData\Programs\Inno Setup 6\ISCC.exe" /DMonolithVersion=0.0.0-dev installer\monolith.iss
-# → installer/Output/MonolithSetup-0.0.0-dev.exe
+& "$env:LocalAppData\Programs\Inno Setup 6\ISCC.exe" /DMonolithVersion=1.4.1 installer\monolith.iss
 ```
 
-Note: `/DMonolithVersion` must be numeric X.Y.Z for `VersionInfoVersion`; for a
-quick smoke just use the next planned version number.
+Use a numeric `X.Y.Z` version for `VersionInfoVersion`.
 
-## Versioning notes
+## Verification Checklist
 
-- Source of truth: git tag `vX.Y.Z` (CI) / `project(monolith VERSION ...)` in
-  the root `CMakeLists.txt` (local default).
-- WinSparkle compares the appcast `sparkle:version` against the running exe's
-  FileVersion — keep both derived from the same tag (CI does this automatically).
-- vcpkg dependencies are pinned via `builtin-baseline` in `vcpkg.json`; CI
-  checks out that exact vcpkg commit. To bump dependencies, update the baseline
-  SHA deliberately.
+- Release build produces `Monolith.exe`.
+- UI build produces `ui\Monolith.UI.exe`.
+- Installer compiles.
+- Installer runs per-user without admin.
+- Fresh install starts and shows tray icon.
+- UI opens from tray.
+- Save replay writes media and catalog row.
+- Manual recording start/stop writes media and catalog row.
+- Settings save updates `settings.db` and engine reloads.
+- Appcast URL resolves publicly.
+- WinSparkle verifies signature and applies update.
+- User data survives update and uninstall.
+
+## Dependency Notes
+
+Dependencies are pinned in `vcpkg.json` via `builtin-baseline`. Bump the baseline
+deliberately and verify release build after any dependency change.

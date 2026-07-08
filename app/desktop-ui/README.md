@@ -1,63 +1,94 @@
-# Monolith Desktop UI (Tauri)
+﻿# Monolith Desktop UI
 
-New UI layer — Home = clip grid, Settings = popup. Tauri v2 / WebView2 shell.
-Replaces both the experimental Deno Desktop host (which couldn't reliably show a
-window) and the old WinUI 3 settings sidecar, both now removed. See ADR-0011 /
-ADR-0012.
+This is the current Monolith UI sidecar: Tauri v2/WebView2 host plus Preact
+frontend. It replaces both the old WinUI settings sidecar and the experimental
+Deno Desktop shell.
+
+## Shape
+
+- Host: Rust/Tauri v2 in `src-tauri/`.
+- Frontend: Preact in `ui/`.
+- Bundler: Deno + esbuild through `build.ts`.
+- Runtime window: WebView2 via Tauri.
+- Shipped exe: `Monolith.UI.exe`.
+
+Deno is build-only. It is not shipped with Monolith.
 
 ## Architecture
 
-- **Rust host** (`src-tauri/`): opens a WebView2 window with Tauri and runs a
-  loopback HTTP server (`server.rs`) that serves the built frontend, a JSON API
-  over the **read-only** clip catalogs (`clip_catalog.rs` via `rusqlite`,
-  bundled SQLite), and range-streamed media/thumbnails (`media.rs`). The window
-  navigates to `http://127.0.0.1:<port>/`, so the frontend's `fetch()`/`<video>`
-  route contract is unchanged — no `invoke()` rewrite.
-- **Engine IPC** (`engine_rpc.rs`): clip mutations (favorite/hashtag/rename/
-  delete) and `reload_settings` go to `Monolith.exe` over JSON-RPC on
-  `127.0.0.1:45991` — the engine is the single writer of `clips.db`/`recs.db`.
-- **Frontend** (`ui/`): Preact + esbuild (Deno loader), bundled by `build.ts`
-  into `dist/`, embedded into the exe at compile time via `include_dir!`. Home
-  grid, rounded clip cards with hover preview, context menu, favorite/hashtag/
-  rename/delete, filters, fullscreen, settings popup.
+The Rust host starts a loopback HTTP server and opens the WebView at
+`http://127.0.0.1:<port>/`. This keeps the frontend route contract simple:
+
+- Static app assets.
+- `/api/*` JSON routes.
+- `/media/*` range streaming for video playback.
+- `/thumb/*` thumbnail responses.
+- `/api/events` Server-Sent Events for clip refresh.
+
+Rust modules:
+
+- `main.rs`: Tauri bootstrap and visible-window creation.
+- `server.rs`: HTTP route handling.
+- `media.rs`: video and thumbnail streaming.
+- `settings_store.rs`: read/write `%LocalAppData%\Monolith\settings.db`.
+- `clip_catalog.rs`: read-only clip/recs catalog queries.
+- `engine_rpc.rs`: JSON-RPC client to `Monolith.exe`.
+- `game_catalog.rs`: game metadata lookup.
+- `paths.rs`: Monolith runtime paths.
+
+The UI never writes `clips.db` or `recs.db` directly. Mutations go through engine
+IPC so the recorder remains the single writer.
 
 ## Develop
 
-Two toolchains: `deno` (frontend bundle only) and the Rust toolchain (host).
+Bundle frontend:
 
 ```bat
-deno run -A build.ts            :: bundle the frontend into dist/ (needed before cargo)
-cargo run --manifest-path src-tauri\Cargo.toml   :: build + run the UI (engine optional)
+deno run -A build.ts
 ```
 
-The window opens even when `Monolith.exe` is not running; engine-dependent
-routes degrade gracefully (empty clips, `config: null`, no crash when
-`127.0.0.1:45991` is down).
+Run host:
+
+```bat
+cargo run --manifest-path src-tauri\Cargo.toml
+```
+
+The window can open without `Monolith.exe` running. Engine-dependent routes
+degrade gracefully.
 
 ## Ship
-
-`cargo build --release` produces a single self-contained
-`src-tauri/target/release/monolith_ui.exe` (SQLite is statically linked; the
-frontend is embedded — nothing else to copy). The tauri-cli is not required.
 
 ```bat
 deno run -A build.ts
 cargo build --release --manifest-path src-tauri\Cargo.toml
 ```
 
-CMake builds this and copies it to `<recorder-output>/ui/Monolith.UI.exe` when
-both `deno` and `cargo` are on PATH (see `CMakeLists.txt`). The recorder tray
-"Settings…" entry launches it (`app/recorder/src/settings_window.cpp`).
+The release binary is:
+
+```text
+src-tauri\target\release\monolith_ui.exe
+```
+
+CMake copies it to:
+
+```text
+<recorder-output>\ui\Monolith.UI.exe
+```
 
 ## Folders
 
-```
-src-tauri/          Rust host: main.rs, server.rs, media.rs, clip_catalog.rs,
-                    settings_store.rs, engine_rpc.rs, game_catalog.rs, paths.rs
-build.ts            esbuild bundle of ui/ -> dist/ (run before cargo build)
-ui/                 index.html, styles.css, src/ (Preact frontend)
-deno.json           frontend bundler config (Deno is build-only, never shipped)
+```text
+src-tauri/    Rust host
+ui/           Preact frontend
+build.ts      esbuild bundle script
+deno.json     Deno import/task config for bundling only
 ```
 
-Deno is used *only* to bundle the Preact frontend into `dist/` at build time; it
-is not part of the shipped app (the exe embeds `dist/` via `include_dir!`).
+## UI Quality Notes
+
+- Keep controls keyboard reachable.
+- Keep overlay escape routes obvious.
+- Keep icon-only controls labelled.
+- Use semantic buttons/inputs over generic clickable containers.
+- Keep destructive actions separated and confirmed.
+- Respect reduced motion for nonessential animation.

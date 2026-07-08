@@ -1,17 +1,26 @@
-# Key Images
+﻿# Stream Deck Images
 
-Place PNG images here for Stream Deck key display. Required files:
+Place PNG images here for the packaged Stream Deck plugin.
 
-| File              | Size        | Purpose                          |
-|-------------------|-------------|----------------------------------|
-| save-replay.png   | 72 × 72 px  | Save Replay action (normal DPI)  |
-| save-replay@2x.png| 144 × 144 px| Save Replay action (Retina/HiDPI)|
-| record-idle.png   | 72 × 72 px  | Toggle Recording — idle state    |
-| record-idle@2x.png| 144 × 144 px| Toggle Recording — idle (HiDPI)  |
-| record-active.png | 72 × 72 px  | Toggle Recording — active state  |
-| record-active@2x.png|144×144 px | Toggle Recording — active (HiDPI)|
-| pause.png         | 72 × 72 px  | Pause/Resume action              |
-| pause@2x.png      | 144 × 144 px| Pause/Resume action (HiDPI)      |
+The manifest references these asset stems:
 
-The manifest.json references `save-replay`, `record-idle`, and `pause` as default
-action icons. Stream Deck will show a placeholder if the files are missing.
+| Stem | Purpose |
+|---|---|
+| `plugin` | Plugin icon |
+| `category` | Category icon |
+| `save-replay` | Action icon |
+| `save-replay-key` | Save Replay key state |
+| `record-idle` | Toggle Recording action icon |
+| `record-idle-key` | Recording idle key state |
+| `record-active` | Recording active state, if added later |
+| `pause` | Pause/Resume action icon |
+| `pause-key` | Pause key state |
+
+Recommended sizes:
+
+- 72 x 72 px for normal key images.
+- 144 x 144 px for HiDPI key images if separate `@2x` assets are added.
+- PNG with transparent background.
+
+The current manifest does not list every legacy `@2x` filename that older notes
+mentioned. Keep this README and `manifest.json` in sync when asset names change.

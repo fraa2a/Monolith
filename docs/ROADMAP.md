@@ -1,178 +1,165 @@
-# Roadmap
+﻿# Roadmap
 
-## Milestone 0: Repo Foundation and Documentation
+## Current Status
 
-- Goal:
-  - Establish the repo structure, baseline docs, and first config draft.
-- Deliverables:
-  - initial folder layout
-  - handover document
-  - architecture/rules/decisions docs
-  - default config draft
-- Acceptance criteria:
-  - next session can begin implementation without re-planning the entire repo
-  - no production capture/encoding code added yet
-- Next action:
-  - implement the minimal tray + hotkey prototype shell
+Monolith has moved beyond the early prototype milestones. Current baseline:
 
-## Milestone 1: Minimal Tray + Hotkey Prototype
+- Native Win32 tray app with hotkeys.
+- WGC video capture and WASAPI audio capture.
+- FFmpeg encode and mux.
+- Replay buffer and manual recording.
+- SQLite clip catalogs and thumbnails.
+- SQLite `settings.db` settings store.
+- Tauri v2/WebView2 desktop UI with Preact frontend.
+- Local JSON-RPC IPC.
+- Stream Deck TypeScript plugin scaffold.
+- Inno Setup installer and WinSparkle release pipeline.
 
-- Goal:
-  - Prove background app lifecycle, hidden window/message loop, tray icon ownership, and global hotkey registration.
-- Deliverables:
-  - hidden Win32 app shell
-  - tray icon
-  - context menu with placeholder actions
-  - configurable hotkey parsing and registration stub
-- Acceptance criteria:
-  - app runs in tray
-  - at least one hotkey triggers a logged placeholder action
-  - no UI thread blocking
-- Next action:
-  - define the internal app state and command dispatch boundary
+## Completed Milestones
 
-## Milestone 2: Video/Audio Capture Prototype
+### M0: Repo Foundation
 
-- Goal:
-  - Prove Windows-native capture ingress for video and audio.
-- Deliverables:
-  - WGC display capture spike
-  - WASAPI loopback spike
-  - WASAPI microphone spike
-  - timestamp/logging scaffolding
-- Acceptance criteria:
-  - capture callbacks run reliably
-  - logs show stable frame/audio ingress over a short session
-  - no encoding or replay buffer logic required yet
-- Next action:
-  - choose the first stable internal media packet shape
+Complete.
 
-## Milestone 3: Replay Buffer Proof of Concept
+- Initial folder layout.
+- Architecture/rules/decision docs.
+- Default config seed.
 
-Status: complete.
+### M1: Tray And Hotkeys
 
-- Goal:
-  - Prove the rolling-buffer design and save-last-X-seconds behavior.
-- Deliverables:
-  - encoded-packet ring buffer prototype
-  - save replay trigger path
-  - Matroska clip write flow prototype
-- Acceptance criteria:
-  - triggering replay save produces a valid MKV artifact
-  - memory behavior is measured and logged
-  - basic timing boundaries are understood
-- Next action:
-  - add replay-buffer test harness and begin runtime hardening / next product milestone
+Complete.
 
-## Milestone 4: Runtime Hardening and Manual Recording Foundation
+- Hidden Win32 shell.
+- Tray menu.
+- Global recording/replay hotkeys.
+- Single-instance guard.
 
-Status: complete for MVP; longer soak testing remains open.
+### M2: Capture And Audio Ingress
 
-- Goal:
-  - Convert the replay-buffer proof into a safer recorder core and prepare manual recording.
-- Deliverables:
-  - recording state machine skeleton (implemented in the current app shell)
-  - manual recording start/stop/pause/resume from tray and hotkeys
-  - graceful shutdown path for capture, encoders, and pending clip saves
-  - clearer encoder/capture failure states in logs
-  - basic replay-buffer test harness
-- Acceptance criteria:
-  - repeated save hotkey presses do not corrupt output or deadlock
-  - app exits cleanly through tray without killing worker threads
-  - recording commands have explicit accepted/rejected states (implemented)
-- Next action:
-  - continue runtime hardening and Audio V2 mixer/runtime validation
+Complete.
 
-## Milestone 5: Settings Foundation
+- Windows.Graphics.Capture display capture.
+- WASAPI desktop loopback.
+- Microphone/input-device capture.
+- Process-loopback support where available.
 
-Status: complete.
+### M3: Replay Buffer
 
-- Goal:
-  - Add the first persistent per-user settings path without redesigning replay or recording.
-- Deliverables:
-  - `AppData\Local\Monolith\config.json` load/save path
-  - default config merge from `config/default-config.json`
-  - WinUI 3 settings sidecar opened from the tray
-  - editable replay clip folder, manual recording folder, replay duration, replay memory budget, and manual recording format
-  - read-only hotkey display
-- Acceptance criteria:
-  - settings opens from the tray (manually tested)
-  - settings save and persist across restarts (manually tested)
-  - missing or invalid user config does not crash startup
-  - output folder changes are saved and used for replay/manual recording
-  - replay duration and memory budget are saved and applied to the replay buffer
-  - visible settings are wired, read-only, or honestly marked with their apply scope
-  - Settings cold start avoids app-side runtime enumeration until the relevant page is opened
-- Live-applied settings:
-  - replay clip output folder
-  - manual recording output folder
-  - hotkeys
-- Replay-buffer restart/reconfigure:
-  - replay duration
-  - replay memory budget
-- Applies to next recording/clip:
-  - manual recording format
-- Capture/encoder restart when no manual recording is active:
-  - capture monitor
-  - output resolution
-  - capture border
-  - encoder backend
-  - video bitrate
-  - advanced FFmpeg options
-- Audio pipeline restart when no manual recording is active:
-  - audio mode
-  - primary microphone
-  - custom source routing/add/disable/remove
-- Full app restart:
-  - no currently exposed setting should require a full app restart by default
-- Not implemented:
-  - Stream Deck settings
+Complete.
 
-## Milestone 6: Audio V2 (v0.5.1 update)
+- Encoded-packet ring buffer.
+- Keyframe-safe replay save.
+- MKV clip write path.
+- MP4 clip save path exists for replay container setting.
 
-Status: foundation + dynamic Active Game detection implemented; mixer/runtime validation remains.
+### M4: Manual Recording
 
-- Goal:
-  - Add reliable default system+microphone output and a custom audio-routing model for up to six tracks.
-- Deliverables:
-  - Default mode: system audio on track 1, selected primary microphone on track 2. Implemented.
-  - Custom mode: add/configure/disable/remove sources and assign each source to tracks 1-6. Implemented in Settings/config.
-  - Multiple microphone/input devices as independent configurable sources. Implemented.
-  - Per-process/application session listing with readable names and saved routing assignments. Implemented with Windows process-loopback best effort.
-  - Best-effort Active Game source that never breaks recording if no game is detected. Implemented: dynamic detection with 30 s poll + foreground-change fast scan, debounce-based switching, blacklist/whitelist/manual-game config, process-loopback with fallback reporting.
-  - Encoder/muxer support for the required audio tracks, with resampling/mixing as needed. Implemented for independent tracks; same-track multi-source mixing remains pending.
-- v0.5.1 additions:
-  - Active Game detection re-evaluates every poll tick instead of locking onto the first process.
-  - Default poll interval changed to 30 s; foreground-change WinEvent hook provides sub-1-s detection latency.
-  - Debounce (3 s default) prevents spurious switches on alt-tab.
-  - Audio Mode labels simplified; Custom Sources hidden in Default mode.
-  - Default → Custom confirmation dialog added.
-  - Active Game runtime status panel shows detected game, confidence, signals, capture mode.
-  - Runtime-status.json extended with confidence/reason/capture_mode/process_loopback_available/last_switch_time/poll_interval_ms/fast_scan_enabled.
-- Acceptance criteria:
-  - replay save, manual recording, Settings launch, and output paths still work. Build and Settings launch smoke verified; runtime audio tests still needed.
-  - missing devices/processes do not crash recording or corrupt config. Implemented by fail-closed source startup and saved-source availability display.
-  - assignments outside tracks 1-6 are rejected or sanitized. Implemented.
-  - current limitations of per-app capture, active-game detection, multi-track muxing, and A/V sync are documented. Implemented in handover/architecture.
+Complete for MVP.
 
-## Milestone 7: Distribution — Installer + Auto-Update
+- Start/stop/pause/resume state machine.
+- Shared encoded-packet stream with replay.
+- MKV/MP4 manual writer.
+- Pause omits paused time and resumes on next video keyframe.
 
-Status: implemented and verified locally; one-time release setup and first public release pending.
+### M5: Settings Store And UI
 
-- Goal:
-  - Ship Monolith to general users as a single per-user installer with zero prerequisites and working auto-update, while the code repo stays private.
-- Deliverables:
-  - version source of truth: git tag → CMake `MONOLITH_VERSION` → generated `version.h` (exe VERSIONINFO + updater) + csproj `Version`. Implemented.
-  - self-contained Settings sidecar (.NET 8 + Windows App SDK bundled, no trimming). Implemented.
-  - WinSparkle auto-update: `updater` module, tray "Check for Updates…", `update.auto_check` setting with Settings toggle, EdDSA-signed appcast. Implemented (public key pending one-time keygen).
-  - per-user Inno Setup installer (`installer/monolith.iss`): no UAC, stable AppId, GPLv3 license page, full payload, user config preserved on uninstall/update. Implemented and compiled locally.
-  - appcast generation script (`scripts/generate-appcast.ps1`) with Ed25519 signing via openssl. Implemented and tested.
-  - release CI (`version-tag.yml`): tag → versioned build → installer → signed appcast → GPLv3 source zip → publish to public `fraa2a/Monolith-releases`. Implemented.
-  - one-time setup + release process documented in `docs/RELEASING.md`. Implemented.
-- Acceptance criteria:
-  - pushing tag `vX.Y.Z` produces a public release with installer, appcast, and source zip downloadable without authentication. Pending (needs one-time setup).
-  - installer works per-user without admin and the app runs on a machine without .NET/WinAppSDK. Local install verified; clean-VM test pending.
-  - an older installed version detects, downloads, verifies, and applies the new release; user config survives. Pending first public release.
-  - vcpkg dependencies pinned for reproducible release builds. Implemented (`builtin-baseline`).
-- Next action:
-  - complete the one-time setup in `docs/RELEASING.md`, then publish and verify the first public release.
+Complete, current implementation differs from old WinUI milestone text.
+
+- Settings store is `settings.db`, not live `config.json`.
+- UI is Tauri/Preact, not WinUI.
+- Legacy `config.json` is import-only migration input.
+- Settings reload goes through engine IPC.
+- Folder picker, hotkey capture, capability-gated encoder/capture controls, and
+  friendly schema are implemented.
+
+### M6: Audio V2 And Active Game
+
+Foundation implemented; runtime soak remains.
+
+- Default desktop + microphone routing.
+- Custom source routing to tracks 1-6.
+- Per-source volume applied.
+- `TrackMixer` for multi-source tracks.
+- Active Game source and heuristic detection.
+- Foreground-change fast scan and fixed 5s poll cadence.
+
+### M7: Clip Library
+
+Implemented.
+
+- Clip/recs catalogs in SQLite.
+- Thumbnails.
+- Favorites, hashtags, title, rename, delete, regen thumb.
+- UI grid, filters, hover preview, detail view, fullscreen, context menu.
+- Live refresh via `clip_generation`/SSE.
+
+### M8: Distribution
+
+Implemented locally; external release setup remains.
+
+- Version flows from tag/CMake into binaries and installer.
+- Inno Setup per-user installer.
+- WinSparkle integration.
+- Appcast generation script.
+- CI publishes installer, appcast, and GPL source archive to public release repo.
+
+## Active Work
+
+### Runtime Validation
+
+Needed:
+
+- Long-session replay soak.
+- Long-session manual recording soak.
+- Default audio track validation.
+- Custom mixed audio validation.
+- Active Game switch validation.
+- Pause/resume A/V sync checks.
+- Clean shutdown while saving/recording.
+
+### Test Harness
+
+Needed:
+
+- Settings merge/load/save/migration tests.
+- IPC parse/dispatch tests.
+- ReplayBuffer save boundary tests.
+- Catalog self-heal tests.
+- Hotkey parse tests.
+
+### Performance
+
+Priority order:
+
+1. GPU downscale before CPU readback.
+2. Output-sized staging textures.
+3. Explicit color range/matrix in the CPU encode path.
+4. D3D11/NV12 hardware encoder path.
+5. AVPacket lifetime/zero-copy mux improvements.
+
+### Release Setup
+
+External setup still required:
+
+- Create public `fraa2a/Monolith-releases` repo.
+- Generate WinSparkle Ed25519 key pair.
+- Put public key in `app/recorder/src/updater.cpp`.
+- Add CI secrets `WINSPARKLE_ED_PRIVATE_KEY` and `RELEASES_REPO_PAT`.
+- Push first `vX.Y.Z` tag and verify install/update path.
+
+## Not Started Or Deferred
+
+- Desktop Duplication fallback.
+- Headless engine process split.
+- GPU-resident encoder path.
+- Discord Rich Presence implementation.
+- Background Discord game catalog refresh.
+- Clean-VM update path verification.
+
+## Near-Term Next Actions
+
+1. Run full Release build and UI/plugin builds after this documentation update.
+2. Add focused tests for settings and IPC first.
+3. Perform runtime soak on default/custom audio.
+4. Start GPU downscale-before-readback spike.
+5. Complete first public release setup.
