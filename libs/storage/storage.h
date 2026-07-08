@@ -57,6 +57,7 @@ struct ClipRow {
     double       duration_seconds = 0.0;
     std::string  game_process_name;
     std::string  game_display_name;
+    std::string  discord_app_id;
     std::string  game_source;      // "steam"|"game_db"|"heuristic"|"manual"|""
     int64_t      steam_app_id = 0; // 0 = unknown
     int          confidence = 0;

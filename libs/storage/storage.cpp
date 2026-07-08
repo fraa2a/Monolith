@@ -121,6 +121,18 @@ bool exec(sqlite3* db, const char* sql, std::string* error)
     return true;
 }
 
+bool clip_exists(sqlite3* db, int64_t id)
+{
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT 1 FROM clips WHERE id=? LIMIT 1",
+                           -1, &st, nullptr) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, id);
+    const bool found = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return found;
+}
+
 const char* kCreateSchema =
     "CREATE TABLE IF NOT EXISTS clips ("
     "  id INTEGER PRIMARY KEY,"
@@ -132,6 +144,7 @@ const char* kCreateSchema =
     "  duration_seconds REAL,"
     "  game_process_name TEXT,"
     "  game_display_name TEXT,"
+    "  discord_app_id TEXT,"
     "  game_source TEXT,"
     "  steam_app_id INTEGER,"
     "  confidence INTEGER,"
@@ -342,6 +355,9 @@ std::unique_ptr<ClipDb> ClipDb::open(const std::wstring& folder,
     if (!has_column(db, "clips", "title"))
         exec(db, "ALTER TABLE clips ADD COLUMN title TEXT NOT NULL DEFAULT 'Untitled';",
              nullptr);
+    if (!has_column(db, "clips", "discord_app_id"))
+        exec(db, "ALTER TABLE clips ADD COLUMN discord_app_id TEXT;",
+             nullptr);
 
     std::unique_ptr<ClipDb> out(new ClipDb());
     out->impl_->db      = db;
@@ -357,9 +373,9 @@ int64_t ClipDb::insert_clip(const ClipRow& row, std::string* error)
 {
     static const char* sql =
         "INSERT INTO clips (video_file, thumbnail_file, title, created_at_utc, source, "
-        "duration_seconds, game_process_name, game_display_name, game_source, "
+        "duration_seconds, game_process_name, game_display_name, discord_app_id, game_source, "
         "steam_app_id, confidence, favorite) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(impl_->db, sql, -1, &st, nullptr) != SQLITE_OK) {
         if (error) *error = sqlite3_errmsg(impl_->db);
@@ -381,10 +397,12 @@ int64_t ClipDb::insert_clip(const ClipRow& row, std::string* error)
     sqlite3_bind_double(st, 6, row.duration_seconds);
     sqlite3_bind_text(st, 7, row.game_process_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(st, 8, row.game_display_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 9, row.game_source.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 10, row.steam_app_id);
-    sqlite3_bind_int(st, 11, row.confidence);
-    sqlite3_bind_int(st, 12, row.favorite ? 1 : 0);
+    if (row.discord_app_id.empty()) sqlite3_bind_null(st, 9);
+    else sqlite3_bind_text(st, 9, row.discord_app_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 10, row.game_source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 11, row.steam_app_id);
+    sqlite3_bind_int(st, 12, row.confidence);
+    sqlite3_bind_int(st, 13, row.favorite ? 1 : 0);
 
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
@@ -464,8 +482,17 @@ bool ClipDb::set_favorite(int64_t id, bool favorite, std::string* error)
     sqlite3_bind_int(st, 1, favorite ? 1 : 0);
     sqlite3_bind_int64(st, 2, id);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
+    const int changed = sqlite3_changes(impl_->db);
     sqlite3_finalize(st);
     if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    if (ok && changed == 0) {
+        if (error) *error = "clip not found";
+        return false;
+    }
+    if (video_base.empty()) {
+        if (error) *error = "clip not found";
+        return false;
+    }
     return ok;
 }
 
@@ -481,14 +508,23 @@ bool ClipDb::set_title(int64_t id, const std::string& title, std::string* error)
     sqlite3_bind_text(st, 1, value.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 2, id);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
+    const int changed = sqlite3_changes(impl_->db);
     sqlite3_finalize(st);
     if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    if (ok && changed == 0) {
+        if (error) *error = "clip not found";
+        return false;
+    }
     return ok;
 }
 
 bool ClipDb::add_hashtag(int64_t id, const std::string& tag, std::string* error)
 {
     if (tag.empty()) { if (error) *error = "empty tag"; return false; }
+    if (!clip_exists(impl_->db, id)) {
+        if (error) *error = "clip not found";
+        return false;
+    }
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(impl_->db,
             "INSERT OR IGNORE INTO clip_hashtags (clip_id, tag) VALUES (?,?)",

@@ -1,11 +1,12 @@
-use crate::settings_store;
-use rusqlite::{Connection, OpenFlags};
+use crate::{game_catalog, settings_store};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
-enum ClipSource {
+pub enum ClipSource {
     Replay,
     Manual,
 }
@@ -15,6 +16,14 @@ impl ClipSource {
         match self {
             Self::Replay => "replay",
             Self::Manual => "manual",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "replay" => Some(Self::Replay),
+            "manual" => Some(Self::Manual),
+            _ => None,
         }
     }
 }
@@ -38,6 +47,9 @@ pub struct Clip {
     pub duration_seconds: Option<f64>,
     pub game_process_name: Option<String>,
     pub game_display_name: Option<String>,
+    pub discord_app_id: Option<String>,
+    pub game_icon_url: Option<String>,
+    pub game_cover_url: Option<String>,
     pub favorite: bool,
     pub hashtags: Vec<String>,
     pub size_bytes: u64,
@@ -61,18 +73,34 @@ fn media_folder(source: ClipSource) -> PathBuf {
     }
 }
 
-fn open_readonly(source: ClipSource) -> Option<Connection> {
+fn open(source: ClipSource, readonly: bool) -> Option<Connection> {
     let path = db_path(source);
     if !path.is_file() {
         return None;
     }
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let flags = if readonly {
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+    };
+    let conn = Connection::open_with_flags(path, flags).ok()?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(4000));
     Some(conn)
 }
 
 fn file_size(path: &Path) -> u64 {
     path.metadata().map(|m| m.len()).unwrap_or(0)
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+        return false;
+    };
+    let found = rows.flatten().any(|name| name == column);
+    found
 }
 
 fn clip_hashtags(conn: &Connection) -> Vec<(i64, String)> {
@@ -93,20 +121,25 @@ fn tags_for(tags: &[(i64, String)], clip_id: i64) -> Vec<String> {
 }
 
 fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
-    let Some(conn) = open_readonly(source) else {
+    let Some(conn) = open(source, true) else {
         return Vec::new();
     };
     let folder = media_folder(source);
     let tags = clip_hashtags(&conn);
+    let discord_expr = if has_column(&conn, "clips", "discord_app_id") {
+        "discord_app_id"
+    } else {
+        "NULL"
+    };
 
-    // COALESCE keeps this query working against DBs written before the `title`
-    // column migration landed (older rows read back as the filename stem).
-    let Ok(mut stmt) = conn.prepare(
+    let sql = format!(
         "SELECT id, video_file, thumbnail_file, created_at_utc, duration_seconds,
                 game_process_name, game_display_name, favorite,
-                COALESCE(NULLIF(title, ''), 'Untitled')
+                COALESCE(NULLIF(title, ''), 'Untitled'), {discord_expr}
          FROM clips ORDER BY datetime(created_at_utc) DESC",
-    ) else {
+    );
+
+    let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
 
@@ -114,6 +147,10 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
         let id = row.get::<_, i64>(0)?;
         let video_file = row.get::<_, String>(1)?;
         let thumbnail_file = row.get::<_, Option<String>>(2)?;
+        let game_process_name = row.get::<_, Option<String>>(5)?;
+        let game_display_name = row.get::<_, Option<String>>(6)?;
+        let discord_app_id = row.get::<_, Option<String>>(9)?;
+        let artwork = game_catalog::resolve_artwork(discord_app_id.as_deref(), game_process_name.as_deref());
         let video_path = folder.join(&video_file);
         let thumbnail_path = thumbnail_file
             .as_ref()
@@ -127,8 +164,11 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
             thumbnail_file,
             created_at_utc: row.get(3)?,
             duration_seconds: row.get(4)?,
-            game_process_name: row.get(5)?,
-            game_display_name: row.get(6)?,
+            game_process_name,
+            game_display_name: game_display_name.or_else(|| if artwork.display_name.is_empty() { None } else { Some(artwork.display_name.clone()) }),
+            discord_app_id: discord_app_id.or(artwork.discord_app_id.clone()),
+            game_icon_url: artwork.icon_url,
+            game_cover_url: artwork.cover_url,
             favorite: row.get::<_, i64>(7).unwrap_or(0) != 0,
             hashtags: tags_for(&tags, id),
             size_bytes: file_size(&video_path),
@@ -192,4 +232,52 @@ pub fn distinct_hashtags() -> Vec<String> {
         }
     }
     tags.into_iter().collect()
+}
+
+fn video_file_for(conn: &Connection, id: i64) -> Result<String, String> {
+    conn.query_row("SELECT video_file FROM clips WHERE id = ?1", params![id], |row| row.get(0))
+        .map_err(|_| "clip not found".to_string())
+}
+
+pub fn set_duration(source: ClipSource, id: i64, duration: f64) -> Result<(), String> {
+    if !duration.is_finite() || duration <= 0.0 {
+        return Err("invalid duration".to_string());
+    }
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    conn.execute("UPDATE clips SET duration_seconds = ?1 WHERE id = ?2", params![duration, id])
+        .map_err(|err| err.to_string())?;
+    if conn.changes() == 0 {
+        return Err("clip not found".to_string());
+    }
+    Ok(())
+}
+
+pub fn save_thumbnail_capture(source: ClipSource, id: i64, png: &[u8]) -> Result<String, String> {
+    if png.is_empty() || png.len() > 8 * 1024 * 1024 {
+        return Err("invalid thumbnail".to_string());
+    }
+    if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("thumbnail must be png".to_string());
+    }
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    let video_file = video_file_for(&conn, id)?;
+    let stem = Path::new(&video_file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "invalid video name".to_string())?;
+    let thumb_file = format!("{stem}.png");
+    let folder = media_folder(source).join(".thumbs");
+    fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+    fs::write(folder.join(&thumb_file), png).map_err(|err| err.to_string())?;
+    conn.execute("UPDATE clips SET thumbnail_file = ?1 WHERE id = ?2", params![thumb_file, id])
+        .map_err(|err| err.to_string())?;
+    if conn.changes() == 0 {
+        return Err("clip not found".to_string());
+    }
+    Ok(thumb_file)
 }

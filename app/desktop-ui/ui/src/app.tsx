@@ -39,8 +39,6 @@ export function App() {
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
-  // silent=true skips the loading spinner (used by live SSE refreshes so the
-  // grid updates in place without flashing).
   const reload = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     const [c, g, h] = await Promise.all([
@@ -54,20 +52,23 @@ export function App() {
     setLoading(false);
   }, [filter]);
 
+  const updateClip = useCallback((next: Clip) => {
+    setClips((items) => items.map((item) => (
+      item.source === next.source && item.id === next.id ? next : item
+    )));
+    setTagDialog((item) => item && item.source === next.source && item.id === next.id ? next : item);
+    setFullscreen((item) => item && item.source === next.source && item.id === next.id ? next : item);
+  }, []);
+
   useEffect(() => {
     reload();
   }, [reload]);
 
-  // Live updates: refresh the library in real time when the engine reports a
-  // new clip (replay saved / recording stopped), so no app restart is needed.
   useEffect(() => {
     const unsubscribe = subscribeClips(() => reload(true));
     return unsubscribe;
   }, [reload]);
 
-  // Suppress the native/browser context menu everywhere. The custom menu is
-  // opened explicitly by clip cards only; right-clicking anywhere else (toolbar,
-  // background, future settings popup) shows nothing (deno.md extra #1).
   useEffect(() => {
     const block = (e: MouseEvent) => e.preventDefault();
     document.addEventListener("contextmenu", block);
@@ -79,10 +80,14 @@ export function App() {
 
   const onMenuAction = async (action: MenuAction, clip: Clip) => {
     switch (action) {
-      case "favorite":
-        await clipApi.setFavorite(clip, !clip.favorite);
-        await reload();
+      case "favorite": {
+        const next = { ...clip, favorite: !clip.favorite };
+        updateClip(next);
+        const res = await clipApi.setFavorite(clip, next.favorite);
+        if (!res.ok) updateClip(clip);
+        else await reload(true);
         break;
+      }
       case "hashtag":
         setMenu(null);
         setTagDialog(clip);
@@ -101,7 +106,8 @@ export function App() {
     if (!confirmDel) return;
     await clipApi.delete(confirmDel);
     setConfirmDel(null);
-    await reload();
+    setDetailIndex(null);
+    await reload(true);
   };
 
   return (
@@ -125,7 +131,7 @@ export function App() {
         ? (
           <div class="empty">
             <span class="loading-dots"><i /><i /><i /></span>
-            <div class="empty-hint">READING CATALOG…</div>
+            <div class="empty-hint">READING CATALOG...</div>
           </div>
         )
         : clips.length === 0
@@ -156,6 +162,10 @@ export function App() {
                 <ClipCard
                   key={`${c.source}:${c.id}`}
                   clip={c}
+                  onChanged={(next) => {
+                    updateClip(next);
+                    reload(true);
+                  }}
                   onContextMenu={openMenu}
                   onFullscreen={setFullscreen}
                   onOpenDetail={() => setDetailIndex(i)}
@@ -180,8 +190,9 @@ export function App() {
       {tagDialog && (
         <HashtagDialog
           clip={tagDialog}
+          allHashtags={hashtags}
           onClose={() => setTagDialog(null)}
-          onChanged={reload}
+          onChanged={() => reload(true)}
         />
       )}
 
@@ -204,10 +215,11 @@ export function App() {
         <DetailView
           clips={clips}
           index={Math.min(detailIndex, clips.length - 1)}
+          allHashtags={hashtags}
           onIndex={setDetailIndex}
           onClose={() => setDetailIndex(null)}
-          onChanged={reload}
-          onOpenHashtags={(c) => setTagDialog(c)}
+          onChanged={() => reload(true)}
+          onClipUpdate={updateClip}
         />
       )}
 

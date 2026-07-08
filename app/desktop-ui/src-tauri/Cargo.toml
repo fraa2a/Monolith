@@ -17,6 +17,8 @@ tiny_http = "0.12"
 include_dir = "0.7"
 url = "2"
 percent-encoding = "2"
+base64 = "0.22"
+ureq = { version = "2", features = ["json"] }
 # Native Windows folder picker for directory settings (no manual path entry).
 # xdg-portal is Linux-only; on Windows this pulls the Win32 IFileDialog backend.
 rfd = "0.15"

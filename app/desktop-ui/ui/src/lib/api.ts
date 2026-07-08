@@ -14,6 +14,9 @@ export interface Clip {
   duration_seconds: number | null;
   game_process_name: string | null;
   game_display_name: string | null;
+  discord_app_id?: string | null;
+  game_icon_url?: string | null;
+  game_cover_url?: string | null;
   favorite: boolean;
   hashtags: string[];
   size_bytes: number;
@@ -68,6 +71,19 @@ async function mutate(
   return res.json();
 }
 
+async function postJson(path: string, body: Record<string, unknown>): Promise<{ ok: boolean; error?: string; [key: string]: unknown }> {
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
 export const clipApi = {
   setFavorite: (c: Clip, favorite: boolean) =>
     mutate("clip_set_favorite", { source: c.source, id: c.id, favorite }),
@@ -85,6 +101,10 @@ export const clipApi = {
   regenThumb: (c: Clip) =>
     mutate("clip_regen_thumb", { source: c.source, id: c.id }),
   delete: (c: Clip) => mutate("clip_delete", { source: c.source, id: c.id }),
+  setDuration: (c: Clip, duration: number) =>
+    postJson("/api/clip-duration", { source: c.source, id: c.id, duration }),
+  saveCapturedThumb: (c: Clip, dataUrl: string) =>
+    postJson("/api/thumb-capture", { source: c.source, id: c.id, data_url: dataUrl }),
 };
 
 // Subscribes to live clip-list changes via Server-Sent Events. Calls `onChange`
@@ -119,10 +139,12 @@ export function thumbUrl(c: Clip): string | null {
 
 export interface CatalogEntry {
   display_name: string;
+  discord_app_id?: string | null;
   icon_url: string | null;
+  cover_url?: string | null;
 }
 
-// process_name_lower → entry. Used to enrich game display/icons in the grid.
+// process_name_lower -> entry. Used to enrich game display/icons in the grid.
 export async function fetchGameCatalog(): Promise<Record<string, CatalogEntry>> {
   try {
     const res = await fetch("/api/game-catalog");
@@ -132,12 +154,48 @@ export async function fetchGameCatalog(): Promise<Record<string, CatalogEntry>> 
   }
 }
 
-// Lazily resolves + caches a game's icon URL (Discord CDN).
+// Lazily resolves + caches a game's icon URL (Discord CDN/catalog cache).
 export async function fetchGameIcon(processName: string): Promise<string | null> {
   try {
     const res = await fetch(`/api/game-icon?process=${encodeURIComponent(processName)}`);
     return (await res.json()).icon ?? null;
   } catch {
     return null;
+  }
+}
+
+export interface GameArtwork {
+  icon: string | null;
+  cover: string | null;
+  display_name?: string | null;
+  discord_app_id?: string | null;
+}
+
+export async function fetchGameArtwork(clip: Pick<Clip, "discord_app_id" | "game_process_name">): Promise<GameArtwork> {
+  try {
+    const q = new URLSearchParams();
+    if (clip.discord_app_id) q.set("app_id", clip.discord_app_id);
+    if (clip.game_process_name) q.set("process", clip.game_process_name);
+    const res = await fetch(`/api/game-artwork?${q.toString()}`);
+    return await res.json();
+  } catch {
+    return { icon: null, cover: null };
+  }
+}
+
+export interface EngineStatus {
+  recording?: boolean;
+  paused?: boolean;
+  replay_enabled?: boolean;
+  recording_enabled?: boolean;
+  clip_generation?: number;
+}
+
+export async function fetchEngineStatus(): Promise<EngineStatus> {
+  try {
+    const res = await fetch("/api/engine-status");
+    return (await res.json()).status ?? {};
+  } catch {
+    return {};
   }
 }

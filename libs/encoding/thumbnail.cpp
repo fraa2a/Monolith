@@ -184,4 +184,31 @@ bool generate_thumbnail(const std::wstring& video_path,
     return static_cast<bool>(f);
 }
 
+double probe_duration_seconds(const std::wstring& video_path)
+{
+    if (video_path.empty()) return 0.0;
+
+    FmtCtx fmt;
+    const std::string url = wide_to_utf8(video_path);
+    if (avformat_open_input(&fmt.p, url.c_str(), nullptr, nullptr) < 0)
+        return 0.0;
+    if (avformat_find_stream_info(fmt.p, nullptr) < 0)
+        return 0.0;
+
+    if (fmt.p->duration > 0 && fmt.p->duration != AV_NOPTS_VALUE)
+        return static_cast<double>(fmt.p->duration) / AV_TIME_BASE;
+
+    int vidx = av_find_best_stream(fmt.p, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (vidx >= 0) {
+        AVStream* stream = fmt.p->streams[vidx];
+        if (stream->duration > 0 && stream->duration != AV_NOPTS_VALUE) {
+            return static_cast<double>(stream->duration)
+                * static_cast<double>(stream->time_base.num)
+                / static_cast<double>(stream->time_base.den);
+        }
+    }
+
+    return 0.0;
+}
+
 } // namespace encoding

@@ -744,12 +744,14 @@ static void catalog_clip(std::wstring video_path, std::string source,
         return;
     }
 
+    const double probed_duration = encoding::probe_duration_seconds(video_path);
+
     storage::ClipRow row;
     row.video_file       = base;
     row.thumbnail_file   = thumb_stored;
     row.created_at_utc   = storage::now_iso8601_utc();
     row.source           = source;
-    row.duration_seconds = duration_seconds;
+    row.duration_seconds = probed_duration > 0.0 ? probed_duration : duration_seconds;
 
     // Best-effort game association: heuristic foreground detection at save time
     // (self-contained, off the UI thread). Empty when no game qualifies.
@@ -831,6 +833,7 @@ static std::string handle_clip_mutation(const ipc::ClipMutation& m)
 // evaluate_capture_mode (game_only path) calls them before their definition.
 static void media_start(HWND hwnd);
 static void media_stop();
+static void tray_set_recording(bool recording);
 
 // capture_mode "game_only": stops the replay-capture pipeline after the idle
 // timeout with no detected game and resumes it when a game reappears. Runs on
@@ -838,15 +841,15 @@ static void media_stop();
 // safe. Never touches an active manual recording. (deno.md §6)
 static uint64_t g_last_game_seen_ms  = 0;
 static bool     g_capture_mode_stopped = false; // capture idled off by game_only
+static bool     g_auto_recording_active = false;
 
 static void evaluate_capture_mode(HWND hwnd)
 {
     if (g_settings.capture_mode != "game_only") {
         g_capture_mode_stopped = false;
+        g_auto_recording_active = false;
         return;
     }
-    if (!g_replay_enabled.load(std::memory_order_relaxed)) return;
-    if (g_recording.state() != recording::RecordingState::Idle) return; // never stop a recording
 
     const uint64_t now = GetTickCount64();
     if (g_last_game_seen_ms == 0) g_last_game_seen_ms = now; // grace on first tick
@@ -854,24 +857,49 @@ static void evaluate_capture_mode(HWND hwnd)
     audio::ProcessInfo game = audio::detect_active_game();
     if (game.process_id != 0) {
         g_last_game_seen_ms = now;
-        if (g_capture_mode_stopped && !g_video.running()) {
+        if (g_replay_enabled.load(std::memory_order_relaxed) &&
+            g_capture_mode_stopped && !g_video.running()) {
             log_msg("capture", "game_only: game detected, resuming capture");
             media_start(hwnd);
             g_capture_mode_stopped = false;
         }
+        if (g_settings.capture_auto_record &&
+            g_recording_enabled.load(std::memory_order_relaxed) &&
+            g_recording.state() == recording::RecordingState::Idle) {
+            if (!g_video.running())
+                media_start(hwnd);
+            if (g_recording.start(g_recordings_dir, g_recording_container)) {
+                g_auto_recording_active = true;
+                log_path("recording", "auto recording started: ", g_recording.current_path());
+                feedback::play(feedback::Sound::RecordStart);
+                tray_set_recording(true);
+            }
+        }
         return;
     }
 
-    if (g_video.running() && !g_capture_mode_stopped) {
-        const uint64_t idle_ms = now - g_last_game_seen_ms;
-        const uint64_t timeout_ms =
-            static_cast<uint64_t>(g_settings.capture_idle_timeout_seconds) * 1000ULL;
-        if (idle_ms >= timeout_ms) {
-            log_msg("capture", "game_only: idle timeout with no game, stopping capture");
+    if (g_auto_recording_active && g_recording.state() != recording::RecordingState::Idle) {
+        std::wstring path;
+        if (g_recording.stop(&path)) {
+            if (path.empty()) log_msg("recording", "auto recording stopped: no packets written");
+            else {
+                log_path("recording", "auto recording saved: ", path);
+                std::thread(catalog_clip, path, std::string("manual"), 0.0).detach();
+            }
+            feedback::play(feedback::Sound::RecordStop);
+            tray_set_recording(false);
+        }
+        g_auto_recording_active = false;
+    } else if (g_recording.state() != recording::RecordingState::Idle) {
+        return; // never stop a user-started manual recording
+    }
+
+    if (g_replay_enabled.load(std::memory_order_relaxed) &&
+        g_video.running() && !g_capture_mode_stopped) {
+            log_msg("capture", "game_only: no supported game, stopping capture");
             media_stop();
             g_replay.clear();
             g_capture_mode_stopped = true;
-        }
     }
 }
 
@@ -1813,6 +1841,34 @@ static void uninstall_fg_hook()
 
 // ── Media start / stop ────────────────────────────────────────────────────────
 
+struct WindowSearch {
+    DWORD pid = 0;
+    HWND hwnd = nullptr;
+};
+
+static BOOL CALLBACK find_main_window_proc(HWND hwnd, LPARAM lp)
+{
+    auto* search = reinterpret_cast<WindowSearch*>(lp);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != search->pid) return TRUE;
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    if (GetAncestor(hwnd, GA_ROOT) != hwnd) return TRUE;
+    RECT rc{};
+    if (!GetWindowRect(hwnd, &rc)) return TRUE;
+    if ((rc.right - rc.left) <= 0 || (rc.bottom - rc.top) <= 0) return TRUE;
+    search->hwnd = hwnd;
+    return FALSE;
+}
+
+static HWND main_window_for_process(uint32_t pid)
+{
+    if (pid == 0) return nullptr;
+    WindowSearch search{ static_cast<DWORD>(pid), nullptr };
+    EnumWindows(find_main_window_proc, reinterpret_cast<LPARAM>(&search));
+    return search.hwnd;
+}
+
 static void media_start(HWND hwnd)
 {
     // ── Replay buffer config ───────────────────────────────────────────────────
@@ -1866,7 +1922,7 @@ static void media_start(HWND hwnd)
     // ── Audio capture/routing ──────────────────────────────────────────────────
     g_main_hwnd = hwnd;
     start_audio_system();
-    if (active_game_source_configured()) {
+    if (active_game_source_configured() || g_settings.capture_mode == "game_only") {
         // Fixed 5 s cadence; detection is fully automatic (no user config).
         SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
         // Foreground-change fast scan is always on for snappy game switches.
@@ -2108,6 +2164,14 @@ static void media_start(HWND hwnd)
             options.show_border = g_settings.show_capture_border;
             options.max_readback_fps = std::max(1, g_settings.video_fps);
             options.allow_unlimited_readback = false;
+            if (g_settings.capture_mode == "game_only") {
+                audio::ProcessInfo game = audio::detect_active_game();
+                options.target_window = main_window_for_process(game.process_id);
+                if (options.target_window)
+                    log_msg("capture", "game_only: capturing detected game window");
+                else
+                    log_msg("capture", "game_only: game window unavailable, using selected monitor");
+            }
             return options;
         }());
         log_msg("capture", ok ? "WGC display capture started"
@@ -2315,13 +2379,14 @@ static void tray_show_menu(HWND hwnd)
         (state == recording::RecordingState::Paused)
             ? (L"Resume Recording\t" + pause_hotkey)
             : (L"Pause Recording\t" + pause_hotkey);
+    AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Show");
+    AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, save_flags,            CMD_SAVE_REPLAY,     save_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, start_flags,            CMD_RECORDING_START, start_text.c_str());
     AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  stop_text.c_str());
     AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
-    AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Open Monolith");
     AppendMenuW(menu, MF_STRING,             CMD_CHECK_UPDATE,    L"Check for Updates\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_EXIT,            L"Exit");
@@ -2608,6 +2673,11 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("replay", "save_replay ignored: replay buffer disabled in settings");
             break;
         }
+        if (g_settings.capture_mode == "game_only" &&
+            audio::detect_active_game().process_id == 0) {
+            log_msg("replay", "save_replay ignored: no supported game detected");
+            break;
+        }
         char stats[256];
         snprintf(stats, sizeof(stats),
             "save_replay — buffer: %zu pkt / %.1f MB",
@@ -2632,7 +2702,13 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("recording", "recording_start ignored: recording disabled in settings");
             break;
         }
+        if (g_settings.capture_mode == "game_only" &&
+            audio::detect_active_game().process_id == 0) {
+            log_msg("recording", "recording_start ignored: no supported game detected");
+            break;
+        }
         if (g_recording.start(g_recordings_dir, g_recording_container)) {
+            g_auto_recording_active = false;
             if (!g_video.running())
                 media_start(hwnd);
             log_path("recording", "recording started: ", g_recording.current_path());

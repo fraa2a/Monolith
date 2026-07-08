@@ -12,9 +12,6 @@ interface Props {
   onClose: () => void;
 }
 
-// Custom rounded context menu shown only over clip cards. The native menu is
-// suppressed globally in app.tsx, so this is the only context menu that ever
-// appears (deno.md extra #1). Closes on outside click or Esc.
 export function ContextMenu({ x, y, clip, onAction, onClose }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -33,7 +30,6 @@ export function ContextMenu({ x, y, clip, onAction, onClose }: Props) {
     };
   }, [onClose]);
 
-  // Keep the menu on-screen.
   const style = {
     left: `${Math.min(x, globalThis.innerWidth - 210)}px`,
     top: `${Math.min(y, globalThis.innerHeight - 200)}px`,
@@ -46,12 +42,12 @@ export function ContextMenu({ x, y, clip, onAction, onClose }: Props) {
 
   return (
     <div class="ctx-menu" ref={ref} style={style} role="menu">
-      <button class="ctx-item" onClick={act("favorite")}>
+      <button class={`ctx-item ctx-favorite ${clip.favorite ? "active" : ""}`} onClick={act("favorite")}>
         <span class="ctx-ico"><Icon name="star" size={15} filled={clip.favorite} /></span>
         {clip.favorite ? "Remove favorite" : "Add to favorites"}
       </button>
       <button class="ctx-item" onClick={act("hashtag")}>
-        <span class="ctx-ico"><Icon name="hash" size={15} /></span>Hashtags…
+        <span class="ctx-ico"><Icon name="hash" size={15} /></span>Hashtags...
       </button>
       <button class="ctx-item" onClick={act("fullscreen")}>
         <span class="ctx-ico"><Icon name="maximize" size={15} /></span>Fullscreen

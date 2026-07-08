@@ -21,13 +21,14 @@ export async function saveConfig(config: Config): Promise<{ ok: boolean; error?:
 
 // Runtime capabilities (available encoders, monitors, input devices) published
 // by the engine to runtime-status.json. Read-only; used to capability-gate the
-// UI (never offer an encoder/monitor the machine can't do). Best-effort — the
-// server exposes it at /api/runtime-status (added alongside settings).
+// UI (never offer an encoder/monitor the machine can't do). Best-effort - the
+// server exposes it at /api/runtime-status.
 export interface RuntimeStatus {
   available_encoders?: string[];
   active_encoder?: string;
+  active_monitor_device?: string;
   monitors?: { device: string; width: number; height: number; primary: boolean }[];
-  input_devices?: { id: string; name: string; default_device: boolean }[];
+  input_devices?: { id: string; name: string; default_device: boolean; available?: boolean }[];
   audio_sessions?: {
     process_id: number;
     process_name: string;
@@ -36,6 +37,19 @@ export interface RuntimeStatus {
     window_title?: string;
     window_class?: string;
   }[];
+  active_game?: {
+    process_id: number;
+    process_name: string;
+    display_name: string;
+    executable_path?: string;
+    confidence?: number;
+    reason?: string;
+    capture_mode?: string;
+    process_loopback_available?: boolean;
+    last_switch_time?: string;
+    poll_interval_ms?: number;
+    fast_scan_enabled?: boolean;
+  };
 }
 
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {

@@ -1,47 +1,129 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { type Clip, clipApi, fetchGameIcon, mediaUrl, thumbUrl } from "../lib/api.ts";
+import { type Clip, clipApi, fetchGameArtwork, mediaUrl, thumbUrl } from "../lib/api.ts";
 import { formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { enableAllAudioTracks } from "../lib/player.ts";
 
 interface Props {
   clip: Clip;
+  onChanged: (clip: Clip) => void;
   onContextMenu: (e: MouseEvent, clip: Clip) => void;
   onFullscreen: (clip: Clip) => void;
   onOpenDetail: (clip: Clip) => void;
 }
 
-// Delay before a hover preview starts, so brushing across the grid doesn't fire
-// dozens of videos and cause the black-flash the user reported.
 const HOVER_DELAY_MS = 1000;
 
-export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Props) {
-  const [preview, setPreview] = useState(false); // video mounted
-  const [ready, setReady] = useState(false); // first frame decoded → fade in
-  const [muted, setMuted] = useState(true); // previews always start muted
+function sameDuration(a: number | null | undefined, b: number) {
+  return typeof a === "number" && Number.isFinite(a) && Math.abs(a - b) < 0.1;
+}
+
+function drawVideoThumb(video: HTMLVideoElement): string | null {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return null;
+  const max = 480;
+  const scale = Math.min(1, max / Math.max(vw, vh));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(2, Math.round(vw * scale));
+  canvas.height = Math.max(2, Math.round(vh * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
+}
+
+export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenDetail }: Props) {
+  const [preview, setPreview] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [muted, setMuted] = useState(true);
   const [thumbBroken, setThumbBroken] = useState(false);
-  const [thumbBust, setThumbBust] = useState(0); // cache-buster after regen
-  const [gameIcon, setGameIcon] = useState<string | null>(null);
+  const [thumbBust, setThumbBust] = useState(0);
+  const [localThumb, setLocalThumb] = useState<string | null>(clip.thumbnail_file);
+  const [displayDuration, setDisplayDuration] = useState<number | null>(clip.duration_seconds);
+  const [gameIcon, setGameIcon] = useState<string | null>(clip.game_icon_url ?? null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hoverTimer = useRef<number | undefined>(undefined);
   const regenTried = useRef(false);
 
   useEffect(() => {
+    setLocalThumb(clip.thumbnail_file);
+    setDisplayDuration(clip.duration_seconds);
+    setThumbBroken(false);
+    regenTried.current = false;
+  }, [clip.id, clip.source, clip.thumbnail_file, clip.duration_seconds]);
+
+  useEffect(() => {
     let active = true;
-    if (clip.game_process_name) {
-      fetchGameIcon(clip.game_process_name).then((url) => {
-        if (active) setGameIcon(url);
+    if (clip.game_icon_url) {
+      setGameIcon(clip.game_icon_url);
+      return;
+    }
+    if (clip.discord_app_id || clip.game_process_name) {
+      fetchGameArtwork(clip).then((art) => {
+        if (active) setGameIcon(art.icon ?? null);
       });
+    } else {
+      setGameIcon(null);
     }
     return () => {
       active = false;
     };
-  }, [clip.game_process_name]);
+  }, [clip.discord_app_id, clip.game_process_name, clip.game_icon_url]);
 
-  // Clean up any pending hover timer on unmount.
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
 
-  const thumb = thumbUrl(clip);
+  useEffect(() => {
+    let cancelled = false;
+    const needsThumb = !clip.thumbnail_file;
+    const video = document.createElement("video");
+    video.preload = needsThumb ? "auto" : "metadata";
+    video.muted = true;
+    video.playsInline = true;
+
+    const finish = () => {
+      video.removeAttribute("src");
+      video.load();
+    };
+
+    video.onloadedmetadata = async () => {
+      if (cancelled) return;
+      const duration = video.duration;
+      if (Number.isFinite(duration) && duration > 0 && !sameDuration(clip.duration_seconds, duration)) {
+        setDisplayDuration(duration);
+        const res = await clipApi.setDuration(clip, duration);
+        if (!cancelled && res.ok) onChanged({ ...clip, duration_seconds: duration });
+      }
+      if (!needsThumb) finish();
+    };
+
+    video.onloadeddata = async () => {
+      if (cancelled || !needsThumb) return;
+      const dataUrl = drawVideoThumb(video);
+      if (!dataUrl) {
+        finish();
+        return;
+      }
+      const res = await clipApi.saveCapturedThumb(clip, dataUrl);
+      if (!cancelled && res.ok && typeof res.thumbnail_file === "string") {
+        setLocalThumb(res.thumbnail_file);
+        setThumbBust(Date.now());
+        onChanged({ ...clip, thumbnail_file: res.thumbnail_file });
+      }
+      finish();
+    };
+
+    video.onerror = finish;
+    video.src = mediaUrl(clip);
+    video.load();
+
+    return () => {
+      cancelled = true;
+      finish();
+    };
+  }, [clip.id, clip.source, clip.video_file]);
+
+  const thumb = localThumb ? thumbUrl({ ...clip, thumbnail_file: localThumb }) : null;
   const showPlaceholder = !thumb || thumbBroken;
   const thumbSrc = thumb ? `${thumb}${thumbBust ? `?v=${thumbBust}` : ""}` : null;
 
@@ -58,7 +140,6 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
     clearTimeout(hoverTimer.current);
     const v = videoRef.current;
     if (v) {
-      // Fully reset audio/playback so nothing bleeds into the next preview.
       v.pause();
       v.muted = true;
       try {
@@ -70,8 +151,6 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
     setMuted(true);
   }
 
-  // On the thumbnail failing to load, ask the engine to regenerate it once, then
-  // retry with a cache-busting query. If that fails too, show the placeholder.
   async function onThumbError() {
     if (regenTried.current) {
       setThumbBroken(true);
@@ -79,8 +158,12 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
     }
     regenTried.current = true;
     const res = await clipApi.regenThumb(clip);
-    if (res.ok) setThumbBust(Date.now());
-    else setThumbBroken(true);
+    if (res.ok) {
+      setThumbBust(Date.now());
+      onChanged(clip);
+    } else {
+      setThumbBroken(true);
+    }
   }
 
   return (
@@ -94,7 +177,6 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
       onMouseLeave={leave}
     >
       <div class="card-media" onClick={() => onOpenDetail(clip)}>
-        {/* Poster stays mounted underneath the preview to avoid a black flash. */}
         {showPlaceholder
           ? (
             <div class="thumb-placeholder" title="Thumbnail unavailable">
@@ -124,8 +206,8 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
             <Icon name="star" size={14} filled />
           </div>
         )}
-        {clip.duration_seconds
-          ? <div class="dur-badge">{formatDuration(clip.duration_seconds)}</div>
+        {displayDuration
+          ? <div class="dur-badge">{formatDuration(displayDuration)}</div>
           : null}
 
         {preview && (
@@ -166,7 +248,7 @@ export function ClipCard({ clip, onContextMenu, onFullscreen, onOpenDetail }: Pr
         </div>
         <div class="card-sub2">
           <span>{formatSize(clip.size_bytes)}</span>
-          <span class="dot">•</span>
+          <span class="dot">·</span>
           <span>{formatDate(clip.created_at_utc)}</span>
         </div>
         {clip.hashtags.length > 0 && (

@@ -15,6 +15,7 @@ struct CaptureOptions {
     bool show_border = true;
     int max_readback_fps = 60;
     bool allow_unlimited_readback = false;
+    HWND target_window = nullptr;
 };
 
 struct CaptureStats {

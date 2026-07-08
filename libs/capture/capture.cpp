@@ -126,6 +126,20 @@ static wgc::GraphicsCaptureItem item_from_monitor(HMONITOR hmon)
     return item;
 }
 
+static wgc::GraphicsCaptureItem item_from_window(HWND hwnd)
+{
+    static constexpr GUID kItemGuid =
+        { 0x79C3F95B, 0x31F7, 0x4EC2, {0xA4, 0x64, 0x63, 0x2E, 0xF5, 0xD3, 0x07, 0x60} };
+
+    auto factory = winrt::get_activation_factory<
+        wgc::GraphicsCaptureItem,
+        IGraphicsCaptureItemInterop>();
+
+    wgc::GraphicsCaptureItem item{ nullptr };
+    winrt::check_hresult(factory->CreateForWindow(hwnd, kItemGuid, winrt::put_abi(item)));
+    return item;
+}
+
 // ── DisplayCapture ────────────────────────────────────────────────────────────
 
 DisplayCapture::DisplayCapture() : impl_(new Impl()) {}
@@ -177,7 +191,9 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
 
     try {
         impl_->winrt_device = wrap_d3d(impl_->d3d_device);
-        auto item           = item_from_monitor(hmon);
+        auto item           = options.target_window
+            ? item_from_window(options.target_window)
+            : item_from_monitor(hmon);
         impl_->last_size    = item.Size();
 
         // CreateFreeThreaded: callbacks arrive on the WinRT thread pool regardless

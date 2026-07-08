@@ -1,19 +1,32 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi } from "../lib/api.ts";
 import { Icon } from "../shell/icons.tsx";
 
 interface Props {
   clip: Clip;
+  allHashtags: string[];
   onClose: () => void;
-  onChanged: () => void; // refetch clips after a tag add/remove
+  onChanged: () => void;
 }
 
-// Custom popup to add/remove hashtags on a clip. Also reachable from the detail
-// view (F4). Tags feed the Home hashtag filter (deno.md extra #1).
-export function HashtagDialog({ clip, onClose, onChanged }: Props) {
+function normalize(raw: string): string {
+  return raw.trim().replace(/^#+/, "").replace(/\s+/g, "-").toLowerCase();
+}
+
+export function HashtagDialog({ clip, allHashtags, onClose, onChanged }: Props) {
   const [tags, setTags] = useState<string[]>(clip.hashtags);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const suggestions = useMemo(() => {
+    const q = normalize(input);
+    return allHashtags
+      .filter((tag) => !tags.includes(tag))
+      .filter((tag) => !q || tag.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [allHashtags, input, tags]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -23,12 +36,8 @@ export function HashtagDialog({ clip, onClose, onChanged }: Props) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  function normalize(raw: string): string {
-    return raw.trim().replace(/^#+/, "").replace(/\s+/g, "-").toLowerCase();
-  }
-
-  async function add() {
-    const tag = normalize(input);
+  async function add(raw = input) {
+    const tag = normalize(raw);
     if (!tag || tags.includes(tag)) {
       setInput("");
       return;
@@ -37,8 +46,9 @@ export function HashtagDialog({ clip, onClose, onChanged }: Props) {
     const res = await clipApi.addHashtag(clip, tag);
     setBusy(false);
     if (res.ok) {
-      setTags((t) => [...t, tag]);
+      setTags((items) => [...items, tag]);
       setInput("");
+      setOpen(false);
       onChanged();
     }
   }
@@ -48,7 +58,7 @@ export function HashtagDialog({ clip, onClose, onChanged }: Props) {
     const res = await clipApi.removeHashtag(clip, tag);
     setBusy(false);
     if (res.ok) {
-      setTags((t) => t.filter((x) => x !== tag));
+      setTags((items) => items.filter((item) => item !== tag));
       onChanged();
     }
   }
@@ -57,29 +67,46 @@ export function HashtagDialog({ clip, onClose, onChanged }: Props) {
     <div class="modal-backdrop" onMouseDown={onClose}>
       <div class="modal" onMouseDown={(e) => e.stopPropagation()}>
         <h3 class="modal-title">Hashtags</h3>
-        <div class="tag-list">
-          {tags.length === 0 && <span class="muted">No hashtags yet.</span>}
-          {tags.map((t) => (
-            <span class="tag removable" key={t}>
-              #{t}
-              <button class="tag-x" disabled={busy} onClick={() => remove(t)}>
-                <Icon name="x" size={12} />
-              </button>
+        <div class="tag-editor">
+          <div class="tag-list editable" onClick={() => inputRef.current?.focus()}>
+            {tags.map((tag) => (
+              <span class="tag removable" key={tag}>
+                #{tag}
+                <button class="tag-x" disabled={busy} title={`Remove #${tag}`} onClick={() => remove(tag)}>
+                  <Icon name="x" size={12} />
+                </button>
+              </span>
+            ))}
+            <span class="tag-input-shell">
+              <span>#</span>
+              <input
+                ref={inputRef}
+                class="tag-input"
+                placeholder={tags.length ? "tag" : "add tag"}
+                value={input}
+                disabled={busy}
+                onFocus={() => setOpen(true)}
+                onInput={(e) => {
+                  setInput((e.target as HTMLInputElement).value);
+                  setOpen(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    add();
+                  }
+                  if (e.key === "Escape") setOpen(false);
+                }}
+              />
             </span>
-          ))}
-        </div>
-        <div class="tag-add">
-          <input
-            class="input"
-            placeholder="add a hashtag…"
-            value={input}
-            disabled={busy}
-            onInput={(e) => setInput((e.target as HTMLInputElement).value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") add();
-            }}
-          />
-          <button class="btn btn-primary" disabled={busy} onClick={add}>Add</button>
+          </div>
+          {open && suggestions.length > 0 && (
+            <div class="tag-suggestions">
+              {suggestions.map((tag) => (
+                <button key={tag} onClick={() => add(tag)}>#{tag}</button>
+              ))}
+            </div>
+          )}
         </div>
         <div class="modal-actions">
           <button class="btn" onClick={onClose}>Close</button>

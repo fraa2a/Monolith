@@ -81,7 +81,8 @@ constexpr const char* kFallbackDefaultConfig = R"json(
   },
   "capture_mode": {
     "mode": "always",
-    "idle_timeout_seconds": 300
+    "idle_timeout_seconds": 300,
+    "auto_record": false
   },
   "discord": {
     "rich_presence_enabled": false
@@ -421,7 +422,9 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["audio"]["sources"] = json::array();
     for (const auto& source : config.audio_sources)
         doc["audio"]["sources"].push_back(audio_source_to_json(source));
+    doc["capture"]["monitor_device"] = wide_to_utf8(config.monitor_device);
     doc["capture"]["resolution_preset"] = config.resolution_preset;
+    doc["capture"]["show_capture_border"] = config.show_capture_border;
     // Legacy capture keys scrubbed from older configs.
     if (doc.contains("capture") && doc["capture"].is_object()) {
         doc["capture"].erase("resolution_mode");
@@ -433,6 +436,9 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["hotkeys"]["recording_stop"] = config.hotkey_recording_stop;
     doc["hotkeys"]["pause_resume"] = config.hotkey_pause_resume;
     doc["update"]["auto_check"] = config.update_auto_check;
+    doc["capture_mode"]["mode"] = config.capture_mode;
+    doc["capture_mode"]["idle_timeout_seconds"] = config.capture_idle_timeout_seconds;
+    doc["capture_mode"]["auto_record"] = config.capture_auto_record;
     // Active-game timing tunables are now fixed internally; scrub stale keys.
     if (doc.contains("active_game") && doc["active_game"].is_object()) {
         doc["active_game"].erase("poll_interval_ms");
@@ -561,6 +567,9 @@ Config config_from_json(
             auto t = cm->find("idle_timeout_seconds");
             if (t != cm->end() && t->is_number_integer())
                 config.capture_idle_timeout_seconds = t->get<int>();
+            auto ar = cm->find("auto_record");
+            if (ar != cm->end() && ar->is_boolean())
+                config.capture_auto_record = ar->get<bool>();
         }
         if (config.capture_mode != "always" && config.capture_mode != "game_only")
             config.capture_mode = "always";

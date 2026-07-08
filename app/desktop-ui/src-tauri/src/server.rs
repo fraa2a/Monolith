@@ -6,6 +6,7 @@
 // route contract works unchanged. Mirrors the Deno server/router.ts. See ADR-0011.
 
 use crate::{clip_catalog, engine_rpc, game_catalog, media, settings_store};
+use base64::{engine::general_purpose, Engine as _};
 use clip_catalog::ClipFilter;
 use include_dir::{include_dir, Dir};
 use serde_json::{json, Value};
@@ -15,7 +16,7 @@ use std::thread;
 use tauri::{AppHandle, Manager};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
-// Bundled at compile time by build.ts (`deno run -A build.ts` → ../dist). The exe
+// Bundled at compile time by build.ts (`deno run -A build.ts` â†’ ../dist). The exe
 // is self-contained: no loose asset files need to ship next to it.
 static DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/../dist");
 
@@ -93,7 +94,7 @@ fn handle(mut request: Request) {
     let (path, query) = split_target(request.url());
 
     match (&method, path.as_str()) {
-        // ── JSON API ────────────────────────────────────────────────────────
+        // â”€â”€ JSON API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         (Method::Get, "/api/clips") => {
             let filter = ClipFilter {
                 game: query.get("game").cloned(),
@@ -113,8 +114,52 @@ fn handle(mut request: Request) {
         (Method::Get, "/api/hashtags") => {
             respond_json(request, 200, &json!({ "hashtags": clip_catalog::distinct_hashtags() }));
         }
+        (Method::Get, "/api/engine-status") => {
+            respond_json(request, 200, &json!({ "status": engine_rpc::get_status() }));
+        }
+        (Method::Post, "/api/clip-duration") => {
+            let body = read_body(&mut request).unwrap_or_else(|| json!({}));
+            let source = body
+                .get("source")
+                .and_then(Value::as_str)
+                .and_then(clip_catalog::ClipSource::parse);
+            let id = body.get("id").and_then(Value::as_i64).unwrap_or(0);
+            let duration = body.get("duration").and_then(Value::as_f64).unwrap_or(0.0);
+            match source.and_then(|src| clip_catalog::set_duration(src, id, duration).ok()) {
+                Some(()) => respond_json(request, 200, &json!({ "ok": true })),
+                None => respond_json(
+                    request,
+                    400,
+                    &json!({ "ok": false, "error": "duration update failed" }),
+                ),
+            }
+        }
+        (Method::Post, "/api/thumb-capture") => {
+            let body = read_body(&mut request).unwrap_or_else(|| json!({}));
+            let source = body
+                .get("source")
+                .and_then(Value::as_str)
+                .and_then(clip_catalog::ClipSource::parse);
+            let id = body.get("id").and_then(Value::as_i64).unwrap_or(0);
+            let data_url = body.get("data_url").and_then(Value::as_str).unwrap_or("");
+            let encoded = data_url.split_once(',').map(|(_, data)| data).unwrap_or(data_url);
+            let decoded = general_purpose::STANDARD.decode(encoded.as_bytes());
+            match (source, decoded) {
+                (Some(src), Ok(bytes)) => match clip_catalog::save_thumbnail_capture(src, id, &bytes) {
+                    Ok(thumbnail_file) => respond_json(
+                        request,
+                        200,
+                        &json!({ "ok": true, "thumbnail_file": thumbnail_file }),
+                    ),
+                    Err(err) => {
+                        respond_json(request, 400, &json!({ "ok": false, "error": err }))
+                    }
+                },
+                _ => respond_json(request, 400, &json!({ "ok": false, "error": "bad thumbnail" })),
+            }
+        }
 
-        // ── Settings ────────────────────────────────────────────────────────
+        // â”€â”€ Settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         (Method::Get, "/api/settings") => match settings_store::read_config() {
             Some(config) => respond_json(request, 200, &json!({ "config": config })),
             None => respond_json(
@@ -142,7 +187,7 @@ fn handle(mut request: Request) {
             }
         }
 
-        // ── Clip mutations (forwarded to the engine over JSON-RPC) ───────────
+        // â”€â”€ Clip mutations (forwarded to the engine over JSON-RPC) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         (Method::Post, "/api/mutate") => {
             let body = read_body(&mut request).unwrap_or_else(|| json!({}));
             let allowed = [
@@ -176,7 +221,7 @@ fn handle(mut request: Request) {
             respond_json(request, 200, &json!({ "status": settings_store::read_runtime_status() }));
         }
 
-        // ── Native folder picker (directory settings never use manual entry) ──
+        // â”€â”€ Native folder picker (directory settings never use manual entry) â”€â”€
         (Method::Post, "/api/pick-folder") => {
             let body = read_body(&mut request).unwrap_or_else(|| json!({}));
             let start = body.get("current").and_then(Value::as_str).unwrap_or("");
@@ -194,7 +239,7 @@ fn handle(mut request: Request) {
             }
         }
 
-        // ── Live clip-list updates (Server-Sent Events) ─────────────────────
+        // â”€â”€ Live clip-list updates (Server-Sent Events) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Streams a `clips` event whenever the engine's clip-generation counter
         // changes, so the library refreshes in real time after a save.
         (Method::Get, "/api/events") => {
@@ -210,8 +255,28 @@ fn handle(mut request: Request) {
                 .and_then(|proc| game_catalog::resolve_icon(proc));
             respond_json(request, 200, &json!({ "icon": icon }));
         }
+        (Method::Get, "/api/game-artwork") => {
+            let entry = game_catalog::resolve_artwork(
+                query.get("app_id").map(String::as_str),
+                query.get("process").map(String::as_str),
+            );
+            respond_json(
+                request,
+                200,
+                &json!({
+                    "icon": entry.icon_url,
+                    "cover": entry.cover_url,
+                    "display_name": if entry.display_name.is_empty() {
+                        None::<String>
+                    } else {
+                        Some(entry.display_name)
+                    },
+                    "discord_app_id": entry.discord_app_id,
+                }),
+            );
+        }
 
-        // ── Custom window chrome (decorations-less window) ──────────────────
+        // â”€â”€ Custom window chrome (decorations-less window) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         (Method::Post, "/api/window/minimize") => {
             if let Some(w) = window() {
                 let _ = w.minimize();
@@ -236,19 +301,19 @@ fn handle(mut request: Request) {
         }
         (Method::Post, "/api/window/drag") => {
             // start_dragging() hands off to the OS move-loop, so one call on
-            // mousedown is enough — no continuous messaging needed.
+            // mousedown is enough â€” no continuous messaging needed.
             if let Some(w) = window() {
                 let _ = w.start_dragging();
             }
             respond_json(request, 200, &json!({ "ok": true }));
         }
 
-        // ── Media (Range-streamed) ──────────────────────────────────────────
+        // â”€â”€ Media (Range-streamed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         (Method::Get, _) if path.starts_with("/media/") || path.starts_with("/thumb/") => {
             serve_media_route(request, &path);
         }
 
-        // ── Static frontend ─────────────────────────────────────────────────
+        // â”€â”€ Static frontend â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         (Method::Get, _) => serve_static(request, &path),
 
         _ => respond_json(request, 404, &json!({ "error": "not found" })),
@@ -257,7 +322,7 @@ fn handle(mut request: Request) {
 
 // Holds an SSE connection open and pushes a `clips` event whenever the engine's
 // clip-generation counter advances (a clip was saved/stopped). Polls the engine
-// over the existing RPC channel on a light cadence — cheap for a single local
+// over the existing RPC channel on a light cadence â€” cheap for a single local
 // user and avoids adding a push channel to the engine's line-oriented protocol.
 // The loop exits when the socket write fails (webview navigated away/closed).
 fn serve_events(request: Request) {

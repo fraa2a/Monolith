@@ -18,6 +18,10 @@ bool generate_thumbnail(const std::wstring& video_path,
                         const std::wstring& thumb_path,
                         int max_dim = 480);
 
+// Reads media duration from the container/stream metadata in seconds. Returns
+// 0 when the file cannot be probed or has no usable duration.
+double probe_duration_seconds(const std::wstring& video_path);
+
 // Immutable encoded payload shared by replay snapshots, mux queues and
 // recording sinks. Copying EncodedPacket must not duplicate packet bytes.
 struct EncodedBytes {

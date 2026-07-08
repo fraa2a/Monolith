@@ -61,6 +61,7 @@ struct Config {
     // Never stops an active manual recording. (deno.md §6)
     std::string capture_mode = "always"; // "always" | "game_only"
     int capture_idle_timeout_seconds = 300; // clamped 30–3600
+    bool capture_auto_record = false;
 
     // Capture (capture/encoder restart when no manual recording is active).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
