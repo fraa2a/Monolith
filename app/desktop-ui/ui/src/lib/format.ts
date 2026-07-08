@@ -13,6 +13,34 @@ export function formatSize(bytes: number): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+// Human-friendly application label from a raw process name. Raw executable
+// names ("RocketLeague.exe") are never shown in the UI; when no catalog
+// display name exists this derives one: strip the extension, split camelCase /
+// separators, and title-case the words.
+export function prettyAppName(processName?: string | null): string {
+  if (!processName) return "Desktop";
+  const stem = processName.replace(/\.[^./\\]+$/, "").split(/[/\\]/).pop() ?? "";
+  const words = stem
+    .replace(/[_\-.]+/g, " ")
+    .replace(/([a-z\d])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => (w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w));
+  return words.join(" ") || "Desktop";
+}
+
+// Resolves the label to show for an application: the catalog/engine display
+// name when it's a real name, otherwise a prettified process name. Engine
+// display names sometimes fall back to the raw executable ("chrome.exe"),
+// which must never reach the UI.
+export function appLabel(displayName?: string | null, processName?: string | null): string {
+  const name = (displayName ?? "").trim();
+  if (name && !/\.exe$/i.test(name)) return name;
+  return prettyAppName(name || processName);
+}
+
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }

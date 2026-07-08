@@ -131,7 +131,7 @@ export function App() {
         ? (
           <div class="empty">
             <span class="loading-dots"><i /><i /><i /></span>
-            <div class="empty-hint">READING CATALOG...</div>
+            <div class="empty-hint">Loading your library…</div>
           </div>
         )
         : clips.length === 0
@@ -146,7 +146,7 @@ export function App() {
               </svg>
             </div>
             <div class="empty-title">No clips yet</div>
-            <div class="empty-hint">SAVE A REPLAY TO GET STARTED</div>
+            <div class="empty-hint">Press Ctrl+Shift+F8 while capturing to save your first clip.</div>
           </div>
         )
         : (
@@ -220,6 +220,7 @@ export function App() {
           onClose={() => setDetailIndex(null)}
           onChanged={() => reload(true)}
           onClipUpdate={updateClip}
+          onDelete={setConfirmDel}
         />
       )}
 

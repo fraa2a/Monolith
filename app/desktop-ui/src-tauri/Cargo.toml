@@ -22,6 +22,15 @@ ureq = { version = "2", features = ["json"] }
 # Native Windows folder picker for directory settings (no manual path entry).
 # xdg-portal is Linux-only; on Windows this pulls the Win32 IFileDialog backend.
 rfd = "0.15"
+# Shell icon extraction for the title-bar capture status: the UI shows the real
+# application icon instead of Discord artwork or raw exe names (see exe_icon.rs).
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+] }
+png = "0.17"
 
 [[bin]]
 name = "monolith_ui"

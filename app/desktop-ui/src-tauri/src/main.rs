@@ -8,6 +8,7 @@
 
 mod clip_catalog;
 mod engine_rpc;
+mod exe_icon;
 mod game_catalog;
 mod media;
 mod paths;

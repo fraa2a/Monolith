@@ -6,8 +6,25 @@
 use crate::settings_store;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use tiny_http::{Header, Request, Response, StatusCode};
+
+// Windows share-mode flags (winnt.h). Rust's File::open omits FILE_SHARE_DELETE,
+// so a streaming <video> read would hold an undeletable handle and the engine's
+// DeleteFileW on that clip fails with a sharing violation. Opening media with
+// all three share bits lets the engine delete/rename a clip while the webview is
+// still reading it — the delete is honoured and the handle is invalidated.
+const FILE_SHARE_READ: u32 = 0x0000_0001;
+const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+
+fn open_shared(path: &Path) -> std::io::Result<File> {
+    File::options()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
+}
 
 pub enum Source {
     Replay,
@@ -66,7 +83,7 @@ fn parse_range(range: &str, size: u64) -> Option<(u64, u64)> {
 }
 
 fn serve_file(request: Request, path: &Path, mime: &str) {
-    let mut file = match File::open(path) {
+    let mut file = match open_shared(path) {
         Ok(file) => file,
         Err(_) => return respond_status(request, 404, "Not found"),
     };

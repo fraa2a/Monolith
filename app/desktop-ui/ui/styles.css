@@ -76,21 +76,24 @@ body {
 
 /* ── Custom title bar ────────────────────────────────────────────────────── */
 .titlebar {
-  height: 38px;
+  height: 44px;
   flex: none;
   display: flex;
   align-items: stretch;
-  justify-content: space-between;
   background: var(--chrome);
 }
-.tb-drag {
-  flex: 1;
+.tb-brand {
   display: flex;
   align-items: center;
   gap: 9px;
   padding-left: 16px;
+  /* Grow more than the trailing drag spacer so the status cluster is pushed
+     into the right portion of the bar (≈3/4 across) instead of hugging the
+     brand — the drag region keeps a gap before the window controls. */
+  flex: 3 1 0;
   min-width: 0;
 }
+.tb-drag { flex: 1; min-width: 0; }
 .tb-app {
   font-family: var(--ui);
   font-weight: 700;
@@ -121,38 +124,67 @@ body {
 .tb-btn:hover { background: var(--light); color: var(--text); }
 .tb-close:hover { background: var(--danger); color: #fff; }
 
-.recorder-wrap {
+/* Status cluster: the capture feed. Sits toward the centre/right of the bar
+   (the brand flexes to push it off the left edge) and is stretched to the bar's
+   full height so it reads as part of the chrome rather than a floating card. */
+.tb-status {
+  position: relative;
+  margin-right: 28px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 208px;
+}
+.capture-feed {
   position: relative;
   display: flex;
   align-items: center;
-  padding-right: 12px;
-}
-.recorder-feed {
-  width: 206px;
-  height: 30px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background-color: #111;
-  background-size: cover;
-  background-position: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: none;
+  border: none;
+  border-radius: 0;
   color: var(--text);
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 5px 10px;
-  cursor: pointer;
   text-align: left;
-  transition: border-color .12s, background-color .12s;
+  cursor: pointer;
 }
-.recorder-feed.screen {
-  background-color: #111;
-  background-image:
-    linear-gradient(90deg, rgba(7,7,7,.93), rgba(7,7,7,.72)),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34' height='26' viewBox='0 0 34 26'%3E%3Cg fill='none' stroke='rgba(255,255,255,.18)' stroke-width='1.2'%3E%3Crect x='7' y='4' width='20' height='14' rx='2'/%3E%3Cpath d='M14 22h6M17 18v4'/%3E%3C/g%3E%3C/svg%3E");
+.capture-feed { overflow: hidden; }
+.capture-feed > .rec-dot,
+.capture-feed > .rec-copy { position: relative; z-index: 1; }
+
+/* Tiled application-icon backdrop: the captured app's own icon repeated on a
+   ~35° grid, fading out at both ends so the section blends into the bar. */
+.feed-bg,
+.feed-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent);
+}
+.feed-bg {
+  overflow: hidden;
+  opacity: .4;
+  transition: opacity .18s;
+}
+.feed-bg::before {
+  content: "";
+  position: absolute;
+  inset: -130% -35%;
+  background-image: inherit;
   background-repeat: repeat;
-  background-size: auto, 34px 26px;
+  background-size: 40px 40px;
+  transform: rotate(-35deg);
 }
-.recorder-feed:hover { border-color: var(--light-hi); background-color: #171717; }
+.capture-feed.screen .feed-bg {
+  opacity: 1;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34' height='26' viewBox='0 0 34 26'%3E%3Cg fill='none' stroke='rgba(255,255,255,.16)' stroke-width='1.2'%3E%3Crect x='7' y='4' width='20' height='14' rx='2'/%3E%3Cpath d='M14 22h6M17 18v4'/%3E%3C/g%3E%3C/svg%3E");
+}
+.capture-feed.screen .feed-bg::before { background-size: 34px 26px; }
+.feed-shade { background: linear-gradient(180deg, rgba(7, 7, 7, .35), rgba(7, 7, 7, .72)); }
+.capture-feed:hover .feed-bg { opacity: .55; }
+.capture-feed.screen:hover .feed-bg { opacity: 1; }
+.capture-feed:hover .rec-subject { color: var(--text); }
+
 .rec-dot {
   width: 8px;
   height: 8px;
@@ -162,7 +194,7 @@ body {
 }
 .rec-dot.on { background: var(--danger); box-shadow: 0 0 0 3px rgba(229,84,75,.16); }
 .rec-dot.clip { background: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.1); }
-.rec-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.rec-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .rec-state {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -177,11 +209,15 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color .12s;
 }
+
 .mode-popover {
-  position: fixed;
-  top: 37px;
-  right: 142px;
+  position: absolute;
+  top: calc(100% + 8px);
+  /* Anchored to the feed's right edge (the status cluster now sits toward the
+     right of the bar) so the popover opens leftward and stays on-screen. */
+  right: 0;
   width: 344px;
   background: var(--mid);
   border: 1px solid var(--line);
@@ -412,8 +448,6 @@ body {
 .btn-danger:hover { background: rgba(229, 84, 75, .14); border-color: var(--danger); }
 .btn-toggle { display: inline-flex; align-items: center; gap: 7px; }
 .btn-toggle.on { background: var(--light); border-color: var(--light); color: #fff; }
-.icon-btn { font-size: 17px; padding: 9px 12px; line-height: 1; color: var(--text-dim); }
-.icon-btn:hover { color: var(--text); }
 
 /* ── Grid header ─────────────────────────────────────────────────────────── */
 .grid-head { display: flex; align-items: center; gap: 12px; padding: 8px 2px 18px; }
@@ -602,7 +636,6 @@ body {
 .ctx-item:hover { background: var(--light-hi); }
 .ctx-ico { width: 18px; text-align: center; opacity: .85; }
 .ctx-sep { height: 1px; background: var(--line); margin: 5px 4px; }
-.icon-btn.favorite-btn.active,
 .ctx-favorite.active,
 .ctx-favorite.active .ctx-ico { color: #f5c542; }
 .ctx-danger { color: var(--danger); }
@@ -614,7 +647,9 @@ body {
   background: rgba(0, 0, 0, .62);
   backdrop-filter: blur(3px);
   display: flex; align-items: center; justify-content: center;
-  z-index: 200;
+  /* Above the detail view (250) and fullscreen (300): a confirm/hashtag dialog
+     is always the topmost decision, including when opened from the detail view. */
+  z-index: 340;
   animation: fade .16s ease-out;
 }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
@@ -700,12 +735,55 @@ body {
   background: var(--mid);
 }
 .detail-name { display: flex; align-items: center; gap: 8px; }
-.name-text { font-size: 15.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.name-text {
+  flex: 1; min-width: 0;
+  font-size: 15.5px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Detail header actions — icon-only, no chrome until hover. Colour is the whole
+   affordance: neutral for rename, gold when a clip is favourited. */
+.detail-name-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.act-btn {
+  display: grid; place-items: center;
+  width: 30px; height: 30px;
+  padding: 0;
+  background: none; border: none; border-radius: var(--r-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color .12s, background .12s;
+}
+.act-btn:hover { color: var(--text); background: var(--light-hi); }
+.act-btn svg { display: block; }
+.act-fav:hover { color: #f5c542; }
+.act-fav.active { color: #f5c542; }
+
 .rename { display: flex; align-items: center; gap: 6px; }
 .rename .input { flex: 1; min-width: 0; }
 .rename .ext { color: var(--text-dim); font-family: var(--mono); font-size: 13px; }
-.icon-btn.small { padding: 4px 8px; font-size: 13px; border-radius: 6px; }
 .err { color: var(--danger); font-size: 12px; }
+
+/* Destructive action, pinned to the bottom of the side panel. Ghost styling
+   (semi-transparent, bordered, red glyph + label) so it never competes with the
+   primary content but stays unmistakably dangerous. */
+.delete-clip-btn {
+  margin-top: auto;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%;
+  padding: 11px 14px;
+  background: rgba(229, 84, 75, .06);
+  border: 1px solid rgba(229, 84, 75, .32);
+  border-radius: var(--r);
+  color: var(--danger);
+  font-family: var(--ui); font-size: 13.5px; font-weight: 600;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.delete-clip-btn:hover {
+  background: rgba(229, 84, 75, .14);
+  border-color: rgba(229, 84, 75, .55);
+}
+.delete-clip-btn svg { display: block; }
 
 .detail-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
 .detail-meta .k {
@@ -925,8 +1003,7 @@ body {
   opacity: .7;
 }
 .game-icon.placeholder svg { width: 13px; height: 13px; }
-.fav-badge svg, .ov-btn svg, .ctx-ico svg, .icon-btn svg { display: block; }
-.icon-btn.active { color: #fff; }
+.fav-badge svg, .ov-btn svg, .ctx-ico svg { display: block; }
 
 /* ── Detail view: title + filename ──────────────────────────────────────── */
 .detail-filename {

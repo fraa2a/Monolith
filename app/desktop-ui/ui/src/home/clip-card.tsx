@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi, fetchGameArtwork, mediaUrl, thumbUrl } from "../lib/api.ts";
-import { formatDate, formatDuration, formatSize } from "../lib/format.ts";
+import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { enableAllAudioTracks } from "../lib/player.ts";
 
@@ -243,7 +243,7 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
             ? <img class="game-icon" src={gameIcon} alt="" />
             : <span class="game-icon placeholder"><Icon name="gamepad" size={13} /></span>}
           <span class="game">
-            {clip.game_display_name ?? clip.game_process_name ?? "Unknown"}
+            {appLabel(clip.game_display_name, clip.game_process_name)}
           </span>
         </div>
         <div class="card-sub2">

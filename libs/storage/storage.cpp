@@ -489,10 +489,6 @@ bool ClipDb::set_favorite(int64_t id, bool favorite, std::string* error)
         if (error) *error = "clip not found";
         return false;
     }
-    if (video_base.empty()) {
-        if (error) *error = "clip not found";
-        return false;
-    }
     return ok;
 }
 

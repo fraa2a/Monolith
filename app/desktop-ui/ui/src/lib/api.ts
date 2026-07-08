@@ -183,6 +183,19 @@ export async function fetchGameArtwork(clip: Pick<Clip, "discord_app_id" | "game
   }
 }
 
+// Recorder control, forwarded by the host to the engine over JSON-RPC.
+export type RecorderCommand = "recording_start" | "recording_stop" | "save_replay";
+
+export function recorderCommand(method: RecorderCommand): Promise<{ ok: boolean; error?: string }> {
+  return postJson("/api/recorder", { method });
+}
+
+// URL of the native icon extracted from an executable (PNG; 404 when the file
+// has no icon). Preferred over remote artwork for status backgrounds.
+export function exeIconUrl(executablePath: string): string {
+  return `/api/exe-icon?path=${encodeURIComponent(executablePath)}`;
+}
+
 export interface EngineStatus {
   recording?: boolean;
   paused?: boolean;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi, mediaUrl } from "../lib/api.ts";
-import { formatDate, formatDuration, formatSize } from "../lib/format.ts";
+import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { enableAllAudioTracks } from "../lib/player.ts";
 
@@ -12,6 +12,7 @@ interface Props {
   onClose: () => void;
   onChanged: () => void;
   onClipUpdate: (clip: Clip) => void;
+  onDelete: (clip: Clip) => void;
 }
 
 function normalizeTag(value: string): string {
@@ -118,7 +119,7 @@ function TagEditor(
 }
 
 export function DetailView(
-  { clips, index, allHashtags, onIndex, onClose, onChanged, onClipUpdate }: Props,
+  { clips, index, allHashtags, onIndex, onClose, onChanged, onClipUpdate, onDelete }: Props,
 ) {
   const clip = clips[index];
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -292,16 +293,18 @@ export function DetailView(
               : (
                 <div class="detail-name" title={clip.title}>
                   <span class="name-text">{clip.title || "Untitled"}</span>
-                  <button class="icon-btn small" title="Rename" onClick={startEdit}>
-                    <Icon name="pencil" size={15} />
-                  </button>
-                  <button
-                    class={`icon-btn small favorite-btn ${clip.favorite ? "active" : ""}`}
-                    title={clip.favorite ? "Remove from favorites" : "Add to favorites"}
-                    onClick={toggleFavorite}
-                  >
-                    <Icon name="star" size={15} filled={clip.favorite} />
-                  </button>
+                  <div class="detail-name-actions">
+                    <button class="act-btn" title="Rename" onClick={startEdit}>
+                      <Icon name="pencil" size={16} />
+                    </button>
+                    <button
+                      class={`act-btn act-fav ${clip.favorite ? "active" : ""}`}
+                      title={clip.favorite ? "Remove from favorites" : "Add to favorites"}
+                      onClick={toggleFavorite}
+                    >
+                      <Icon name="star" size={16} filled={clip.favorite} />
+                    </button>
+                  </div>
                 </div>
               )}
           </div>
@@ -311,7 +314,7 @@ export function DetailView(
             <div>
               <span class="k">Game</span>
               <span class="v">
-                {clip.game_display_name ?? clip.game_process_name ?? "Unknown"}
+                {appLabel(clip.game_display_name, clip.game_process_name)}
               </span>
             </div>
             <div>
@@ -324,7 +327,7 @@ export function DetailView(
             </div>
             <div>
               <span class="k">Source</span>
-              <span class="v">{clip.source}</span>
+              <span class="v">{clip.source === "replay" ? "Saved replay" : "Manual recording"}</span>
             </div>
           </div>
 
@@ -337,6 +340,11 @@ export function DetailView(
               onChanged={onChanged}
             />
           </div>
+
+          <button class="delete-clip-btn" onClick={() => onDelete(clip)}>
+            <Icon name="trash-2" size={16} />
+            Delete Clip
+          </button>
         </div>
 
         <button

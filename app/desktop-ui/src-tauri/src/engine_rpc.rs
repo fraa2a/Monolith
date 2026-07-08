@@ -43,6 +43,23 @@ pub fn mutate_clip(method: &str, params: Value) -> Value {
     }
 }
 
+// Parameterless recorder commands (recording_start / recording_stop /
+// save_replay). Same envelope handling as mutate_clip.
+pub fn command(method: &str) -> Value {
+    match rpc(method, None) {
+        Ok(response) if response.get("error").is_none() => json!({ "ok": true }),
+        Ok(response) => {
+            let message = response
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("engine returned an error");
+            json!({ "ok": false, "error": message })
+        }
+        Err(err) => json!({ "ok": false, "error": err }),
+    }
+}
+
 pub fn reload_settings() {
     let _ = rpc("reload_settings", None);
 }

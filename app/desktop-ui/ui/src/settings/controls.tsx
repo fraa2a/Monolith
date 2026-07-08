@@ -221,12 +221,9 @@ export function HotkeyCapture(
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") {
-        setCapturing(false);
-        ref.current?.blur();
-        return;
-      }
-      if (e.key === "Backspace" || e.key === "Delete") {
+      // Escape / Backspace / Delete all clear the binding: the shortcut is set to
+      // "NONE", which the engine treats as disabled (skips RegisterHotKey).
+      if (e.key === "Escape" || e.key === "Backspace" || e.key === "Delete") {
         onChange("NONE");
         setCapturing(false);
         ref.current?.blur();
@@ -259,7 +256,7 @@ export function HotkeyCapture(
     >
       <Icon name="keyboard" size={15} />
       <span class="hotkey-value">
-        {capturing ? "Press a combination…" : display}
+        {capturing ? "Press a combination… (Esc to clear)" : display}
       </span>
     </button>
   );

@@ -5,7 +5,7 @@
 // http://127.0.0.1:<port>/, so the frontend's existing fetch()/`<video src>`
 // route contract works unchanged. Mirrors the Deno server/router.ts. See ADR-0011.
 
-use crate::{clip_catalog, engine_rpc, game_catalog, media, settings_store};
+use crate::{clip_catalog, engine_rpc, exe_icon, game_catalog, media, settings_store};
 use base64::{engine::general_purpose, Engine as _};
 use clip_catalog::ClipFilter;
 use include_dir::{include_dir, Dir};
@@ -215,6 +215,34 @@ fn handle(mut request: Request) {
             let result = engine_rpc::mutate_clip(method_name, params);
             let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
             respond_json(request, if ok { 200 } else { 500 }, &result);
+        }
+
+        // ── Recorder control (forwarded to the engine over JSON-RPC) ─────────
+        (Method::Post, "/api/recorder") => {
+            let body = read_body(&mut request).unwrap_or_else(|| json!({}));
+            let allowed = ["recording_start", "recording_stop", "save_replay"];
+            let method_name = body.get("method").and_then(Value::as_str).unwrap_or("");
+            if !allowed.contains(&method_name) {
+                respond_json(request, 400, &json!({ "ok": false, "error": "bad method" }));
+                return;
+            }
+            let result = engine_rpc::command(method_name);
+            let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            respond_json(request, if ok { 200 } else { 500 }, &result);
+        }
+
+        // ── Native application icon (PNG extracted from the exe) ─────────────
+        (Method::Get, "/api/exe-icon") => {
+            match query.get("path").and_then(|p| exe_icon::icon_png(p)) {
+                Some(bytes) => {
+                    let ctype = Header::from_bytes(b"Content-Type", b"image/png").unwrap();
+                    // Icons are immutable per path for a session; let the webview cache.
+                    let cache = Header::from_bytes(b"Cache-Control", b"max-age=3600").unwrap();
+                    let resp = Response::from_data(bytes).with_header(ctype).with_header(cache);
+                    let _ = request.respond(resp);
+                }
+                None => respond_json(request, 404, &json!({ "ok": false, "error": "no icon" })),
+            }
         }
 
         (Method::Get, "/api/runtime-status") => {

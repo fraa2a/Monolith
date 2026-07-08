@@ -1,4 +1,5 @@
 import { type Config, type RuntimeStatus } from "../lib/settings-api.ts";
+import { appLabel } from "../lib/format.ts";
 import { Field, Section, Select, Toggle, VolumeSlider } from "./controls.tsx";
 
 interface Props {
@@ -190,8 +191,7 @@ export function AudioSettings({ cfg, rs, update }: Props) {
           return (
             <Field
               key={s.process_id + s.process_name}
-              label={s.display_name || s.process_name}
-              help={s.process_name}
+              label={appLabel(s.display_name, s.process_name)}
               control={
                 <div class="audio-other-control">
                   <Toggle checked={enabled} onChange={(v) => setProcess(s, { enabled: v })} />
