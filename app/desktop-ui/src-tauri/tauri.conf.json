@@ -16,6 +16,6 @@
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": ["../../../MONOLITH.ico"]
+    "icon": ["../../../app/assets/icon.ico"]
   }
 }

@@ -3,7 +3,7 @@
 #include "version.h"
 
 // Lowest-ID icon doubles as the executable's shell icon.
-IDI_MONOLITH ICON "../assets/Monolith.ico"
+IDI_MONOLITH ICON "../assets/icon.ico"
 
 // File version resource — read by Explorer, installers, and WinSparkle
 // (update comparison uses the FileVersion of the running executable).
