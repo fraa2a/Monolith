@@ -14,7 +14,7 @@ Current app version source is the root `CMakeLists.txt` project version
 
 ## Build
 
-Use the root build script on Windows with MSVC, vcpkg, Rust/Cargo, and Deno:
+Use the root build script on Windows with MSVC, vcpkg, Rust/Cargo, and Node/npm:
 
 ```bat
 build.bat
@@ -33,11 +33,12 @@ features (`amf`, `nvcodec`, `qsv`) plus `x264`, `x265`, and `gpl`.
 
 The desktop UI lives in `app/desktop-ui`:
 
-- Deno is build-only and bundles the Preact frontend (`build.ts` to `dist/`).
+- npm is build-only and bundles the Preact frontend with Vite (`vite.config.ts`
+  to `dist/`).
 - Cargo builds the Tauri v2 host (`src-tauri/`).
 - The resulting `monolith_ui.exe` is copied by CMake to
   `<recorder-output>/ui/Monolith.UI.exe`.
-- If Deno or Cargo is missing, CMake warns and skips the UI target; the recorder
+- If npm or Cargo is missing, CMake warns and skips the UI target; the recorder
   can still build.
 
 ## Tests And Verification
@@ -50,7 +51,8 @@ Useful checks:
 ```bat
 cmake --build build --config Release --parallel
 cd app\desktop-ui
-deno run -A build.ts
+npm install
+npm run build
 cargo build --release --manifest-path src-tauri\Cargo.toml
 cd plugins\stream-deck
 npm run build

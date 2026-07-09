@@ -117,14 +117,20 @@ void handle_client(SOCKET client)
                     } else {
                         const auto& p = req.contains("params") ? req["params"]
                                                                : nlohmann::json::object();
+                        auto get_or = [&p](const char* key, auto default_value) {
+                            using T = decltype(default_value);
+                            if (p.contains(key) && !p[key].is_null())
+                                return p.value(key, default_value);
+                            return T(default_value);
+                        };
                         ClipMutation m;
                         m.method   = method;
-                        m.source   = p.value("source", "replay");
-                        m.id       = p.value("id", static_cast<int64_t>(0));
-                        m.tag      = p.value("tag", std::string());
-                        m.favorite = p.value("favorite", false);
-                        m.new_name = p.value("new_name", std::string());
-                        m.title    = p.value("title", std::string());
+                        m.source   = get_or("source", std::string("replay"));
+                        m.id       = get_or("id", static_cast<int64_t>(0));
+                        m.tag      = get_or("tag", std::string());
+                        m.favorite = get_or("favorite", false);
+                        m.new_name = get_or("new_name", std::string());
+                        m.title    = get_or("title", std::string());
                         std::string err = g_mutation_fn(m);
                         if (err.empty())
                             response = make_result(req_id, {{"status", "ok"}});

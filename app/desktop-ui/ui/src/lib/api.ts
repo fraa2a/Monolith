@@ -202,13 +202,14 @@ export interface EngineStatus {
   replay_enabled?: boolean;
   recording_enabled?: boolean;
   clip_generation?: number;
+  connected?: boolean;
 }
 
 export async function fetchEngineStatus(): Promise<EngineStatus> {
   try {
     const res = await fetch("/api/engine-status");
-    return (await res.json()).status ?? {};
+    return (await res.json()).status ?? { connected: false };
   } catch {
-    return {};
+    return { connected: false };
   }
 }

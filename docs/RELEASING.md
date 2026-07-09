@@ -17,7 +17,7 @@ The shipped payload includes:
 - Native dependency DLLs from vcpkg.
 - Installer metadata and updater support.
 
-Deno is not shipped. It is only a build-time frontend bundler for
+Node/npm is not shipped. It is only a build-time frontend bundler (Vite) for
 `app/desktop-ui`.
 
 ## One-Time Setup

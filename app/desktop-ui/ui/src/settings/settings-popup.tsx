@@ -120,6 +120,14 @@ export function SettingsPopup({ onClose }: Props) {
   return (
     <div class="modal-backdrop" onMouseDown={onClose}>
       <div class="settings" onMouseDown={(e) => e.stopPropagation()}>
+        <button
+          class="settings-close"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={onClose}
+          title="Close (Esc)"
+        >
+          <Icon name="x" size={18} />
+        </button>
         <div class="settings-nav">
           <div class="settings-title">Settings</div>
           {PAGES.map((pg) => (

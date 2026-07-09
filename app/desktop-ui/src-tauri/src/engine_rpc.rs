@@ -67,9 +67,13 @@ pub fn reload_settings() {
 pub fn get_status() -> Value {
     match rpc("get_status", None) {
         Ok(response) if response.get("error").is_none() => {
-            response.get("result").cloned().unwrap_or_else(|| json!({}))
+            let mut result = response.get("result").cloned().unwrap_or_else(|| json!({}));
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("connected".into(), json!(true));
+            }
+            result
         }
-        _ => json!({}),
+        _ => json!({ "connected": false }),
     }
 }
 

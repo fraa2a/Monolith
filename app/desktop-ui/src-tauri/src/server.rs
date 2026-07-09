@@ -204,14 +204,17 @@ fn handle(mut request: Request) {
                 respond_json(request, 400, &json!({ "ok": false, "error": "bad method" }));
                 return;
             }
-            let params = json!({
+            let mut params = json!({
                 "source": body.get("source").and_then(Value::as_str).unwrap_or("replay"),
                 "id": body.get("id").and_then(Value::as_i64).unwrap_or(0),
-                "tag": body.get("tag"),
-                "favorite": body.get("favorite"),
-                "new_name": body.get("new_name"),
-                "title": body.get("title"),
             });
+            for key in ["tag", "favorite", "new_name", "title"] {
+                if let Some(v) = body.get(key) {
+                    if !v.is_null() {
+                        params[key] = v.clone();
+                    }
+                }
+            }
             let result = engine_rpc::mutate_clip(method_name, params);
             let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
             respond_json(request, if ok { 200 } else { 500 }, &result);

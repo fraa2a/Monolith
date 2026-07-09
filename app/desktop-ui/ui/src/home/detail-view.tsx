@@ -131,6 +131,7 @@ export function DetailView(
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const hasPrev = index > 0;
   const hasNext = index < clips.length - 1;
@@ -152,6 +153,7 @@ export function DetailView(
     setEditing(false);
     setCurrent(0);
     setDuration(0);
+    setActionError(null);
     const v = videoRef.current;
     if (v && clip) {
       v.pause();
@@ -167,8 +169,13 @@ export function DetailView(
     const nextClip = { ...clip, favorite: !clip.favorite };
     onClipUpdate(nextClip);
     const res = await clipApi.setFavorite(clip, nextClip.favorite);
-    if (!res.ok) onClipUpdate(clip);
-    else onChanged();
+    if (!res.ok) {
+      onClipUpdate(clip);
+      setActionError(res.error ?? "Couldn't update favorite");
+    } else {
+      setActionError(null);
+      onChanged();
+    }
   }
 
   function startEdit() {
@@ -188,7 +195,10 @@ export function DetailView(
     if (res.ok) {
       onClipUpdate({ ...clip, title: value });
       setEditing(false);
+      setActionError(null);
       onChanged();
+    } else {
+      setActionError(res.error ?? "Couldn't rename clip");
     }
   }
 
@@ -308,6 +318,7 @@ export function DetailView(
                 </div>
               )}
           </div>
+          {actionError && <div class="err">{actionError}</div>}
           <div class="detail-filename" title={clip.video_file}>{clip.video_file}</div>
 
           <div class="detail-meta">
@@ -346,15 +357,6 @@ export function DetailView(
             Delete Clip
           </button>
         </div>
-
-        <button
-          class="detail-close"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={onClose}
-          title="Close (Esc)"
-        >
-          <Icon name="x" size={18} />
-        </button>
       </div>
 
       <button

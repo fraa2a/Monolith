@@ -58,11 +58,6 @@ jobs:
             & $nuget setapikey "${{ secrets.GITHUB_TOKEN }}" -Source "$env:FEED_URL" -NonInteractive
           }
 
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -76,7 +71,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: plugins/stream-deck/package-lock.json
+          cache-dependency-path: |
+            app/desktop-ui/package-lock.json
+            plugins/stream-deck/package-lock.json
 
       - name: Ensure Visual Studio Build Tools
         shell: pwsh
@@ -129,7 +126,7 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
           "-DCMAKE_MT:FILEPATH=$env:CMAKE_MT"
 
-      # The CMake desktop_ui target bundles the Preact frontend (deno) and
+      # The CMake desktop_ui target bundles the Preact frontend (npm/Vite) and
       # compiles the Tauri UI (cargo) into <recorder-output>/ui/Monolith.UI.exe.
       - name: Build Release
         shell: pwsh

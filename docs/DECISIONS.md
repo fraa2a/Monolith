@@ -92,12 +92,12 @@ This file is the architecture decision record index for Monolith.
 
 ## ADR-0012: Tauri v2/WebView2 Desktop UI Shell
 
-- Status: accepted.
+- Status: accepted, frontend bundler superseded by ADR-0014.
 - Decision:
   - Use Tauri v2/WebView2 for `Monolith.UI.exe`.
   - Rust host lives in `app/desktop-ui/src-tauri`.
   - Preact frontend remains in `app/desktop-ui/ui`.
-  - Deno is build-only for the frontend bundle.
+  - Deno was build-only for the frontend bundle (now Vite, see ADR-0014).
   - `cargo build --release` creates `monolith_ui.exe`, copied to
     `<recorder-output>\ui\Monolith.UI.exe`.
   - Tauri CLI bundling is not required; the app ships as a bare exe.
@@ -131,6 +131,24 @@ This file is the architecture decision record index for Monolith.
     the frontend.
 - Notes: WebView2 multi-track playback depends on `HTMLVideoElement.audioTracks`;
   unavailable engines fall back to default track playback.
+
+## ADR-0014: Vite Frontend Bundler (Supersedes Deno In ADR-0012)
+
+- Status: accepted.
+- Decision:
+  - The `app/desktop-ui` Preact frontend is bundled with Vite
+    (`vite.config.ts`), not Deno + esbuild.
+  - `npm install && npm run build` replaces `deno run -A build.ts`.
+  - CMake looks for `npm`/`npm.cmd` instead of `deno`/`deno.exe`; behavior on a
+    missing toolchain (warn and skip the UI target) is unchanged.
+  - `tauri.conf.json` `beforeBuildCommand` is updated for correctness even
+    though the actual build path (CMake -> npm run build -> plain
+    `cargo build --release`) does not invoke the Tauri CLI and so never reads
+    it.
+- Notes: Deno remained a fine build-only tool, but a standard npm/Vite
+  pipeline is the more conventional Tauri setup and removes a second package
+  ecosystem (Deno imports) alongside npm, which the repo already needs for
+  `plugins/stream-deck`.
 
 ## Open Decisions
 

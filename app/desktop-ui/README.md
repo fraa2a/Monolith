@@ -8,11 +8,11 @@ Deno Desktop shell.
 
 - Host: Rust/Tauri v2 in `src-tauri/`.
 - Frontend: Preact in `ui/`.
-- Bundler: Deno + esbuild through `build.ts`.
+- Bundler: Vite (`vite.config.ts`).
 - Runtime window: WebView2 via Tauri.
 - Shipped exe: `Monolith.UI.exe`.
 
-Deno is build-only. It is not shipped with Monolith.
+Node/npm is build-only. It is not shipped with Monolith.
 
 ## Architecture
 
@@ -44,7 +44,8 @@ IPC so the recorder remains the single writer.
 Bundle frontend:
 
 ```bat
-deno run -A build.ts
+npm install
+npm run build
 ```
 
 Run host:
@@ -59,7 +60,8 @@ degrade gracefully.
 ## Ship
 
 ```bat
-deno run -A build.ts
+npm install
+npm run build
 cargo build --release --manifest-path src-tauri\Cargo.toml
 ```
 
@@ -78,10 +80,10 @@ CMake copies it to:
 ## Folders
 
 ```text
-src-tauri/    Rust host
-ui/           Preact frontend
-build.ts      esbuild bundle script
-deno.json     Deno import/task config for bundling only
+src-tauri/       Rust host
+ui/              Preact frontend
+vite.config.ts   Vite bundle config
+package.json     npm deps/scripts for bundling only
 ```
 
 ## UI Quality Notes

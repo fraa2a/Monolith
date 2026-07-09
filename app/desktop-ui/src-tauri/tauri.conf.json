@@ -5,7 +5,7 @@
   "identifier": "dev.scatola.monolith.ui",
   "build": {
     "frontendDist": "../dist",
-    "beforeBuildCommand": "deno run -A build.ts"
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [],

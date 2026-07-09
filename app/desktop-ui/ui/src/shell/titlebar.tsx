@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import {
   exeIconUrl,
   fetchEngineStatus,
@@ -35,6 +35,8 @@ export function Titlebar({ view }: Props) {
   const [art, setArt] = useState<GameArtwork>({ icon: null, cover: null });
   const [exeIcon, setExeIcon] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [showConnectToast, setShowConnectToast] = useState(false);
+  const hasCheckedOnce = useRef(false);
 
   // Runtime + engine status are read-only and safe to poll live.
   useEffect(() => {
@@ -44,6 +46,12 @@ export function Titlebar({ view }: Props) {
       if (!alive) return;
       setRuntime(rs);
       setEngine(es);
+      if (!hasCheckedOnce.current) {
+        hasCheckedOnce.current = true;
+        if (es.connected === false) setShowConnectToast(true);
+      } else if (es.connected !== false) {
+        setShowConnectToast(false);
+      }
     };
     load();
     const id = setInterval(load, 1600);
@@ -145,10 +153,11 @@ export function Titlebar({ view }: Props) {
   const selectedMonitor = String(config?.capture?.monitor_device ?? "");
   const monitors = runtime.monitors ?? [];
 
+  const connected = engine.connected !== false;
   const recording = !!engine.recording;
   const clipping = !recording && !!engine.replay_enabled;
-  const statusLabel = recording ? "Recording" : clipping ? "Clipping" : "Idle";
-  const subject = gameName || ((recording || clipping) ? "Screen" : "Ready");
+  const statusLabel = !connected ? "Disconnected" : recording ? "Recording" : clipping ? "Clipping" : "Idle";
+  const subject = !connected ? "No engine" : gameName || ((recording || clipping) ? "Screen" : "Ready");
   const patternIcon = exeIcon ?? art.icon ?? null;
 
   const persist = async (mutate: (draft: Config) => void) => {
@@ -186,104 +195,118 @@ export function Titlebar({ view }: Props) {
   };
 
   return (
-    <div class="titlebar" onMouseDown={onMouseDown} onDblClick={() => appWindow.toggleMaximize()}>
-      <div class="tb-brand">
-        <span class="tb-app">MONOLITH</span>
-        <span class="tb-sep">/</span>
-        <span class="tb-view">{view}</span>
-      </div>
+    <>
+      {showConnectToast && (
+        <div class="connect-toast">
+          <span>Couldn't reach the Monolith engine — is it running?</span>
+          <button
+            class="connect-toast-close"
+            onClick={() => setShowConnectToast(false)}
+            title="Dismiss"
+          >
+            <Icon name="x" size={14} />
+          </button>
+        </div>
+      )}
+      <div class="titlebar" onMouseDown={onMouseDown} onDblClick={() => appWindow.toggleMaximize()}>
+        <div class="tb-brand">
+          <span class="tb-app">MONOLITH</span>
+          <span class="tb-sep">/</span>
+          <span class="tb-view">{view}</span>
+        </div>
 
-      <div class="tb-status">
-        <button
-          class={`capture-feed ${patternIcon ? "" : "screen"}`}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            setOpen((v) => !v);
-          }}
-          title="Capture source and mode"
-        >
-          <span
-            class="feed-bg"
-            aria-hidden="true"
-            style={patternIcon ? { backgroundImage: `url(${patternIcon})` } : undefined}
-          />
-          <span class="feed-shade" aria-hidden="true" />
-          <span class={`rec-dot ${recording ? "on" : clipping ? "clip" : ""}`} />
-          <span class="rec-copy">
-            <span class="rec-state">{statusLabel}</span>
-            <span class="rec-subject">{subject}</span>
-          </span>
-        </button>
+        <div class="tb-status">
+          <button
+            class={`capture-feed ${patternIcon ? "" : "screen"}`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen((v) => !v);
+            }}
+            title="Capture source and mode"
+          >
+            <span
+              class="feed-bg"
+              aria-hidden="true"
+              style={patternIcon ? { backgroundImage: `url(${patternIcon})` } : undefined}
+            />
+            <span class="feed-shade" aria-hidden="true" />
+            <span class={`rec-dot ${!connected ? "disconnected" : recording ? "on" : clipping ? "clip" : ""}`} />
+            <span class="rec-copy">
+              <span class="rec-state">{statusLabel}</span>
+              <span class="rec-subject">{subject}</span>
+            </span>
+          </button>
 
-        {open && (
-          <div class="mode-popover" onMouseDown={(e) => e.stopPropagation()}>
-            <div class="segmented mode-tabs">
-              <button class={`seg ${mode === "game_only" ? "active" : ""}`} onClick={() => setMode("game_only")}>
-                <Icon name="gamepad" size={15} />
-                Game Recording
-              </button>
-              <button class={`seg ${mode !== "game_only" ? "active" : ""}`} onClick={() => setMode("always")}>
-                <Icon name="monitor" size={15} />
-                Screen Recording
-              </button>
-            </div>
+          {open && (
+            <div class="mode-popover" onMouseDown={(e) => e.stopPropagation()}>
+              <div class="segmented mode-tabs">
+                <button class={`seg ${mode === "game_only" ? "active" : ""}`} onClick={() => setMode("game_only")}>
+                  <Icon name="gamepad" size={15} />
+                  Game Recording
+                </button>
+                <button class={`seg ${mode !== "game_only" ? "active" : ""}`} onClick={() => setMode("always")}>
+                  <Icon name="monitor" size={15} />
+                  Screen Recording
+                </button>
+              </div>
 
-            {mode === "game_only"
-              ? (
-                <div class="mode-body">
-                  <div class="mode-row">
-                    <div>
-                      <div class="mode-label">Auto Record</div>
-                      <div class="mode-help">Starts when a supported game appears and stops when it exits.</div>
-                    </div>
-                    <button class={`toggle ${autoRecord ? "on" : ""}`} onClick={() => setAutoRecord(!autoRecord)} title="Auto Record">
-                      <span class="toggle-knob" />
-                    </button>
-                  </div>
-                  {!gameName && <div class="mode-warning">No supported game detected.</div>}
-                </div>
-              )
-              : (
-                <div class="monitor-grid">
-                  {monitors.map((mon, i) => {
-                    const active = selectedMonitor ? selectedMonitor === mon.device : mon.primary;
-                    const ratio = mon.width && mon.height ? `${mon.width} / ${mon.height}` : "16 / 9";
-                    return (
-                      <button class={`monitor-card ${active ? "active" : ""}`} onClick={() => setMonitor(mon.device)} key={mon.device || i}>
-                        <span class="monitor-preview" style={{ aspectRatio: ratio }}>
-                          <Icon name="monitor" size={20} />
-                        </span>
-                        <span class="monitor-name">{monitorLabel(mon, i)}</span>
-                        <span class="monitor-size">{mon.width} x {mon.height}</span>
+              {mode === "game_only"
+                ? (
+                  <div class="mode-body">
+                    <div class="mode-row">
+                      <div>
+                        <div class="mode-label">Auto Record</div>
+                        <div class="mode-help">Starts when a supported game appears and stops when it exits.</div>
+                      </div>
+                      <button class={`toggle ${autoRecord ? "on" : ""}`} onClick={() => setAutoRecord(!autoRecord)} title="Auto Record">
+                        <span class="toggle-knob" />
                       </button>
-                    );
-                  })}
-                </div>
-              )}
-          </div>
-        )}
-      </div>
+                    </div>
+                    {!gameName && <div class="mode-warning">No supported game detected.</div>}
+                  </div>
+                )
+                : (
+                  <div class="monitor-grid">
+                    {monitors.map((mon, i) => {
+                      const active = selectedMonitor ? selectedMonitor === mon.device : mon.primary;
+                      const ratio = mon.width && mon.height ? `${mon.width} / ${mon.height}` : "16 / 9";
+                      return (
+                        <button class={`monitor-card ${active ? "active" : ""}`} onClick={() => setMonitor(mon.device)} key={mon.device || i}>
+                          <span class="monitor-preview" style={{ aspectRatio: ratio }}>
+                            <Icon name="monitor" size={20} />
+                          </span>
+                          <span class="monitor-name">{monitorLabel(mon, i)}</span>
+                          <span class="monitor-size">{mon.width} x {mon.height}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+            </div>
+          )}
+        </div>
 
-      <div class="tb-drag" />
+        <div class="tb-drag" />
 
-      <div class="tb-controls">
-        <button class="tb-btn" title="Minimize" onClick={() => appWindow.minimize()}>
-          <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
-            <rect x="1" y="5.5" width="9" height="1" fill="currentColor" />
-          </svg>
-        </button>
-        <button class="tb-btn" title="Maximize" onClick={() => appWindow.toggleMaximize()}>
-          <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
-            <rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" />
-          </svg>
-        </button>
-        <button class="tb-btn tb-close" title="Close" onClick={() => appWindow.close()}>
-          <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
-            <path d="M1.5 1.5l8 8M9.5 1.5l-8 8" stroke="currentColor" stroke-width="1.1" />
-          </svg>
-        </button>
+        <div class="tb-controls">
+          <button class="tb-btn" title="Minimize" onClick={() => appWindow.minimize()}>
+            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+              <rect x="1" y="5.5" width="9" height="1" fill="currentColor" />
+            </svg>
+          </button>
+          <button class="tb-btn" title="Maximize" onClick={() => appWindow.toggleMaximize()}>
+            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+              <rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" />
+            </svg>
+          </button>
+          <button class="tb-btn tb-close" title="Close" onClick={() => appWindow.close()}>
+            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+              <path d="M1.5 1.5l8 8M9.5 1.5l-8 8" stroke="currentColor" stroke-width="1.1" />
+            </svg>
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }

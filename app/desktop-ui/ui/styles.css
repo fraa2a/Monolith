@@ -1,22 +1,26 @@
 /* ============================================================================
    MONOLITH — desktop shell
    A native-feeling capture app: custom title bar, sidebar rail, internal-scroll
-   content panel. Monochrome 3-gray system:
-     #0E0E0E  frame — title bar, sidebar, cards        (--dark)
-     #343434  general canvas — content area            (--mid)
-     #4E4E4E  highlights — hover, active, borders       (--light)
+   content panel. Monochrome gray system:
+     #000000  page background — content area, settings bg   (--dark)
+     #161616  elevated surfaces — cards, menus, dropdowns    (--mid / --card)
+     #161616  main sidebar rail                              (--sidebar)
+     #1F1F1F  settings popup's own sidebar rail              (--settings-rail)
+     #343434  highlights — hover, active, borders            (--light)
+     #4E4E4E  brighter hover step                             (--light-hi)
    Fonts are Windows-native (Bahnschrift / Consolas) so the app is offline and
    CSP-clean. No chromatic accent; red is kept only for destructive actions.
    ============================================================================ */
 
 :root {
-  --dark:   #0e0e0e;   /* page / content background */
-  --chrome: #070707;   /* sidebar + titlebar + settings rail — darker than bg */
-  --mid:    #343434;   /* elevated surfaces: cards, menus, modals */
-  --light:  #343434;   /* highlight: hover / active (matches the surface tone) */
+  --dark:   #000000;   /* page / content background */
+  --sidebar: #161616;  /* main app sidebar rail + titlebar */
+  --settings-rail: #1f1f1f; /* settings popup's own sidebar rail */
+  --mid:    #161616;   /* elevated surfaces: cards, menus, modals, dropdowns */
+  --light:  #343434;   /* highlight: hover / active */
   --light-hi: #4e4e4e; /* brighter step for hover feedback where needed */
 
-  --card:  #343434;
+  --card:  #161616;
   --line:      rgba(255, 255, 255, .08);
   --line-soft: rgba(255, 255, 255, .05);
   --field:     rgba(255, 255, 255, .045);
@@ -80,20 +84,21 @@ body {
   flex: none;
   display: flex;
   align-items: stretch;
-  background: var(--chrome);
+  background: var(--sidebar);
 }
 .tb-brand {
   display: flex;
   align-items: center;
   gap: 9px;
   padding-left: 16px;
-  /* Grow more than the trailing drag spacer so the status cluster is pushed
-     into the right portion of the bar (≈3/4 across) instead of hugging the
-     brand — the drag region keeps a gap before the window controls. */
-  flex: 3 1 0;
+  /* Grows less than the trailing drag spacer so the status cluster lands
+     around 3/8 of the bar's width from the left, instead of hugging the
+     brand — the drag region absorbs the rest of the slack before the
+     window controls. */
+  flex: 2 1 0;
   min-width: 0;
 }
-.tb-drag { flex: 1; min-width: 0; }
+.tb-drag { flex: 3 1 0; min-width: 0; }
 .tb-app {
   font-family: var(--ui);
   font-weight: 700;
@@ -123,6 +128,33 @@ body {
 }
 .tb-btn:hover { background: var(--light); color: var(--text); }
 .tb-close:hover { background: var(--danger); color: #fff; }
+
+.connect-toast {
+  position: fixed;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 12.5px;
+  border-radius: 0 0 8px 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.25);
+}
+.connect-toast-close {
+  display: grid;
+  place-items: center;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: .8;
+}
+.connect-toast-close:hover { opacity: 1; }
 
 /* Status cluster: the capture feed. Sits toward the centre/right of the bar
    (the brand flexes to push it off the left edge) and is stretched to the bar's
@@ -194,6 +226,7 @@ body {
 }
 .rec-dot.on { background: var(--danger); box-shadow: 0 0 0 3px rgba(229,84,75,.16); }
 .rec-dot.clip { background: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.1); }
+.rec-dot.disconnected { background: var(--text-faint); box-shadow: none; }
 .rec-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .rec-state {
   font-family: var(--mono);
@@ -302,13 +335,13 @@ body {
   flex: 1;
   display: flex;
   min-height: 0;
-  background: var(--chrome);
+  background: var(--sidebar);
 }
 
 .sidebar {
   width: 214px;
   flex: none;
-  background: var(--chrome);
+  background: var(--sidebar);
   display: flex;
   flex-direction: column;
   padding: 14px 12px 16px;
@@ -805,18 +838,6 @@ body {
   letter-spacing: .12em;
 }
 
-.detail-close {
-  position: absolute; top: 10px; right: 12px;
-  background: rgba(0,0,0,.5);
-  border: 1px solid rgba(255,255,255,.12);
-  color: #fff;
-  width: 32px; height: 32px;
-  border-radius: 8px;
-  font-size: 18px; cursor: pointer; z-index: 4;
-  backdrop-filter: blur(4px);
-}
-.detail-close:hover { background: var(--light); }
-
 .detail-nav {
   background: transparent;
   border: none;
@@ -889,6 +910,7 @@ body {
 
 /* ── Settings popup ──────────────────────────────────────────────────────── */
 .settings {
+  position: relative;
   display: grid;
   grid-template-columns: 210px 1fr;
   grid-template-rows: 1fr;
@@ -901,8 +923,19 @@ body {
   box-shadow: var(--shadow-lg);
   animation: modal-in .22s cubic-bezier(.2,.7,.3,1) both;
 }
+.settings-close {
+  position: absolute; top: 10px; right: 12px;
+  background: rgba(0,0,0,.5);
+  border: 1px solid rgba(255,255,255,.12);
+  color: #fff;
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  font-size: 18px; cursor: pointer; z-index: 1;
+  backdrop-filter: blur(4px);
+}
+.settings-close:hover { background: var(--light); }
 .settings-nav {
-  background: var(--chrome);
+  background: var(--settings-rail);
   border-right: 1px solid var(--line);
   padding: 16px 12px;
   display: flex; flex-direction: column; gap: 3px;
