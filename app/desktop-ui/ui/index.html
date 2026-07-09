@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';"
-    />
+    <!-- CSP is injected by Tauri from tauri.conf.json's app.security.csp. A
+         static meta tag here would intersect with it (most-restrictive-wins
+         per directive) and silently re-block asset:/ipc: even though the
+         config allows them — see docs/DECISIONS.md ADR-0015. -->
     <title>Monolith</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>

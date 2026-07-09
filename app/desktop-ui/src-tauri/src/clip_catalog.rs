@@ -12,7 +12,7 @@ pub enum ClipSource {
 }
 
 impl ClipSource {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Replay => "replay",
             Self::Manual => "manual",
@@ -251,6 +251,146 @@ pub fn set_duration(source: ClipSource, id: i64, duration: f64) -> Result<(), St
     if conn.changes() == 0 {
         return Err("clip not found".to_string());
     }
+    Ok(())
+}
+
+fn clip_exists(conn: &Connection, id: i64) -> bool {
+    conn.query_row("SELECT 1 FROM clips WHERE id = ?1", params![id], |_| Ok(()))
+        .is_ok()
+}
+
+fn thumb_basename_for(video_file: &str) -> String {
+    Path::new(video_file)
+        .file_stem()
+        .map(|stem| format!("{}.png", stem.to_string_lossy()))
+        .unwrap_or_else(|| "thumb.png".to_string())
+}
+
+pub fn set_favorite(source: ClipSource, id: i64, favorite: bool) -> Result<(), String> {
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    conn.execute("UPDATE clips SET favorite = ?1 WHERE id = ?2", params![favorite as i64, id])
+        .map_err(|err| err.to_string())?;
+    if conn.changes() == 0 {
+        return Err("clip not found".to_string());
+    }
+    Ok(())
+}
+
+pub fn set_title(source: ClipSource, id: i64, title: &str) -> Result<(), String> {
+    let value = if title.is_empty() { "Untitled" } else { title };
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    conn.execute("UPDATE clips SET title = ?1 WHERE id = ?2", params![value, id])
+        .map_err(|err| err.to_string())?;
+    if conn.changes() == 0 {
+        return Err("clip not found".to_string());
+    }
+    Ok(())
+}
+
+pub fn add_hashtag(source: ClipSource, id: i64, tag: &str) -> Result<(), String> {
+    if tag.is_empty() {
+        return Err("empty tag".to_string());
+    }
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    if !clip_exists(&conn, id) {
+        return Err("clip not found".to_string());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO clip_hashtags (clip_id, tag) VALUES (?1, ?2)",
+        params![id, tag],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+pub fn remove_hashtag(source: ClipSource, id: i64, tag: &str) -> Result<(), String> {
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    conn.execute(
+        "DELETE FROM clip_hashtags WHERE clip_id = ?1 AND tag = ?2",
+        params![id, tag],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+pub fn remove_clip(source: ClipSource, id: i64) -> Result<(), String> {
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    let row = conn
+        .query_row(
+            "SELECT video_file, thumbnail_file FROM clips WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .map_err(|_| "clip not found".to_string())?;
+    let (video_file, thumbnail_file) = row;
+
+    conn.execute("DELETE FROM clip_hashtags WHERE clip_id = ?1", params![id])
+        .map_err(|err| err.to_string())?;
+    conn.execute("DELETE FROM clips WHERE id = ?1", params![id])
+        .map_err(|err| err.to_string())?;
+
+    let folder = media_folder(source);
+    let _ = fs::remove_file(folder.join(&video_file));
+    let thumb = thumbnail_file.unwrap_or_else(|| thumb_basename_for(&video_file));
+    let _ = fs::remove_file(folder.join(".thumbs").join(&thumb));
+    Ok(())
+}
+
+pub fn rename_clip(source: ClipSource, id: i64, new_stem: &str) -> Result<(), String> {
+    if new_stem.is_empty() || new_stem.chars().any(|c| "\\/:*?\"<>|.".contains(c)) {
+        return Err("invalid clip name".to_string());
+    }
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    let row = conn
+        .query_row(
+            "SELECT video_file, thumbnail_file FROM clips WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .map_err(|_| "clip not found".to_string())?;
+    let (old_video, old_thumb) = row;
+
+    let folder = media_folder(source);
+    let ext = Path::new(&old_video)
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let new_video = if ext.is_empty() {
+        new_stem.to_string()
+    } else {
+        format!("{new_stem}.{ext}")
+    };
+    let new_thumb = format!("{new_stem}.png");
+
+    if folder.join(&new_video).is_file() {
+        return Err("a clip with that name already exists".to_string());
+    }
+
+    fs::rename(folder.join(&old_video), folder.join(&new_video))
+        .map_err(|_| "could not rename video file".to_string())?;
+
+    let old_thumb_name = old_thumb.unwrap_or_else(|| thumb_basename_for(&old_video));
+    let stored_thumb = fs::rename(folder.join(".thumbs").join(&old_thumb_name), folder.join(".thumbs").join(&new_thumb))
+        .ok()
+        .map(|_| new_thumb);
+
+    conn.execute(
+        "UPDATE clips SET video_file = ?1, thumbnail_file = ?2 WHERE id = ?3",
+        params![new_video, stored_thumb, id],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 

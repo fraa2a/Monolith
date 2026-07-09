@@ -75,8 +75,13 @@ This file is the architecture decision record index for Monolith.
   - Use WAL and `busy_timeout`.
   - Self-heal on startup: remove rows for missing media, regenerate missing
     thumbnails, import pre-existing media.
-- Notes: UI-driven favorite/hashtag/title/rename/delete/regen operations go
-  through engine IPC.
+- Notes: superseded in part by ADR-0015 — UI-driven favorite/hashtag/title/
+  rename/delete operations now write the catalog directly from the UI process
+  (rusqlite, same WAL/busy_timeout discipline) so they work without the engine
+  running. `clip_regen_thumb` still goes through engine IPC because thumbnail
+  regeneration decodes a frame via FFmpeg, which only the engine links against.
+  The engine remains a writer too (its own recording/replay/import paths); this
+  is a second writer under the same WAL contract, not a new single-writer.
 
 ## ADR-0011: Web UI Layer Exception
 
@@ -92,7 +97,8 @@ This file is the architecture decision record index for Monolith.
 
 ## ADR-0012: Tauri v2/WebView2 Desktop UI Shell
 
-- Status: accepted, frontend bundler superseded by ADR-0014.
+- Status: accepted, frontend bundler superseded by ADR-0014, transport
+  superseded by ADR-0015.
 - Decision:
   - Use Tauri v2/WebView2 for `Monolith.UI.exe`.
   - Rust host lives in `app/desktop-ui/src-tauri`.
@@ -101,8 +107,9 @@ This file is the architecture decision record index for Monolith.
   - `cargo build --release` creates `monolith_ui.exe`, copied to
     `<recorder-output>\ui\Monolith.UI.exe`.
   - Tauri CLI bundling is not required; the app ships as a bare exe.
-  - The Rust host runs a loopback HTTP server so the frontend keeps normal
-    `/api`, `/media`, `/thumb`, static asset, and SSE contracts.
+  - ~~The Rust host runs a loopback HTTP server so the frontend keeps normal
+    `/api`, `/media`, `/thumb`, static asset, and SSE contracts.~~ Replaced by
+    native Tauri IPC, see ADR-0015.
   - `rusqlite` with bundled SQLite removes the old first-run DLL issue.
 - Notes:
   - Old WinUI and Deno Desktop hosts have been removed.
@@ -149,6 +156,47 @@ This file is the architecture decision record index for Monolith.
   pipeline is the more conventional Tauri setup and removes a second package
   ecosystem (Deno imports) alongside npm, which the repo already needs for
   `plugins/stream-deck`.
+
+## ADR-0015: Native Tauri IPC (Supersedes The Loopback HTTP Server In ADR-0012)
+
+- Status: accepted.
+- Decision:
+  - `app/desktop-ui` frontend↔backend communication moved from a `tiny_http`
+    loopback HTTP server (`/api/*` REST, hand-rolled SSE at `/api/events`,
+    Range-streamed `/media/*`/`/thumb/*`) to native Tauri v2 IPC.
+  - The window loads bundled assets directly (`WebviewUrl::App("index.html")`)
+    instead of navigating to `http://127.0.0.1:<port>/`.
+  - Backend calls are `#[tauri::command]` functions in `src-tauri/src/
+    commands.rs`, invoked from the frontend with `invoke()`.
+  - Live clip-list refresh uses `app.emit("clips", ())` from a poll thread plus
+    frontend `listen("clips", ...)`, replacing the SSE stream.
+  - Clip video/thumbnail playback uses the Tauri asset protocol
+    (`convertFileSrc()` over the clip's absolute `video_path`/
+    `thumbnail_path`, already present on the `Clip` struct) instead of
+    `/media`/`/thumb` routes. Requires the `protocol-asset` Cargo feature on
+    the `tauri` dependency and `app.security.assetProtocol.enable = true` in
+    `tauri.conf.json`. The scope is (re)computed from the configured clip/
+    recording output folders on startup and after every settings save
+    (`src-tauri/src/asset_scope.rs`), since Windows Range-seek on `<video>`
+    is handled by the asset protocol itself.
+  - Window chrome (minimize/maximize/close/drag) moved from HTTP-routed
+    `AppHandle` calls to the frontend calling `@tauri-apps/api/window`
+    (`getCurrentWindow()`) directly; no Rust-side window commands remain.
+  - `tauri.conf.json`'s `security.csp` is now an explicit policy (was `null`,
+    only safe for an external http: origin) allowing `ipc:`/
+    `http://ipc.localhost` and `asset:`/`http://asset.localhost`.
+  - `src-tauri/capabilities/default.json` declares the ACL for the main
+    window: `core:default` plus explicit `core:window:allow-minimize`/
+    `allow-toggle-maximize`/`allow-close`/`allow-start-dragging`.
+  - `server.rs` and `media.rs` are deleted; `tiny_http`, `include_dir`, `url`,
+    and `percent-encoding` are dropped from `Cargo.toml`.
+  - `engine_rpc.rs` (JSON-RPC over TCP to `127.0.0.1:45991`) is unchanged —
+    out of scope for this migration, still used by `plugins/stream-deck`.
+- Notes: this closes the gap identified in ADR-0010/ADR-0012 where UI
+  mutations went through engine IPC even though the UI process could write
+  the catalog directly (see ADR-0010 note); it also removes the loopback HTTP
+  server as an attack surface and a source of CSP friction on `asset:`/`ipc:`
+  origins.
 
 ## Open Decisions
 

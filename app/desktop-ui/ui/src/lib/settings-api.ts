@@ -1,28 +1,33 @@
-// Frontend client for the settings popup (talks to /api/settings on the local
-// UI server, which reads/writes settings.db and triggers the engine reload).
+// Frontend client for the settings popup. Talks to the Rust host over native
+// Tauri IPC (invoke), which reads/writes settings.db and triggers the engine
+// reload.
+
+import { invoke } from "@tauri-apps/api/core";
 
 // deno-lint-ignore no-explicit-any
 export type Config = Record<string, any>;
 
 export async function getConfig(): Promise<Config | null> {
-  const res = await fetch("/api/settings");
-  const data = await res.json();
-  return data.config ?? null;
+  try {
+    const config = await invoke<Config | null>("get_settings");
+    return config ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveConfig(config: Config): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch("/api/settings", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ config }),
-  });
-  return res.json();
+  try {
+    await invoke("save_settings", { config });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 }
 
 // Runtime capabilities (available encoders, monitors, input devices) published
 // by the engine to runtime-status.json. Read-only; used to capability-gate the
-// UI (never offer an encoder/monitor the machine can't do). Best-effort - the
-// server exposes it at /api/runtime-status.
+// UI (never offer an encoder/monitor the machine can't do). Best-effort.
 export interface RuntimeStatus {
   available_encoders?: string[];
   active_encoder?: string;
@@ -54,25 +59,18 @@ export interface RuntimeStatus {
 
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {
   try {
-    const res = await fetch("/api/runtime-status");
-    return (await res.json()).status ?? {};
+    return await invoke<RuntimeStatus>("runtime_status");
   } catch {
     return {};
   }
 }
 
-// Opens the native Windows folder picker via the Rust host and returns the chosen
-// absolute path, or null if the user cancelled. `current` seeds the dialog's
-// starting directory when it points at an existing folder.
+// Opens the native Windows folder picker via the Rust host and returns the
+// chosen absolute path, or null if the user cancelled. `current` seeds the
+// dialog's starting directory when it points at an existing folder.
 export async function pickFolder(current?: string): Promise<string | null> {
   try {
-    const res = await fetch("/api/pick-folder", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ current: current ?? "" }),
-    });
-    const data = await res.json();
-    return data.ok ? (data.path as string) : null;
+    return await invoke<string | null>("pick_folder", { current: current ?? "" });
   } catch {
     return null;
   }

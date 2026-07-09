@@ -128,21 +128,16 @@ export function Titlebar({ view }: Props) {
   }, [gameProcess]);
 
   // Prefer the icon embedded in the executable itself; fall back to the
-  // catalog icon. Probe once per path so a 404 never paints a broken tile.
+  // catalog icon. exeIconUrl resolves to null when the path has no icon.
   useEffect(() => {
     let alive = true;
     if (!exePath) {
       setExeIcon(null);
       return;
     }
-    const url = exeIconUrl(exePath);
-    fetch(url)
-      .then((res) => {
-        if (alive) setExeIcon(res.ok ? url : null);
-      })
-      .catch(() => {
-        if (alive) setExeIcon(null);
-      });
+    exeIconUrl(exePath).then((dataUrl) => {
+      if (alive) setExeIcon(dataUrl);
+    });
     return () => {
       alive = false;
     };

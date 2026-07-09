@@ -1,20 +1,14 @@
-// Custom title-bar window controls. The webview loads an external http:// origin
-// so it has no Tauri JS API; instead these POST to the local server, which
-// dispatches to the real window via the AppHandle (see src-tauri/server.rs).
+// Custom title-bar window controls, driven by the native Tauri window API
+// (the webview now loads bundled assets and has the Tauri JS API available).
 
-async function post(path: string): Promise<Record<string, unknown>> {
-  try {
-    const res = await fetch(path, { method: "POST" });
-    return await res.json().catch(() => ({}));
-  } catch {
-    return {};
-  }
-}
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+const win = getCurrentWindow();
 
 export const appWindow = {
-  minimize: () => post("/api/window/minimize"),
-  toggleMaximize: () => post("/api/window/toggle-maximize"),
-  close: () => post("/api/window/close"),
-  // start_dragging() on the Rust side hands off to the OS move-loop.
-  startDrag: () => post("/api/window/drag"),
+  minimize: () => win.minimize(),
+  toggleMaximize: () => win.toggleMaximize(),
+  close: () => win.close(),
+  // startDragging() hands off to the OS move-loop; one call on mousedown is enough.
+  startDrag: () => win.startDragging(),
 };

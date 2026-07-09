@@ -16,28 +16,44 @@ Node/npm is build-only. It is not shipped with Monolith.
 
 ## Architecture
 
-The Rust host starts a loopback HTTP server and opens the WebView at
-`http://127.0.0.1:<port>/`. This keeps the frontend route contract simple:
+The Rust host opens the WebView directly against the bundled frontend
+(`WebviewUrl::App`), using native Tauri v2 IPC instead of a loopback HTTP
+server. See ADR-0015 in `docs/DECISIONS.md`.
 
-- Static app assets.
-- `/api/*` JSON routes.
-- `/media/*` range streaming for video playback.
-- `/thumb/*` thumbnail responses.
-- `/api/events` Server-Sent Events for clip refresh.
+- Frontend calls Rust with `invoke()` (`@tauri-apps/api/core`), dispatched to
+  `#[tauri::command]` functions in `commands.rs`.
+- Live clip-list refresh uses a native event: the host emits a `clips` event
+  when the engine's clip-generation counter advances, the frontend
+  `listen()`s for it.
+- Clip video/thumbnail playback uses the Tauri asset protocol
+  (`convertFileSrc()` over each clip's absolute path) instead of HTTP range
+  streaming. The asset-protocol scope is limited to the configured clip/
+  recording folders and refreshed after every settings save.
+- Window chrome (minimize/maximize/close/drag) is driven directly from the
+  frontend via `@tauri-apps/api/window`; there is no Rust-side window
+  command.
 
 Rust modules:
 
-- `main.rs`: Tauri bootstrap and visible-window creation.
-- `server.rs`: HTTP route handling.
-- `media.rs`: video and thumbnail streaming.
+- `main.rs`: Tauri bootstrap, command registration, visible-window creation,
+  the clip-generation watch thread.
+- `commands.rs`: all `#[tauri::command]` handlers invoked from the frontend.
+- `asset_scope.rs`: scopes the asset protocol to the current output folders.
 - `settings_store.rs`: read/write `%LocalAppData%\Monolith\settings.db`.
-- `clip_catalog.rs`: read-only clip/recs catalog queries.
-- `engine_rpc.rs`: JSON-RPC client to `Monolith.exe`.
+- `clip_catalog.rs`: clip/recs catalog queries and direct-write mutations
+  (favorite/title/hashtags/rename/delete).
+- `engine_rpc.rs`: JSON-RPC client to `Monolith.exe` (recorder control,
+  `clip_regen_thumb`, `reload_settings`, status). Unchanged by the IPC
+  migration — also used by `plugins/stream-deck`.
 - `game_catalog.rs`: game metadata lookup.
+- `exe_icon.rs`: native exe icon extraction.
 - `paths.rs`: Monolith runtime paths.
 
-The UI never writes `clips.db` or `recs.db` directly. Mutations go through engine
-IPC so the recorder remains the single writer.
+The UI writes `clips.db`/`recs.db` directly for favorite/title/hashtag/
+rename/delete (same WAL + `busy_timeout` discipline as the engine), so those
+work without the recorder running. Only `clip_regen_thumb` still goes through
+engine IPC, because thumbnail regeneration decodes a video frame via FFmpeg,
+which only the recorder links against.
 
 ## Develop
 
