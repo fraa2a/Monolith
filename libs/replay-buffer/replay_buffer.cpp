@@ -276,45 +276,29 @@ static std::wstring write_clip(
     }
 
     // ── Compute PTS/DTS offsets so the clip starts at 0 ──────────────────────
-    int64_t v_pts_offset = AV_NOPTS_VALUE;
-    int64_t v_dts_offset = AV_NOPTS_VALUE;
-    std::array<int64_t, 7> a_pts_offsets;
-    std::array<int64_t, 7> a_dts_offsets;
-    a_pts_offsets.fill(AV_NOPTS_VALUE);
-    a_dts_offsets.fill(AV_NOPTS_VALUE);
+    // One-shot snapshot mode: each stream's anchor is just the first packet
+    // seen for it in this already-sorted batch (no pause tracking needed).
+    std::array<mux::TimingAnchor, 7> anchors{};
     for (const auto& ep : pkts) {
         if (ep.stream_index == 0) {
-            if (v_pts_offset == AV_NOPTS_VALUE) v_pts_offset = ep.pts;
-            if (v_dts_offset == AV_NOPTS_VALUE) v_dts_offset = ep.dts;
+            anchors[0].observe(ep.pts, ep.dts);
         } else if (ep.stream_index >= 1 && ep.stream_index <= 6 &&
                    audio_streams[ep.stream_index]) {
-            if (a_pts_offsets[ep.stream_index] == AV_NOPTS_VALUE)
-                a_pts_offsets[ep.stream_index] = ep.pts;
-            if (a_dts_offsets[ep.stream_index] == AV_NOPTS_VALUE)
-                a_dts_offsets[ep.stream_index] = ep.dts;
+            anchors[ep.stream_index].observe(ep.pts, ep.dts);
         }
     }
-    if (v_pts_offset == AV_NOPTS_VALUE) v_pts_offset = 0;
-    if (v_dts_offset == AV_NOPTS_VALUE) v_dts_offset = 0;
-    for (auto& off : a_pts_offsets) { if (off == AV_NOPTS_VALUE) off = 0; }
-    for (auto& off : a_dts_offsets) { if (off == AV_NOPTS_VALUE) off = 0; }
 
     // ── Write packets (already in DTS order) ─────────────────────────────────
     for (const auto& ep : pkts) {
         AVStream* dst_stream = nullptr;
-        int64_t pts_off = 0, dts_off = 0;
-        if (ep.stream_index == 0) {
+        if (ep.stream_index == 0)
             dst_stream = vs;
-            pts_off = v_pts_offset;
-            dts_off = v_dts_offset;
-        } else if (ep.stream_index >= 1 && ep.stream_index <= 6) {
+        else if (ep.stream_index >= 1 && ep.stream_index <= 6)
             dst_stream = audio_streams[ep.stream_index];
-            pts_off = a_pts_offsets[ep.stream_index];
-            dts_off = a_dts_offsets[ep.stream_index];
-        }
         if (!dst_stream) continue;
 
-        mux::write_packet(fmt, dst_stream, ep, pts_off, dts_off);
+        const mux::TimingAnchor& anchor = anchors[ep.stream_index];
+        mux::write_packet(fmt, dst_stream, ep, anchor.pts, anchor.dts);
     }
 
     av_write_trailer(fmt);

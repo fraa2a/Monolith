@@ -65,6 +65,21 @@ struct DisplayCapture::Impl {
     uint32_t                              staging_w = 0;
     uint32_t                              staging_h = 0;
 
+    // GPU pre-readback downscale (see CaptureOptions::output_width/height).
+    // Absent/null when the device doesn't expose D3D11 video support, or
+    // while no downscale is configured — the CopyResource(native) path is
+    // then used unconditionally, identical to pre-downscale behavior.
+    winrt::com_ptr<ID3D11VideoDevice>              video_device;
+    winrt::com_ptr<ID3D11VideoContext>             video_ctx;
+    winrt::com_ptr<ID3D11VideoProcessorEnumerator> vp_enum;
+    winrt::com_ptr<ID3D11VideoProcessor>           video_processor;
+    winrt::com_ptr<ID3D11Texture2D>                scaled_tex;
+    uint32_t                                       vp_src_w = 0;
+    uint32_t                                       vp_src_h = 0;
+    uint32_t                                       vp_dst_w = 0;
+    uint32_t                                       vp_dst_h = 0;
+    bool                                            vp_available = false;
+
     wgdx::Direct3D11::IDirect3DDevice     winrt_device{ nullptr };
     wgc::Direct3D11CaptureFramePool       pool{ nullptr };
     wgc::GraphicsCaptureSession           session{ nullptr };
@@ -140,6 +155,98 @@ static wgc::GraphicsCaptureItem item_from_window(HWND hwnd)
     return item;
 }
 
+// (Re)creates the video processor and its scaled output texture for the
+// given source -> destination size. No-op if already configured for the
+// same sizes. Returns false (leaving impl in a "not scaled" state) on any
+// failure, so callers fall back to native-resolution CopyResource.
+static bool ensure_video_processor(DisplayCapture::Impl* impl,
+                                    uint32_t src_w, uint32_t src_h,
+                                    uint32_t dst_w, uint32_t dst_h)
+{
+    if (impl->video_processor && impl->scaled_tex &&
+        impl->vp_src_w == src_w && impl->vp_src_h == src_h &&
+        impl->vp_dst_w == dst_w && impl->vp_dst_h == dst_h)
+        return true;
+
+    impl->video_processor = nullptr;
+    impl->vp_enum         = nullptr;
+    impl->scaled_tex      = nullptr;
+
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC content{};
+    content.InputFrameFormat         = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+    content.InputFrameRate.Numerator   = 60;
+    content.InputFrameRate.Denominator = 1;
+    content.InputWidth                = src_w;
+    content.InputHeight               = src_h;
+    content.OutputFrameRate.Numerator   = 60;
+    content.OutputFrameRate.Denominator = 1;
+    content.OutputWidth               = dst_w;
+    content.OutputHeight              = dst_h;
+    content.Usage                     = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+
+    if (FAILED(impl->video_device->CreateVideoProcessorEnumerator(
+            &content, impl->vp_enum.put())))
+        return false;
+    if (FAILED(impl->video_device->CreateVideoProcessor(
+            impl->vp_enum.get(), 0, impl->video_processor.put())))
+        return false;
+
+    D3D11_TEXTURE2D_DESC d{};
+    d.Width            = dst_w;
+    d.Height           = dst_h;
+    d.MipLevels        = 1;
+    d.ArraySize        = 1;
+    d.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+    d.SampleDesc.Count = 1;
+    d.Usage            = D3D11_USAGE_DEFAULT;
+    d.BindFlags        = D3D11_BIND_RENDER_TARGET;
+    if (FAILED(impl->d3d_device->CreateTexture2D(&d, nullptr, impl->scaled_tex.put())))
+        return false;
+
+    impl->vp_src_w = src_w;
+    impl->vp_src_h = src_h;
+    impl->vp_dst_w = dst_w;
+    impl->vp_dst_h = dst_h;
+    return true;
+}
+
+// Scales `src_tex` (src_w x src_h) into impl->scaled_tex (dst_w x dst_h) via
+// the D3D11 video processor blit. Returns false on any failure; impl->scaled_tex
+// content is undefined in that case and must not be used by the caller.
+static bool gpu_downscale(DisplayCapture::Impl* impl, ID3D11Texture2D* src_tex,
+                           uint32_t src_w, uint32_t src_h,
+                           uint32_t dst_w, uint32_t dst_h)
+{
+    if (!ensure_video_processor(impl, src_w, src_h, dst_w, dst_h)) return false;
+
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC in_desc{};
+    in_desc.FourCC               = 0;
+    in_desc.ViewDimension        = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    in_desc.Texture2D.MipSlice   = 0;
+    in_desc.Texture2D.ArraySlice = 0;
+
+    winrt::com_ptr<ID3D11VideoProcessorInputView> in_view;
+    if (FAILED(impl->video_device->CreateVideoProcessorInputView(
+            src_tex, impl->vp_enum.get(), &in_desc, in_view.put())))
+        return false;
+
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC out_desc{};
+    out_desc.ViewDimension      = D3D11_VPOV_DIMENSION_TEXTURE2D;
+    out_desc.Texture2D.MipSlice = 0;
+
+    winrt::com_ptr<ID3D11VideoProcessorOutputView> out_view;
+    if (FAILED(impl->video_device->CreateVideoProcessorOutputView(
+            impl->scaled_tex.get(), impl->vp_enum.get(), &out_desc, out_view.put())))
+        return false;
+
+    D3D11_VIDEO_PROCESSOR_STREAM stream{};
+    stream.Enable        = TRUE;
+    stream.pInputSurface  = in_view.get();
+
+    return SUCCEEDED(impl->video_ctx->VideoProcessorBlt(
+        impl->video_processor.get(), out_view.get(), 0, 1, &stream));
+}
+
 // ── DisplayCapture ────────────────────────────────────────────────────────────
 
 DisplayCapture::DisplayCapture() : impl_(new Impl()) {}
@@ -188,6 +295,13 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
     if (mt) mt->SetMultithreadProtected(TRUE);
 
     impl_->d3d_device->GetImmediateContext(impl_->d3d_ctx.put());
+
+    // Best-effort: not all devices/drivers expose the D3D11 video processor
+    // API. When absent, GPU downscale is silently skipped and readback stays
+    // at native resolution (the pre-existing behavior).
+    impl_->d3d_device->QueryInterface(IID_PPV_ARGS(impl_->video_device.put()));
+    impl_->d3d_ctx->QueryInterface(IID_PPV_ARGS(impl_->video_ctx.put()));
+    impl_->vp_available = impl_->video_device && impl_->video_ctx;
 
     try {
         impl_->winrt_device = wrap_d3d(impl_->d3d_device);
@@ -253,13 +367,36 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
                 winrt::com_ptr<ID3D11Texture2D> gpu_tex;
                 if (access && SUCCEEDED(access->GetInterface(IID_PPV_ARGS(gpu_tex.put())))) {
 
+                    // GPU pre-readback downscale: when a smaller output size is
+                    // configured, scale on the GPU into impl_->scaled_tex first and
+                    // size the staging texture (and thus the CPU readback/memcpy)
+                    // to that smaller size instead of native resolution. Falls back
+                    // to the native-resolution path on any failure or when no
+                    // downscale is configured, so behavior is unchanged by default.
+                    const uint32_t want_w = static_cast<uint32_t>(std::max(0, impl_->options.output_width));
+                    const uint32_t want_h = static_cast<uint32_t>(std::max(0, impl_->options.output_height));
+                    const bool want_scale = impl_->vp_available && want_w > 0 && want_h > 0 &&
+                        (want_w != fi.width || want_h != fi.height);
+
+                    ID3D11Texture2D* copy_src = gpu_tex.get();
+                    uint32_t         copy_w   = fi.width;
+                    uint32_t         copy_h   = fi.height;
+                    if (want_scale &&
+                        gpu_downscale(impl_, gpu_tex.get(), fi.width, fi.height, want_w, want_h)) {
+                        copy_src = impl_->scaled_tex.get();
+                        copy_w   = want_w;
+                        copy_h   = want_h;
+                    }
+                    fi.width  = copy_w;
+                    fi.height = copy_h;
+
                     // Create / recreate staging texture when dimensions change.
                     if (!impl_->staging_tex ||
-                        impl_->staging_w != fi.width ||
-                        impl_->staging_h != fi.height) {
+                        impl_->staging_w != copy_w ||
+                        impl_->staging_h != copy_h) {
                         D3D11_TEXTURE2D_DESC d{};
-                        d.Width            = fi.width;
-                        d.Height           = fi.height;
+                        d.Width            = copy_w;
+                        d.Height           = copy_h;
                         d.MipLevels        = 1;
                         d.ArraySize        = 1;
                         d.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -268,15 +405,15 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
                         d.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
                         impl_->staging_tex = nullptr;
                         impl_->d3d_device->CreateTexture2D(&d, nullptr, impl_->staging_tex.put());
-                        impl_->staging_w = fi.width;
-                        impl_->staging_h = fi.height;
+                        impl_->staging_w = copy_w;
+                        impl_->staging_h = copy_h;
                     }
 
                     if (impl_->staging_tex) {
                         LARGE_INTEGER readback_start{};
                         QueryPerformanceCounter(&readback_start);
 
-                        impl_->d3d_ctx->CopyResource(impl_->staging_tex.get(), gpu_tex.get());
+                        impl_->d3d_ctx->CopyResource(impl_->staging_tex.get(), copy_src);
 
                         D3D11_MAPPED_SUBRESOURCE mapped{};
                         if (SUCCEEDED(impl_->d3d_ctx->Map(
@@ -352,13 +489,20 @@ void DisplayCapture::stop()
     if (impl_->session) { impl_->session.Close(); impl_->session = nullptr; }
     if (impl_->pool)    { impl_->pool.Close();    impl_->pool    = nullptr; }
 
-    impl_->staging_tex  = nullptr;
+    impl_->staging_tex     = nullptr;
+    impl_->video_processor = nullptr;
+    impl_->vp_enum         = nullptr;
+    impl_->scaled_tex      = nullptr;
+    impl_->video_ctx       = nullptr;
+    impl_->video_device    = nullptr;
     impl_->d3d_ctx      = nullptr;
     impl_->winrt_device = nullptr;
     impl_->d3d_device   = nullptr;
     impl_->cb           = nullptr;
     impl_->staging_w    = 0;
     impl_->staging_h    = 0;
+    impl_->vp_src_w = impl_->vp_src_h = impl_->vp_dst_w = impl_->vp_dst_h = 0;
+    impl_->vp_available = false;
     impl_->border_suppressed.store(false, std::memory_order_relaxed);
     impl_->seq.store(0, std::memory_order_relaxed);
 }

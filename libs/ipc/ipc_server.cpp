@@ -7,15 +7,22 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
 
 #include "ipc_server.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <functional>
+#include <mutex>
+#include <random>
 #include <string>
 #include <thread>
+#include <vector>
 
 // These match the Cmd enum in main.cpp — kept in sync manually.
 static constexpr UINT kCmdSaveReplay     = 1001;
@@ -25,16 +32,38 @@ static constexpr UINT kCmdPauseResume    = 1004;
 // Matches WM_SETTINGS_RELOAD (WM_APP + 2) in main.cpp — kept in sync manually.
 static constexpr UINT kMsgSettingsReload = WM_APP + 2;
 
+// Reasonable ceiling for briefly-overlapping connections (UI + Stream Deck
+// plugin, plus a reconnect race); this is a local-only loopback service, not
+// internet-facing, so there is no need for anything larger.
+static constexpr int kListenBacklog = 8;
+
 namespace ipc {
 namespace {
 
 std::atomic<bool>               g_running{false};
 SOCKET                          g_server_socket = INVALID_SOCKET;
-std::atomic<SOCKET>             g_client_socket{INVALID_SOCKET};
 HWND                            g_hwnd          = nullptr;
 std::function<RecordingState()> g_status_fn;
 ClipMutationFn                  g_mutation_fn;
-std::thread                     g_thread;
+std::thread                     g_accept_thread;
+std::string                     g_auth_token;
+
+std::mutex               g_clients_mutex;
+std::vector<SOCKET>      g_client_sockets;
+std::vector<std::thread> g_client_threads;
+
+void track_client(SOCKET s)
+{
+    std::lock_guard<std::mutex> lk(g_clients_mutex);
+    g_client_sockets.push_back(s);
+}
+
+void untrack_client(SOCKET s)
+{
+    std::lock_guard<std::mutex> lk(g_clients_mutex);
+    auto it = std::find(g_client_sockets.begin(), g_client_sockets.end(), s);
+    if (it != g_client_sockets.end()) g_client_sockets.erase(it);
+}
 
 std::string make_result(int id, const nlohmann::json& result)
 {
@@ -80,8 +109,11 @@ void handle_client(SOCKET client)
                 auto        req    = nlohmann::json::parse(line);
                 req_id             = req.value("id", -1);
                 std::string method = req.value("method", "");
+                std::string token  = req.value("token", "");
 
-                if (method == "save_replay") {
+                if (token != g_auth_token) {
+                    response = make_error(req_id, -32001, "Unauthorized: missing or invalid token");
+                } else if (method == "save_replay") {
                     PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdSaveReplay, 0), 0);
                     response = make_result(req_id, {{"status", "accepted"}});
                 } else if (method == "recording_start") {
@@ -94,6 +126,11 @@ void handle_client(SOCKET client)
                     PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdPauseResume, 0), 0);
                     response = make_result(req_id, {{"status", "accepted"}});
                 } else if (method == "get_status") {
+                    // g_status_fn/g_mutation_fn are set once in start() before the
+                    // accept loop begins and never reassigned, so concurrent
+                    // handle_client() threads reading them is safe without a lock.
+                    // Each call reads live engine state (g_recording, etc.), which
+                    // is independently synchronized by its own owner.
                     RecordingState st = g_status_fn();
                     response = make_result(req_id, {
                         {"recording",         st.is_recording},
@@ -131,6 +168,11 @@ void handle_client(SOCKET client)
                         m.favorite = get_or("favorite", false);
                         m.new_name = get_or("new_name", std::string());
                         m.title    = get_or("title", std::string());
+                        // handle_client runs on its own thread per connection; the
+                        // mutation callback (handle_clip_mutation in main.cpp)
+                        // opens its own DB handle per call and only touches
+                        // mutex-guarded globals, so concurrent invocations from
+                        // different client threads are safe.
                         std::string err = g_mutation_fn(m);
                         if (err.empty())
                             response = make_result(req_id, {{"status", "ok"}});
@@ -152,29 +194,125 @@ void handle_client(SOCKET client)
             }
         }
     }
+
+    untrack_client(client);
+    closesocket(client);
 }
 
-void server_loop()
+void accept_loop()
 {
     while (g_running) {
         SOCKET client = accept(g_server_socket, nullptr, nullptr);
         if (client == INVALID_SOCKET) break; // closed by stop()
-        g_client_socket.store(client, std::memory_order_release);
-        handle_client(client);
-        g_client_socket.store(INVALID_SOCKET, std::memory_order_release);
-        closesocket(client);
+        track_client(client);
+
+        std::lock_guard<std::mutex> lk(g_clients_mutex);
+        // One thread per accepted connection: this is a low-traffic local
+        // control-plane server (UI + Stream Deck plugin, at most a couple of
+        // clients), so per-connection threads are simpler than an event loop
+        // and are sufficient for this volume.
+        g_client_threads.emplace_back(handle_client, client);
     }
+}
+
+std::string generate_token()
+{
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    std::random_device rd;
+    std::mt19937_64 gen(
+        (static_cast<uint64_t>(rd()) << 32) ^ static_cast<uint64_t>(rd()));
+    std::uniform_int_distribution<std::size_t> dist(0, sizeof(kAlphabet) - 2);
+
+    std::string token;
+    token.reserve(32);
+    for (int i = 0; i < 32; ++i)
+        token += kAlphabet[dist(gen)];
+    return token;
+}
+
+// Writes the token to <app_data_dir>\ipc_token, restricted to the current
+// user's SID via an explicit DACL, so other local accounts on the machine
+// cannot read it. Best-effort: on failure the file is simply absent/stale and
+// every RPC request will be rejected as unauthorized (fail-closed).
+bool write_token_file(const std::wstring& app_data_dir, const std::string& token)
+{
+    std::wstring path = app_data_dir + L"\\ipc_token";
+
+    PSID sid = nullptr;
+    HANDLE process_token = nullptr;
+    bool sid_ok = false;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &process_token)) {
+        DWORD needed = 0;
+        GetTokenInformation(process_token, TokenUser, nullptr, 0, &needed);
+        std::vector<BYTE> buf(needed);
+        if (needed > 0 &&
+            GetTokenInformation(process_token, TokenUser, buf.data(), needed, &needed)) {
+            auto* user = reinterpret_cast<TOKEN_USER*>(buf.data());
+            sid = user->User.Sid;
+            sid_ok = sid != nullptr;
+
+            if (sid_ok) {
+                EXPLICIT_ACCESSW ea{};
+                ea.grfAccessPermissions = GENERIC_READ | GENERIC_WRITE;
+                ea.grfAccessMode        = SET_ACCESS;
+                ea.grfInheritance       = NO_INHERITANCE;
+                ea.Trustee.TrusteeForm  = TRUSTEE_IS_SID;
+                ea.Trustee.TrusteeType  = TRUSTEE_IS_USER;
+                ea.Trustee.ptstrName    = reinterpret_cast<LPWSTR>(sid);
+
+                PACL acl = nullptr;
+                if (SetEntriesInAclW(1, &ea, nullptr, &acl) == ERROR_SUCCESS && acl) {
+                    SECURITY_ATTRIBUTES sa{};
+                    sa.nLength = sizeof(sa);
+                    SECURITY_DESCRIPTOR sd;
+                    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+                    SetSecurityDescriptorDacl(&sd, TRUE, acl, FALSE);
+                    sa.lpSecurityDescriptor = &sd;
+
+                    HANDLE file = CreateFileW(
+                        path.c_str(), GENERIC_WRITE, 0, &sa,
+                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (file != INVALID_HANDLE_VALUE) {
+                        DWORD written = 0;
+                        WriteFile(file, token.data(), static_cast<DWORD>(token.size()),
+                                  &written, nullptr);
+                        CloseHandle(file);
+                        LocalFree(acl);
+                        CloseHandle(process_token);
+                        return written == token.size();
+                    }
+                    LocalFree(acl);
+                }
+            }
+        }
+        CloseHandle(process_token);
+    }
+
+    // Fallback: still write the file (with default ACLs) rather than leave
+    // clients unable to authenticate at all.
+    HANDLE file = CreateFileW(
+        path.c_str(), GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    WriteFile(file, token.data(), static_cast<DWORD>(token.size()), &written, nullptr);
+    CloseHandle(file);
+    return written == token.size();
 }
 
 } // namespace
 
-void start(HWND hwnd,
+void start(const std::wstring& app_data_dir,
+           HWND hwnd,
            std::function<RecordingState()> status_fn,
            ClipMutationFn mutation_fn)
 {
     g_hwnd        = hwnd;
     g_status_fn   = std::move(status_fn);
     g_mutation_fn = std::move(mutation_fn);
+    g_auth_token  = generate_token();
+    write_token_file(app_data_dir, g_auth_token);
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
@@ -194,7 +332,7 @@ void start(HWND hwnd,
     if (bind(g_server_socket,
              reinterpret_cast<sockaddr*>(&addr),
              sizeof(addr)) == SOCKET_ERROR ||
-        listen(g_server_socket, 1) == SOCKET_ERROR)
+        listen(g_server_socket, kListenBacklog) == SOCKET_ERROR)
     {
         closesocket(g_server_socket);
         g_server_socket = INVALID_SOCKET;
@@ -203,7 +341,7 @@ void start(HWND hwnd,
     }
 
     g_running = true;
-    g_thread  = std::thread(server_loop);
+    g_accept_thread = std::thread(accept_loop);
 }
 
 void stop()
@@ -214,12 +352,23 @@ void stop()
         closesocket(g_server_socket);
         g_server_socket = INVALID_SOCKET;
     }
-    // Unblock handle_client()'s recv() so server_loop() (and the join below)
-    // can return even while a client is still connected.
-    SOCKET client = g_client_socket.exchange(INVALID_SOCKET, std::memory_order_acq_rel);
-    if (client != INVALID_SOCKET)
-        shutdown(client, SD_BOTH);
-    if (g_thread.joinable()) g_thread.join();
+    // Unblock every handle_client()'s recv() so each client thread (and the
+    // accept thread, via the closed listen socket above) can return.
+    {
+        std::lock_guard<std::mutex> lk(g_clients_mutex);
+        for (SOCKET s : g_client_sockets)
+            shutdown(s, SD_BOTH);
+    }
+    if (g_accept_thread.joinable()) g_accept_thread.join();
+
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lk(g_clients_mutex);
+        threads.swap(g_client_threads);
+    }
+    for (auto& t : threads)
+        if (t.joinable()) t.join();
+
     WSACleanup();
 }
 

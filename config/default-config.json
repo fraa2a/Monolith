@@ -51,10 +51,14 @@
   },
   "capture_mode": {
     "mode": "always",
-    "idle_timeout_seconds": 300
+    "idle_timeout_seconds": 300,
+    "auto_record": false
   },
   "discord": {
     "rich_presence_enabled": false
+  },
+  "advanced": {
+    "logging_enabled": false
   },
   "active_game": {
     "detection_enabled": true,

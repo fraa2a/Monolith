@@ -139,12 +139,15 @@ Priority order:
 
 ### Release Setup
 
+Done: WinSparkle Ed25519 key pair generated, public key in
+`app/recorder/src/updater.cpp`, private key wired into CI as the
+`WINSPARKLE_ED_PRIVATE_KEY` secret used by `.github/workflows/version-tag.yml`
+to sign the appcast.
+
 External setup still required:
 
 - Create public `fraa2a/Monolith-releases` repo.
-- Generate WinSparkle Ed25519 key pair.
-- Put public key in `app/recorder/src/updater.cpp`.
-- Add CI secrets `WINSPARKLE_ED_PRIVATE_KEY` and `RELEASES_REPO_PAT`.
+- Add CI secret `RELEASES_REPO_PAT`.
 - Push first `vX.Y.Z` tag and verify install/update path.
 
 ## Not Started Or Deferred

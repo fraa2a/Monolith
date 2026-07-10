@@ -57,4 +57,24 @@ bool write_packet(AVFormatContext* fmt,
                   int64_t          pts_offset,
                   int64_t          dts_offset);
 
+// Captures the pts/dts of the first packet observed on a stream, so callers
+// can offset every subsequent packet back to zero. Shared by both mux modes:
+// replay-buffer's one-shot snapshot (anchor only, never reset) and manual
+// recording's continuous-with-pause stream (anchor plus caller-tracked pause
+// accumulation added on top of anchor.pts/anchor.dts).
+struct TimingAnchor {
+    bool    set = false;
+    int64_t pts = 0;
+    int64_t dts = 0;
+
+    // No-op after the first call for this instance.
+    void observe(int64_t p, int64_t d)
+    {
+        if (set) return;
+        set = true;
+        pts = p;
+        dts = d;
+    }
+};
+
 } // namespace encoding::mux

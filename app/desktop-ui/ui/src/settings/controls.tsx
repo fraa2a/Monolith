@@ -211,7 +211,7 @@ function keyLabel(e: KeyboardEvent): string | null {
 }
 
 export function HotkeyCapture(
-  { value, onChange }: { value: string; onChange: (v: string) => void },
+  { value, onChange, invalid }: { value: string; onChange: (v: string) => void; invalid?: boolean },
 ) {
   const [capturing, setCapturing] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
@@ -250,7 +250,7 @@ export function HotkeyCapture(
     <button
       ref={ref}
       type="button"
-      class={`hotkey-capture ${capturing ? "capturing" : ""}`}
+      class={`hotkey-capture ${capturing ? "capturing" : ""} ${invalid ? "invalid" : ""}`}
       onClick={() => setCapturing(true)}
       onBlur={() => setCapturing(false)}
     >

@@ -1,6 +1,7 @@
 #include "storage.h"
 
 #include <encoding/encoding.h>
+#include <platform-win/platform_win.h>
 
 #include <sqlite3.h>
 
@@ -25,29 +26,8 @@ namespace fs = std::filesystem;
 namespace storage {
 namespace {
 
-std::string wide_to_utf8(const std::wstring& w)
-{
-    if (w.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
-                                  nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return {};
-    std::string out(static_cast<size_t>(len), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
-                        out.data(), len, nullptr, nullptr);
-    return out;
-}
-
-std::wstring utf8_to_wide(const std::string& s)
-{
-    if (s.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
-                                  nullptr, 0);
-    if (len <= 0) return {};
-    std::wstring out(static_cast<size_t>(len), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
-                        out.data(), len);
-    return out;
-}
+using platform_win::utf8_to_wide;
+using platform_win::wide_to_utf8;
 
 bool is_video_ext(const fs::path& p)
 {
@@ -144,6 +124,7 @@ const char* kCreateSchema =
     "  duration_seconds REAL,"
     "  game_process_name TEXT,"
     "  game_display_name TEXT,"
+    "  game_executable_path TEXT,"
     "  discord_app_id TEXT,"
     "  game_source TEXT,"
     "  steam_app_id INTEGER,"
@@ -358,6 +339,9 @@ std::unique_ptr<ClipDb> ClipDb::open(const std::wstring& folder,
     if (!has_column(db, "clips", "discord_app_id"))
         exec(db, "ALTER TABLE clips ADD COLUMN discord_app_id TEXT;",
              nullptr);
+    if (!has_column(db, "clips", "game_executable_path"))
+        exec(db, "ALTER TABLE clips ADD COLUMN game_executable_path TEXT;",
+             nullptr);
 
     std::unique_ptr<ClipDb> out(new ClipDb());
     out->impl_->db      = db;
@@ -373,9 +357,9 @@ int64_t ClipDb::insert_clip(const ClipRow& row, std::string* error)
 {
     static const char* sql =
         "INSERT INTO clips (video_file, thumbnail_file, title, created_at_utc, source, "
-        "duration_seconds, game_process_name, game_display_name, discord_app_id, game_source, "
-        "steam_app_id, confidence, favorite) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        "duration_seconds, game_process_name, game_display_name, game_executable_path, "
+        "discord_app_id, game_source, steam_app_id, confidence, favorite) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(impl_->db, sql, -1, &st, nullptr) != SQLITE_OK) {
         if (error) *error = sqlite3_errmsg(impl_->db);
@@ -397,12 +381,14 @@ int64_t ClipDb::insert_clip(const ClipRow& row, std::string* error)
     sqlite3_bind_double(st, 6, row.duration_seconds);
     sqlite3_bind_text(st, 7, row.game_process_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(st, 8, row.game_display_name.c_str(), -1, SQLITE_TRANSIENT);
-    if (row.discord_app_id.empty()) sqlite3_bind_null(st, 9);
-    else sqlite3_bind_text(st, 9, row.discord_app_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 10, row.game_source.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 11, row.steam_app_id);
-    sqlite3_bind_int(st, 12, row.confidence);
-    sqlite3_bind_int(st, 13, row.favorite ? 1 : 0);
+    if (row.game_executable_path.empty()) sqlite3_bind_null(st, 9);
+    else sqlite3_bind_text(st, 9, row.game_executable_path.c_str(), -1, SQLITE_TRANSIENT);
+    if (row.discord_app_id.empty()) sqlite3_bind_null(st, 10);
+    else sqlite3_bind_text(st, 10, row.discord_app_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 11, row.game_source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 12, row.steam_app_id);
+    sqlite3_bind_int(st, 13, row.confidence);
+    sqlite3_bind_int(st, 14, row.favorite ? 1 : 0);
 
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);

@@ -198,6 +198,29 @@ This file is the architecture decision record index for Monolith.
   server as an attack surface and a source of CSP friction on `asset:`/`ipc:`
   origins.
 
+## ADR-0016: Hardened Local IPC Server (Multi-Client, Backlog, Token Auth)
+
+- Status: accepted.
+- Decision:
+  - `libs/ipc/ipc_server.cpp` now spawns one thread per accepted connection
+    (`accept_loop()` + `handle_client()` per socket) instead of handling a
+    single client at a time; `listen()` backlog raised from 1 to 8.
+  - `status_fn`/`mutation_fn` callbacks passed to `ipc::start()` may now be
+    invoked concurrently from multiple client-handler threads and must be
+    internally thread-safe (they already were: `handle_clip_mutation` opens a
+    fresh DB handle per call and only touches mutex-guarded globals).
+  - A random 32-character token is generated at engine startup and written to
+    `<app_data_dir>\ipc_token`, ACL'd to the current user's SID. Every
+    JSON-RPC request must include a top-level `"token"` field matching it, or
+    the server responds with error code `-32001` and performs no action
+    (fail-closed if the file can't be read/written).
+  - Both consumers read the token file and attach it to every request:
+    `app/desktop-ui/src-tauri/src/engine_rpc.rs` and
+    `plugins/stream-deck/src/ipc-client.ts`.
+- Notes: this is still a loopback-only (`127.0.0.1`) control-plane service —
+  the token defends against other local users/processes on a shared machine
+  issuing recorder commands or clip mutations, not against network attackers.
+
 ## Open Decisions
 
 - Final MP4 remux/finalization policy for interrupted recordings.

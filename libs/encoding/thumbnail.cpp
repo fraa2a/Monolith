@@ -1,5 +1,7 @@
 #include "encoding.h"
 
+#include <platform-win/platform_win.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -27,18 +29,7 @@ extern "C" {
 namespace encoding {
 namespace {
 
-std::string wide_to_utf8(const std::wstring& w)
-{
-    if (w.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(),
-                                  static_cast<int>(w.size()),
-                                  nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return {};
-    std::string out(static_cast<size_t>(len), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
-                        out.data(), len, nullptr, nullptr);
-    return out;
-}
+using platform_win::wide_to_utf8;
 
 // RAII wrappers so early returns can't leak libav objects.
 struct FmtCtx {

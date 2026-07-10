@@ -6,7 +6,6 @@
 // via `video.audioTracks`; when that API is unavailable we simply leave the
 // default track playing and document the limitation.
 export function enableAllAudioTracks(video: HTMLVideoElement): void {
-  // deno-lint-ignore no-explicit-any
   const tracks = (video as any).audioTracks;
   if (!tracks || typeof tracks.length !== "number") return;
   for (let i = 0; i < tracks.length; i++) {

@@ -38,6 +38,22 @@ fn spawn_clip_watch(app: tauri::AppHandle) {
     });
 }
 
+// Discord artwork cache refresh: the clip grid only ever reads
+// game_catalog.db locally (resolve_artwork_cached), so any entry with a known
+// discord_app_id gets re-fetched here in the background on a 72h cadence
+// instead of on the display path. Runs once at startup, then re-checks every
+// 6h so a long-running session doesn't need a restart to pick up refreshes.
+fn spawn_artwork_refresh() {
+    thread::spawn(|| {
+        const REFRESH_AGE: Duration = Duration::from_secs(72 * 3600);
+        const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);
+        loop {
+            game_catalog::refresh_stale(REFRESH_AGE);
+            thread::sleep(CHECK_INTERVAL);
+        }
+    });
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -67,6 +83,7 @@ fn main() {
         .setup(|app| {
             asset_scope::refresh(&app.handle());
             spawn_clip_watch(app.handle().clone());
+            spawn_artwork_refresh();
 
             // decorations(false): the frontend draws its own title bar; window
             // controls + dragging use the native @tauri-apps/api/window API.

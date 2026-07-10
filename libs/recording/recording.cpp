@@ -28,10 +28,8 @@ namespace recording {
 namespace mux = encoding::mux;
 
 struct StreamTiming {
-    bool    input_anchor_set = false;
+    mux::TimingAnchor anchor;             // first pts/dts seen (see mux_common.h)
     bool    pause_start_set  = false;
-    int64_t input_anchor_pts = 0;
-    int64_t input_anchor_dts = 0;
     int64_t pause_start_pts  = 0;
     int64_t paused_pts       = 0;
 };
@@ -131,11 +129,7 @@ static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
     if (!dst_stream) return false;
 
     StreamTiming& timing = impl->timing[ep.stream_index];
-    if (!timing.input_anchor_set) {
-        timing.input_anchor_set = true;
-        timing.input_anchor_pts = ep.pts;
-        timing.input_anchor_dts = ep.dts;
-    }
+    timing.anchor.observe(ep.pts, ep.dts);
 
     if (timing.pause_start_set) {
         if (ep.pts > timing.pause_start_pts)
@@ -143,8 +137,8 @@ static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
         timing.pause_start_set = false;
     }
 
-    const int64_t pts_off = timing.input_anchor_pts + timing.paused_pts;
-    const int64_t dts_off = timing.input_anchor_dts + timing.paused_pts;
+    const int64_t pts_off = timing.anchor.pts + timing.paused_pts;
+    const int64_t dts_off = timing.anchor.dts + timing.paused_pts;
     bool ok = mux::write_packet(impl->fmt, dst_stream, ep, pts_off, dts_off);
     if (ok) impl->wrote_packet = true;
     return ok;
@@ -230,7 +224,7 @@ void ManualRecorder::push(encoding::EncodedPacket pkt)
     if (impl_->state == RecordingState::Paused) {
         if (pkt.stream_index >= 0 && pkt.stream_index <= 6) {
             StreamTiming& timing = impl_->timing[pkt.stream_index];
-            if (timing.input_anchor_set && !timing.pause_start_set) {
+            if (timing.anchor.set && !timing.pause_start_set) {
                 timing.pause_start_set = true;
                 timing.pause_start_pts = pkt.pts;
             }

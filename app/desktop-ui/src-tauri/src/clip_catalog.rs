@@ -47,6 +47,7 @@ pub struct Clip {
     pub duration_seconds: Option<f64>,
     pub game_process_name: Option<String>,
     pub game_display_name: Option<String>,
+    pub game_executable_path: Option<String>,
     pub discord_app_id: Option<String>,
     pub game_icon_url: Option<String>,
     pub game_cover_url: Option<String>,
@@ -131,11 +132,16 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
     } else {
         "NULL"
     };
+    let exe_path_expr = if has_column(&conn, "clips", "game_executable_path") {
+        "game_executable_path"
+    } else {
+        "NULL"
+    };
 
     let sql = format!(
         "SELECT id, video_file, thumbnail_file, created_at_utc, duration_seconds,
                 game_process_name, game_display_name, favorite,
-                COALESCE(NULLIF(title, ''), 'Untitled'), {discord_expr}
+                COALESCE(NULLIF(title, ''), 'Untitled'), {discord_expr}, {exe_path_expr}
          FROM clips ORDER BY datetime(created_at_utc) DESC",
     );
 
@@ -150,7 +156,11 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
         let game_process_name = row.get::<_, Option<String>>(5)?;
         let game_display_name = row.get::<_, Option<String>>(6)?;
         let discord_app_id = row.get::<_, Option<String>>(9)?;
-        let artwork = game_catalog::resolve_artwork(discord_app_id.as_deref(), game_process_name.as_deref());
+        let game_executable_path = row.get::<_, Option<String>>(10)?;
+        // Cache-only read: the clip grid must never make a synchronous network
+        // call. Artwork not yet cached shows up once the scheduled refresh
+        // (see game_catalog::refresh_stale) has run.
+        let artwork = game_catalog::resolve_artwork_cached(discord_app_id.as_deref(), game_process_name.as_deref());
         let video_path = folder.join(&video_file);
         let thumbnail_path = thumbnail_file
             .as_ref()
@@ -166,6 +176,7 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
             duration_seconds: row.get(4)?,
             game_process_name,
             game_display_name: game_display_name.or_else(|| if artwork.display_name.is_empty() { None } else { Some(artwork.display_name.clone()) }),
+            game_executable_path,
             discord_app_id: discord_app_id.or(artwork.discord_app_id.clone()),
             game_icon_url: artwork.icon_url,
             game_cover_url: artwork.cover_url,

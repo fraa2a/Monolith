@@ -15,8 +15,8 @@
 //
 // The recorder (the always-on process) is the single writer at clip-save time
 // and for reconcile. UI-driven mutations (favorite/hashtag/delete) also route
-// through the recorder over IPC so there is exactly one writer per DB. The Deno
-// UI opens the same DB read-only for the grid. All connections use WAL +
+// through the recorder over IPC so there is exactly one writer per DB. The UI
+// process opens the same DB read-only for the grid. All connections use WAL +
 // busy_timeout so reads never block the writer.
 
 namespace storage {
@@ -30,7 +30,7 @@ std::string now_iso8601_utc();
 // Replaces the old config.json file (ADR-0009 rewrite). Lives at
 // <app_data_dir>\settings.db in WAL mode. A generic string KV table; the caller
 // (settings_config.cpp) owns the schema meaning of keys — this layer stays
-// JSON-agnostic. The Deno UI reads/writes the same table for the settings popup;
+// JSON-agnostic. The UI process reads/writes the same table for the settings popup;
 // writes are user-driven and infrequent, so single-writer contention is a
 // non-issue in practice, and WAL keeps reads non-blocking either way.
 
@@ -57,6 +57,7 @@ struct ClipRow {
     double       duration_seconds = 0.0;
     std::string  game_process_name;
     std::string  game_display_name;
+    std::string  game_executable_path; // full path; UI extracts an icon from it
     std::string  discord_app_id;
     std::string  game_source;      // "steam"|"game_db"|"heuristic"|"manual"|""
     int64_t      steam_app_id = 0; // 0 = unknown

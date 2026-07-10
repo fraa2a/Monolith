@@ -19,6 +19,8 @@ target_link_libraries(audio
     PUBLIC
         mmdevapi
         propsys
+    PRIVATE
+        platform_win
 )
 
 if(MSVC)

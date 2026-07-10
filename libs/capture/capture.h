@@ -16,6 +16,14 @@ struct CaptureOptions {
     int max_readback_fps = 60;
     bool allow_unlimited_readback = false;
     HWND target_window = nullptr;
+
+    // Desired readback size. When both are > 0 and differ from the captured
+    // content size, the frame is downscaled on the GPU (D3D11 video
+    // processor) before the CPU staging readback, so readback/memcpy cost
+    // scales with the smaller output size instead of native resolution.
+    // 0 (default) = capture at native size, no GPU scaling step.
+    int output_width = 0;
+    int output_height = 0;
 };
 
 struct CaptureStats {

@@ -58,8 +58,8 @@ bool settings_already_running()
     FocusContext ctx{ GetProcessId(g_settings_process), false };
     EnumWindows(focus_enum_proc, reinterpret_cast<LPARAM>(&ctx));
     // Only treat the process as "already running" when it actually has a visible
-    // window we could focus. A live process with no window (the failure mode that
-    // motivated leaving Deno Desktop) must not block relaunches forever.
+    // window we could focus. A live process with no window must not block
+    // relaunches forever.
     return ctx.focused;
 }
 
@@ -72,9 +72,8 @@ std::filesystem::path module_dir()
 }
 
 // How to launch the UI: the executable, its command line, and the working
-// directory. The Tauri host is a single self-contained exe (Monolith.UI.exe):
-// it starts its own loopback HTTP server and opens the WebView2 window, so a
-// plain exe path is all that's needed.
+// directory. The Tauri host is a single self-contained exe (Monolith.UI.exe)
+// that opens the WebView2 window, so a plain exe path is all that's needed.
 struct UiLaunch {
     std::filesystem::path exe;
     std::wstring          command_line; // quoted exe + args
@@ -124,7 +123,7 @@ void show(HWND owner, UINT reload_message)
     if (!launch.found) {
         MessageBoxW(owner,
             L"The Monolith UI (Monolith.UI.exe) was not found.\n\n"
-            L"It is built by CMake when Rust/Cargo and `deno` are installed; "
+            L"It is built by CMake when Rust/Cargo and Node.js/npm are installed; "
             L"reinstall or rebuild to restore it.",
             L"Monolith", MB_ICONERROR);
         return;

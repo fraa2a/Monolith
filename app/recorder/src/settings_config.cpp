@@ -11,8 +11,12 @@
 #include <nlohmann/json.hpp>
 
 #include <storage/storage.h>
+#include <platform-win/platform_win.h>
+
+#include "default_config.h" // generated from config/default-config.json (Task 3)
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -23,89 +27,6 @@ namespace settings {
 namespace {
 
 using json = nlohmann::json;
-
-constexpr const char* kFallbackDefaultConfig = R"json(
-{
-  "schema_version": 3,
-  "capture": {
-    "monitor_device": "",
-    "resolution_preset": "source",
-    "show_capture_border": false
-  },
-  "replay_buffer": {
-    "enabled": true,
-    "duration_seconds": 30,
-    "save_container": "mkv"
-  },
-  "recording": {
-    "enabled": true,
-    "container": "mkv"
-  },
-  "audio": {
-    "mode": "default",
-    "primary_microphone_device_id": "",
-    "sources": [
-      {
-        "id": "desktop",
-        "type": "desktop",
-        "name": "All desktop audio",
-        "enabled": true,
-        "tracks": [1]
-      }
-    ],
-    "capture_mode": "all_pc_audio",
-    "separate_tracks": true,
-    "app_preferences": {},
-    "extra_microphones": []
-  },
-  "video_encoder": {
-    "device": "gpu",
-    "codec": "h264",
-    "bitrate_kbps": 20000,
-    "fps": 60,
-    "scaling_filter": "bilinear",
-    "extra_ffmpeg_options": ""
-  },
-  "output": {
-    "clips_directory": "",
-    "recordings_directory": ""
-  },
-  "hotkeys": {
-    "save_replay": "Ctrl+Shift+F8",
-    "recording_start": "Ctrl+Shift+F9",
-    "recording_stop": "Ctrl+Shift+F10",
-    "pause_resume": "Ctrl+Shift+F11"
-  },
-  "update": {
-    "auto_check": true
-  },
-  "capture_mode": {
-    "mode": "always",
-    "idle_timeout_seconds": 300,
-    "auto_record": false
-  },
-  "discord": {
-    "rich_presence_enabled": false
-  },
-  "active_game": {
-    "detection_enabled": true,
-    "blacklist_processes": [
-      "Monolith.exe",
-      "Monolith.UI.exe",
-      "Discord.exe",
-      "chrome.exe",
-      "msedge.exe",
-      "firefox.exe",
-      "obs64.exe",
-      "explorer.exe",
-      "dwm.exe",
-      "SearchHost.exe",
-      "StartMenuExperienceHost.exe",
-      "ShellExperienceHost.exe"
-    ]
-  }
-}
-)json";
 
 std::wstring module_dir()
 {
@@ -169,33 +90,8 @@ bool exists(const std::wstring& path)
     return std::filesystem::is_regular_file(std::filesystem::path(path), ec);
 }
 
-std::wstring utf8_to_wide(const std::string& value)
-{
-    if (value.empty()) return {};
-    int count = MultiByteToWideChar(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        nullptr, 0);
-    if (count <= 0) return {};
-    std::wstring result(static_cast<size_t>(count), L'\0');
-    MultiByteToWideChar(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        result.data(), count);
-    return result;
-}
-
-std::string wide_to_utf8(const std::wstring& value)
-{
-    if (value.empty()) return {};
-    int count = WideCharToMultiByte(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (count <= 0) return {};
-    std::string result(static_cast<size_t>(count), '\0');
-    WideCharToMultiByte(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        result.data(), count, nullptr, nullptr);
-    return result;
-}
+using platform_win::utf8_to_wide;
+using platform_win::wide_to_utf8;
 
 void merge_overrides(json& target, const json& overrides)
 {
@@ -212,7 +108,7 @@ void merge_overrides(json& target, const json& overrides)
 
 json fallback_defaults()
 {
-    return json::parse(kFallbackDefaultConfig);
+    return json::parse(kEmbeddedDefaultConfig);
 }
 
 json load_defaults(
@@ -280,6 +176,40 @@ std::string utf8_at(const json& doc, const char* section, const char* key, const
     if (value_it == section_it->end() || !value_it->is_string()) return fallback;
 
     return value_it->get<std::string>();
+}
+
+// Normalizes a hotkey chord string for case-insensitive comparison ("Ctrl+Shift+F8"
+// and "ctrl+shift+f8" collide). "NONE" (hotkey disabled) never collides with itself.
+std::string normalize_hotkey(const std::string& chord)
+{
+    std::string out = chord;
+    std::transform(out.begin(), out.end(), out.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+// Returns an error message naming the two colliding actions if any of the four
+// hotkeys are assigned the same chord, or an empty string if there is no collision.
+std::string find_hotkey_collision(const Config& config)
+{
+    const std::pair<const char*, std::string> entries[] = {
+        {"Save Replay",      config.hotkey_save_replay},
+        {"Start Recording",  config.hotkey_recording_start},
+        {"Stop Recording",   config.hotkey_recording_stop},
+        {"Pause/Resume",     config.hotkey_pause_resume},
+    };
+    for (size_t i = 0; i < std::size(entries); ++i) {
+        const std::string norm_i = normalize_hotkey(entries[i].second);
+        if (norm_i.empty() || norm_i == "none") continue;
+        for (size_t j = i + 1; j < std::size(entries); ++j) {
+            if (norm_i == normalize_hotkey(entries[j].second)) {
+                return std::string("hotkey conflict: \"") + entries[i].second +
+                       "\" is assigned to both \"" + entries[i].first + "\" and \"" +
+                       entries[j].first + "\"";
+            }
+        }
+    }
+    return {};
 }
 
 std::vector<int> sanitize_tracks(const json& value)
@@ -436,6 +366,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["hotkeys"]["recording_stop"] = config.hotkey_recording_stop;
     doc["hotkeys"]["pause_resume"] = config.hotkey_pause_resume;
     doc["update"]["auto_check"] = config.update_auto_check;
+    doc["advanced"]["logging_enabled"] = config.logging_enabled;
     doc["capture_mode"]["mode"] = config.capture_mode;
     doc["capture_mode"]["idle_timeout_seconds"] = config.capture_idle_timeout_seconds;
     doc["capture_mode"]["auto_record"] = config.capture_auto_record;
@@ -482,6 +413,7 @@ Config config_from_json(
     config.recording_enabled = bool_at(doc, "recording", "enabled", true);
 
     config.update_auto_check = bool_at(doc, "update", "auto_check", true);
+    config.logging_enabled = bool_at(doc, "advanced", "logging_enabled", false);
 
     config.audio_mode = utf8_at(doc, "audio", "mode", "default");
     if (config.audio_mode != "default" && config.audio_mode != "custom")
@@ -534,10 +466,12 @@ Config config_from_json(
     config.hotkey_pause_resume = utf8_at(doc, "hotkeys", "pause_resume", "Ctrl+Shift+F11");
 
     // ── active_game detection settings ───────────────────────────────────────────
-    // Detection is fully automatic (Discord API + running-process heuristic) and
-    // polls on a fixed 5s cadence. Only detection_enabled and the internal
-    // process blacklist survive as configurable data; the timing tunables are
-    // hardcoded (ActiveGameSettings defaults) and no longer exposed in the UI.
+    // Detection is a pure local heuristic over running processes (no network
+    // calls; Discord is only used elsewhere to enrich display artwork/name for
+    // a detected game) and polls on a fixed 5s cadence. Only detection_enabled
+    // and the internal process blacklist survive as configurable data; the
+    // timing tunables are hardcoded (ActiveGameSettings defaults) and no
+    // longer exposed in the UI.
     {
         auto ag_it = doc.find("active_game");
         const json* ag = (ag_it != doc.end() && ag_it->is_object()) ? &(*ag_it) : nullptr;
@@ -695,6 +629,12 @@ LoadResult load(
 
 bool save(Config& config, std::string* error)
 {
+    std::string collision = find_hotkey_collision(config);
+    if (!collision.empty()) {
+        if (error) *error = collision;
+        return false;
+    }
+
     json doc;
     try {
         doc = config.merged_json.empty()

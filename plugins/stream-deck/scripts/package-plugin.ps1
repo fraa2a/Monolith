@@ -15,7 +15,7 @@ $bundlePackageJsonPath = Join-Path $bundleDir "package.json"
 $tscPath = Join-Path $pluginRoot "node_modules\.bin\tsc.cmd"
 $nodeModulesPath = Join-Path $pluginRoot "node_modules"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $pluginRoot "..\.."))
-$logoPath = Join-Path $repoRoot "icon.png"
+$logoPath = Join-Path $repoRoot "app/assets/icon.png"
 $imgDir = Join-Path $bundleDir "imgs"
 
 if (-not (Test-Path $manifestTemplatePath)) {

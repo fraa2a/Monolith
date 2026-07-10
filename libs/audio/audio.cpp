@@ -1,5 +1,7 @@
 #include "audio.h"
 
+#include <platform-win/platform_win.h>
+
 #include <winrt/base.h>     // winrt::com_ptr, check_hresult
 
 #include <mmdeviceapi.h>
@@ -102,29 +104,16 @@ static std::wstring device_name(IMMDevice* device)
     return name;
 }
 
-static std::wstring file_name_from_path(const std::wstring& path)
-{
-    size_t pos = path.find_last_of(L"\\/");
-    return pos == std::wstring::npos ? path : path.substr(pos + 1);
-}
-
 static ProcessInfo process_info(uint32_t pid)
 {
     ProcessInfo info;
     info.process_id = pid;
     if (pid == 0) return info;
 
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!process) return info;
-
-    wchar_t path[MAX_PATH * 4] = {};
-    DWORD size = static_cast<DWORD>(_countof(path));
-    if (QueryFullProcessImageNameW(process, 0, path, &size) && size > 0) {
-        info.executable_path.assign(path, size);
-        info.process_name = file_name_from_path(info.executable_path);
-        info.display_name = info.process_name;
-    }
-    CloseHandle(process);
+    platform_win::ProcessInfo base = platform_win::process_info(pid);
+    info.executable_path = base.executable_path;
+    info.process_name = base.process_name;
+    info.display_name = base.display_name;
     return info;
 }
 
@@ -134,45 +123,11 @@ struct WindowIdentity {
     std::wstring window_class;
 };
 
-static bool is_capture_candidate_window(HWND hwnd)
-{
-    if (!IsWindowVisible(hwnd)) return false;
-    if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
-    if (GetWindowTextLengthW(hwnd) <= 0) return false;
-
-    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    if ((style & WS_DISABLED) != 0) return false;
-
-    LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    if ((ex_style & WS_EX_TOOLWINDOW) != 0) return false;
-
-    return true;
-}
-
-static std::wstring window_text(HWND hwnd)
-{
-    int len = GetWindowTextLengthW(hwnd);
-    if (len <= 0) return {};
-    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
-    int copied = GetWindowTextW(hwnd, text.data(), len + 1);
-    if (copied <= 0) return {};
-    text.resize(static_cast<size_t>(copied));
-    return text;
-}
-
-static std::wstring window_class_name(HWND hwnd)
-{
-    wchar_t buf[256] = {};
-    int copied = GetClassNameW(hwnd, buf, static_cast<int>(_countof(buf)));
-    if (copied <= 0) return {};
-    return std::wstring(buf, static_cast<size_t>(copied));
-}
-
 static std::map<uint32_t, WindowIdentity> enumerate_capture_windows()
 {
     std::map<uint32_t, WindowIdentity> result;
     EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
-        if (!is_capture_candidate_window(hwnd)) return TRUE;
+        if (!platform_win::is_capture_candidate_window(hwnd)) return TRUE;
 
         DWORD pid = 0;
         GetWindowThreadProcessId(hwnd, &pid);
@@ -183,8 +138,8 @@ static std::map<uint32_t, WindowIdentity> enumerate_capture_windows()
 
         WindowIdentity identity;
         identity.process_id = pid;
-        identity.title = window_text(hwnd);
-        identity.window_class = window_class_name(hwnd);
+        identity.title = platform_win::window_text(hwnd);
+        identity.window_class = platform_win::window_class_name(hwnd);
         if (!identity.title.empty() && !identity.window_class.empty())
             windows->emplace(pid, std::move(identity));
         return TRUE;

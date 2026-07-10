@@ -15,6 +15,16 @@ configure_file(
     @ONLY
 )
 
+# Generated default-config header: embeds config/default-config.json (the
+# single source of truth for default settings) as a raw string literal, so
+# there is no hand-maintained fallback copy to drift out of sync.
+file(READ "${CMAKE_SOURCE_DIR}/config/default-config.json" DEFAULT_CONFIG_JSON)
+configure_file(
+    "${CMAKE_SOURCE_DIR}/config/default_config.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/default_config.h"
+    @ONLY
+)
+
 add_executable(monolith WIN32
     src/main.cpp
     src/settings_config.cpp
@@ -50,6 +60,8 @@ target_include_directories(monolith PRIVATE "${WINSPARKLE_INCLUDE_DIR}")
 target_link_libraries(monolith
     PRIVATE
         capture
+        platform_win
+        logging
         audio
         encoding
         storage

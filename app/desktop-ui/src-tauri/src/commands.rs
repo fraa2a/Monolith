@@ -176,10 +176,50 @@ pub async fn get_settings() -> Value {
     blocking(|| settings_store::read_config().unwrap_or(Value::Null)).await
 }
 
+// Rejects a config document that assigns the same normalized hotkey chord to
+// more than one action. Defense-in-depth mirror of the check the engine's
+// `settings::save()` also runs before persisting — this one catches it before
+// the write even happens. "NONE" (hotkey disabled) never collides with itself.
+fn find_hotkey_collision(config: &Value) -> Option<String> {
+    let hotkeys = config.get("hotkeys")?.as_object()?;
+    let entries: [(&str, &str); 4] = [
+        ("Save Replay", "save_replay"),
+        ("Start Recording", "recording_start"),
+        ("Stop Recording", "recording_stop"),
+        ("Pause/Resume", "pause_resume"),
+    ];
+    let values: Vec<(&str, String)> = entries
+        .iter()
+        .filter_map(|(label, key)| {
+            hotkeys
+                .get(*key)
+                .and_then(|v| v.as_str())
+                .map(|s| (*label, s.to_lowercase()))
+        })
+        .collect();
+    for i in 0..values.len() {
+        if values[i].1.is_empty() || values[i].1 == "none" {
+            continue;
+        }
+        for j in (i + 1)..values.len() {
+            if values[i].1 == values[j].1 {
+                return Some(format!(
+                    "hotkey conflict: \"{}\" is assigned to both \"{}\" and \"{}\"",
+                    values[i].1, values[i].0, values[j].0
+                ));
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn save_settings(app: tauri::AppHandle, config: Value) -> Result<(), String> {
     if !config.is_object() {
         return Err("bad config".to_string());
+    }
+    if let Some(err) = find_hotkey_collision(&config) {
+        return Err(err);
     }
     blocking_result(move || settings_store::write_config(&config).map_err(|err| err.to_string())).await?;
     blocking(engine_rpc::reload_settings).await;

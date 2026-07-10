@@ -1,9 +1,23 @@
+import * as fs from 'fs';
 import * as net from 'net';
+import * as path from 'path';
 
 const IPC_HOST = '127.0.0.1';
 const IPC_PORT = 45991;
 const RECONNECT_MS = 2000;
 const REQUEST_TIMEOUT_MS = 3000;
+
+// Written by the engine at startup (user-only ACL). Read fresh on every
+// request since the engine may restart and regenerate it while the plugin
+// stays connected.
+function readToken(): string {
+    const base = process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local');
+    try {
+        return fs.readFileSync(path.join(base, 'Monolith', 'ipc_token'), 'utf8').trim();
+    } catch {
+        return '';
+    }
+}
 
 export interface RecordingStatus {
     recording: boolean;
@@ -95,7 +109,7 @@ export class IpcClient {
             const id = this.nextId++;
             this.pending.set(id, [resolve, reject]);
 
-            const payload = JSON.stringify({ jsonrpc: '2.0', id, method }) + '\n';
+            const payload = JSON.stringify({ jsonrpc: '2.0', id, method, token: readToken() }) + '\n';
             this.socket.write(payload, 'utf8');
 
             setTimeout(() => {

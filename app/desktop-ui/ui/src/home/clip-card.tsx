@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { type Clip, clipApi, fetchGameArtwork, mediaUrl, thumbUrl } from "../lib/api.ts";
+import { type Clip, clipApi, exeIconUrl, mediaUrl, thumbUrl } from "../lib/api.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { enableAllAudioTracks } from "../lib/player.ts";
@@ -41,7 +41,7 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
   const [thumbBust, setThumbBust] = useState(0);
   const [localThumb, setLocalThumb] = useState<string | null>(clip.thumbnail_file);
   const [displayDuration, setDisplayDuration] = useState<number | null>(clip.duration_seconds);
-  const [gameIcon, setGameIcon] = useState<string | null>(clip.game_icon_url ?? null);
+  const [exeIcon, setExeIcon] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hoverTimer = useRef<number | undefined>(undefined);
   const regenTried = useRef(false);
@@ -53,23 +53,27 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
     regenTried.current = false;
   }, [clip.id, clip.source, clip.thumbnail_file, clip.duration_seconds]);
 
+  // Icon is always resolved locally: prefer the icon embedded in the game's
+  // own executable (no network, no cache dependency), then fall back to
+  // whatever list_clips already resolved from the local Discord artwork
+  // cache (game_icon_url) — never fetched here, so opening the library never
+  // triggers a network call. A game newly added to the cache picks up its
+  // icon on the next scheduled refresh (see game_catalog::refresh_stale).
   useEffect(() => {
     let active = true;
-    if (clip.game_icon_url) {
-      setGameIcon(clip.game_icon_url);
+    if (!clip.game_executable_path) {
+      setExeIcon(null);
       return;
     }
-    if (clip.discord_app_id || clip.game_process_name) {
-      fetchGameArtwork(clip).then((art) => {
-        if (active) setGameIcon(art.icon ?? null);
-      });
-    } else {
-      setGameIcon(null);
-    }
+    exeIconUrl(clip.game_executable_path).then((dataUrl) => {
+      if (active) setExeIcon(dataUrl);
+    });
     return () => {
       active = false;
     };
-  }, [clip.discord_app_id, clip.game_process_name, clip.game_icon_url]);
+  }, [clip.game_executable_path]);
+
+  const gameIcon = exeIcon ?? clip.game_icon_url ?? null;
 
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
 

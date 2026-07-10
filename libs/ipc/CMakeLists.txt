@@ -11,6 +11,7 @@ target_link_libraries(ipc
     PRIVATE
         nlohmann_json::nlohmann_json
         ws2_32
+        advapi32
 )
 
 target_compile_features(ipc PUBLIC cxx_std_23)

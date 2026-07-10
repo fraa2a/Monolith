@@ -20,6 +20,8 @@
 #include <storage/storage.h>
 #include <replay-buffer/replay_buffer.h>
 #include <recording/recording.h>
+#include <platform-win/platform_win.h>
+#include <logging/logging.h>
 
 #include "feedback_sounds.h"
 #include "ipc_server.h"
@@ -65,9 +67,9 @@ enum Cmd : UINT {
 };
 
 // ── Logging ───────────────────────────────────────────────────────────────────
-
-static FILE*      g_log       = nullptr;
-static std::mutex g_log_mutex;
+// Implementation lives in libs/logging (disabled by default; toggled via
+// Settings > Advanced > advanced.logging_enabled). These are thin wrappers so
+// call sites across this file don't need to change.
 
 static std::wstring known_folder_path(REFKNOWNFOLDERID folder)
 {
@@ -127,60 +129,14 @@ static std::wstring app_temp_dir()
     return dir;
 }
 
-static bool file_size_bytes(const std::wstring& path, uint64_t* size)
+static void log_init(bool enabled)
 {
-    WIN32_FILE_ATTRIBUTE_DATA data{};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data))
-        return false;
-    if (size) {
-        *size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) |
-                static_cast<uint64_t>(data.nFileSizeLow);
-    }
-    return true;
-}
-
-static void rotate_log_if_needed(const std::wstring& path,
-                                 uint64_t max_bytes,
-                                 int backups)
-{
-    uint64_t size = 0;
-    if (!file_size_bytes(path, &size) || size <= max_bytes)
-        return;
-
-    for (int i = backups; i >= 1; --i) {
-        std::wstring src = (i == 1) ? path : (path + L"." + std::to_wstring(i - 1));
-        std::wstring dst = path + L"." + std::to_wstring(i);
-        if (i == backups)
-            DeleteFileW(dst.c_str());
-        MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    }
-}
-
-static void log_init()
-{
-    std::wstring dir = app_data_dir();
-    if (dir.empty()) return;
-    std::wstring path = dir + L"\\monolith.log";
-    rotate_log_if_needed(path, 5ull * 1024ull * 1024ull, 3);
-    // _SH_DENYNO: keep the log readable by Settings/diagnostics while we run.
-    g_log = _wfsopen(path.c_str(), L"a", _SH_DENYNO);
+    logging::init(enabled, app_data_dir());
 }
 
 static void log_msg(const char* tag, const char* msg)
 {
-    SYSTEMTIME st;
-    GetSystemTime(&st);
-    char buf[512];
-    snprintf(buf, sizeof(buf),
-        "[%04d-%02d-%02dT%02d:%02d:%02dZ] [%-12s] %s\n",
-        st.wYear, st.wMonth, st.wDay,
-        st.wHour, st.wMinute, st.wSecond,
-        tag, msg);
-    {
-        std::lock_guard<std::mutex> lk(g_log_mutex);
-        if (g_log) { fputs(buf, g_log); fflush(g_log); }
-    }
-    OutputDebugStringA(buf);
+    logging::log(tag, msg);
 }
 
 static void log_path(const char* tag, const char* prefix, const std::wstring& path)
@@ -193,33 +149,8 @@ static void log_path(const char* tag, const char* prefix, const std::wstring& pa
     log_msg(tag, msg);
 }
 
-static std::wstring utf8_to_wide(const std::string& value)
-{
-    if (value.empty()) return {};
-    int count = MultiByteToWideChar(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        nullptr, 0);
-    if (count <= 0) return {};
-    std::wstring result(static_cast<size_t>(count), L'\0');
-    MultiByteToWideChar(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        result.data(), count);
-    return result;
-}
-
-static std::string wide_to_utf8(const std::wstring& value)
-{
-    if (value.empty()) return {};
-    int count = WideCharToMultiByte(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (count <= 0) return {};
-    std::string result(static_cast<size_t>(count), '\0');
-    WideCharToMultiByte(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        result.data(), count, nullptr, nullptr);
-    return result;
-}
+using platform_win::utf8_to_wide;
+using platform_win::wide_to_utf8;
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 
@@ -373,8 +304,11 @@ static constexpr UINT_PTR kActiveGameTimerId = 1;
 // ceiling for the encoded-packet ring across supported bitrates/durations.
 static constexpr int64_t kReplayMemoryBudgetMb = 512;
 
-// Active-game detection runs on a fixed 5 s cadence; detection itself is fully
-// automatic (Discord API + running-process heuristic), no user configuration.
+// Active-game detection runs on a fixed 5 s cadence; detection itself is a
+// pure local heuristic (foreground/fullscreen/audio-session/whitelist score
+// over running processes), no user configuration and no network calls.
+// Discord is used only to enrich display (name/artwork) for a detected game,
+// never to decide which process is active.
 static constexpr int kActiveGamePollMs = 5000;
 
 static std::vector<int>          g_active_game_tracks;
@@ -760,6 +694,7 @@ static void catalog_clip(std::wstring video_path, std::string source,
         row.game_process_name = wide_to_utf8(game.process_name);
         row.game_display_name = wide_to_utf8(
             game.display_name.empty() ? game.process_name : game.display_name);
+        row.game_executable_path = wide_to_utf8(game.executable_path);
         row.game_source = "heuristic";
     }
 
@@ -801,8 +736,8 @@ static void reconcile_catalogs()
 }
 
 // Performs a UI-driven clip mutation (favorite/hashtag/delete) on the IPC
-// thread. The recorder is the single writer, so the Deno UI routes these here
-// instead of writing the DB itself. Returns "" on success or an error message.
+// thread. The recorder is the single writer, so the UI process routes these
+// here instead of writing the DB itself. Returns "" on success or an error message.
 static std::string handle_clip_mutation(const ipc::ClipMutation& m)
 {
     std::wstring folder;
@@ -838,7 +773,7 @@ static void tray_set_recording(bool recording);
 // capture_mode "game_only": stops the replay-capture pipeline after the idle
 // timeout with no detected game and resumes it when a game reappears. Runs on
 // the UI thread (WM_TIMER), like the reload path, so calling media_start/stop is
-// safe. Never touches an active manual recording. (deno.md §6)
+// safe. Never touches an active manual recording.
 static uint64_t g_last_game_seen_ms  = 0;
 static bool     g_capture_mode_stopped = false; // capture idled off by game_only
 static bool     g_auto_recording_active = false;
@@ -972,8 +907,11 @@ static void reload_settings_from_disk(HWND hwnd)
         capture_encoder_config_changed(previous, g_settings);
     const bool audio_changed = audio_config_changed(previous, g_settings);
 
+    if (previous.logging_enabled != g_settings.logging_enabled)
+        logging::set_enabled(g_settings.logging_enabled);
+
     apply_runtime_settings();
-    log_msg("settings", "settings reloaded from WinUI app");
+    log_msg("settings", "settings reloaded from the UI process");
 
     if (previous.hotkey_save_replay      != g_settings.hotkey_save_replay ||
         previous.hotkey_recording_start  != g_settings.hotkey_recording_start ||
@@ -1319,59 +1257,10 @@ static bool start_process_source(uint32_t pid,
     return false;
 }
 
-static std::wstring process_executable_path(uint32_t pid)
-{
-    if (pid == 0) return {};
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!process) return {};
-
-    wchar_t path[MAX_PATH * 4] = {};
-    DWORD size = static_cast<DWORD>(_countof(path));
-    std::wstring result;
-    if (QueryFullProcessImageNameW(process, 0, path, &size) && size > 0)
-        result.assign(path, size);
-    CloseHandle(process);
-    return result;
-}
-
 struct WindowProcessMatch {
     const settings::AudioSourceConfig* source = nullptr;
     uint32_t process_id = 0;
 };
-
-static bool is_obs_style_window_candidate(HWND hwnd)
-{
-    if (!IsWindowVisible(hwnd)) return false;
-    if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
-    if (GetWindowTextLengthW(hwnd) <= 0) return false;
-
-    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    if ((style & WS_DISABLED) != 0) return false;
-
-    LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    if ((ex_style & WS_EX_TOOLWINDOW) != 0) return false;
-
-    return true;
-}
-
-static std::wstring hwnd_text(HWND hwnd)
-{
-    int len = GetWindowTextLengthW(hwnd);
-    if (len <= 0) return {};
-    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
-    int copied = GetWindowTextW(hwnd, text.data(), len + 1);
-    if (copied <= 0) return {};
-    text.resize(static_cast<size_t>(copied));
-    return text;
-}
-
-static std::wstring hwnd_class_name(HWND hwnd)
-{
-    wchar_t buf[256] = {};
-    int copied = GetClassNameW(hwnd, buf, static_cast<int>(_countof(buf)));
-    if (copied <= 0) return {};
-    return std::wstring(buf, static_cast<size_t>(copied));
-}
 
 static uint32_t resolve_configured_process_window(const settings::AudioSourceConfig& source)
 {
@@ -1382,17 +1271,17 @@ static uint32_t resolve_configured_process_window(const settings::AudioSourceCon
     EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
         auto* match = reinterpret_cast<WindowProcessMatch*>(param);
         if (match->process_id != 0) return FALSE;
-        if (!is_obs_style_window_candidate(hwnd)) return TRUE;
+        if (!platform_win::is_capture_candidate_window(hwnd)) return TRUE;
 
-        if (hwnd_text(hwnd) != match->source->window_title) return TRUE;
-        if (hwnd_class_name(hwnd) != match->source->window_class) return TRUE;
+        if (platform_win::window_text(hwnd) != match->source->window_title) return TRUE;
+        if (platform_win::window_class_name(hwnd) != match->source->window_class) return TRUE;
 
         DWORD pid = 0;
         GetWindowThreadProcessId(hwnd, &pid);
         if (pid == 0 || pid == GetCurrentProcessId()) return TRUE;
 
         if (!match->source->executable_path.empty()) {
-            std::wstring path = process_executable_path(pid);
+            std::wstring path = platform_win::process_info(pid).executable_path;
             if (path.empty() ||
                 _wcsicmp(path.c_str(), match->source->executable_path.c_str()) != 0)
                 return TRUE;
@@ -1869,6 +1758,33 @@ static HWND main_window_for_process(uint32_t pid)
     return search.hwnd;
 }
 
+// Output resolution derives from a preset target height while preserving the
+// source aspect ratio. Never upscales beyond native (a preset taller than the
+// source falls back to source), so no pixels are invented. Shared by the
+// upfront GPU-downscale sizing (CaptureOptions::output_width/height, known
+// before the first frame for monitor capture) and the encoder-open fallback
+// (which resolves against the first captured frame's actual size, needed for
+// game_only window capture where native size isn't known upfront).
+static void resolve_target_size(int src_w, int src_h, const std::string& preset,
+                                 int* out_w, int* out_h)
+{
+    src_w &= ~1;
+    src_h &= ~1;
+    int target_h = 0;
+    if (preset == "480p")       target_h = 480;
+    else if (preset == "720p")  target_h = 720;
+    else if (preset == "1080p") target_h = 1080;
+    else if (preset == "1440p") target_h = 1440;
+    if (target_h > 0 && src_h > 0 && target_h < src_h) {
+        *out_h = target_h & ~1;
+        *out_w = (static_cast<int>(std::lround(
+            static_cast<double>(src_w) * target_h / src_h))) & ~1;
+    } else {
+        *out_w = src_w;
+        *out_h = src_h;
+    }
+}
+
 static void media_start(HWND hwnd)
 {
     // ── Replay buffer config ───────────────────────────────────────────────────
@@ -2056,27 +1972,17 @@ static void media_start(HWND hwnd)
                     return;
                 }
 
-                // Output resolution derives from a preset target height while
-                // preserving the captured monitor's aspect ratio. Never upscale
-                // beyond native (a preset taller than the monitor falls back to
-                // source), so we never invent pixels.
-                const int src_w = static_cast<int>(f.width  & ~1u);
-                const int src_h = static_cast<int>(f.height & ~1u);
-                int target_h = 0;
-                const std::string& rp = g_settings.resolution_preset;
-                if (rp == "480p")  target_h = 480;
-                else if (rp == "720p")  target_h = 720;
-                else if (rp == "1080p") target_h = 1080;
-                else if (rp == "1440p") target_h = 1440;
-                if (target_h > 0 && src_h > 0 && target_h < src_h) {
-                    g_enc_h = target_h & ~1;
-                    g_enc_w = (static_cast<int>(std::lround(
-                        static_cast<double>(src_w) * target_h / src_h))) & ~1;
-                } else {
-                    // "source", or a preset >= native: keep native (no upscale).
-                    g_enc_w = src_w;
-                    g_enc_h = src_h;
-                }
+                // Resolves against the actually-captured frame size, which is
+                // already the GPU-downscaled size when CaptureOptions below
+                // configured one (this then just confirms it) — and is still
+                // native size in game_only mode (no upfront target there), so
+                // this remains the source of truth either way.
+                int g_enc_w_resolved = 0, g_enc_h_resolved = 0;
+                resolve_target_size(static_cast<int>(f.width), static_cast<int>(f.height),
+                                     g_settings.resolution_preset,
+                                     &g_enc_w_resolved, &g_enc_h_resolved);
+                g_enc_w = g_enc_w_resolved;
+                g_enc_h = g_enc_h_resolved;
 
                 // Resolve the concrete FFmpeg encoder from the user's CPU/GPU +
                 // codec choice, given what this machine can actually open.
@@ -2171,6 +2077,18 @@ static void media_start(HWND hwnd)
                     log_msg("capture", "game_only: capturing detected game window");
                 else
                     log_msg("capture", "game_only: game window unavailable, using selected monitor");
+            } else {
+                // Native monitor size is known upfront here (unlike game_only,
+                // where the target window's size isn't known until the first
+                // frame), so the GPU downscale target can be set before start().
+                for (const auto& entry : monitors) {
+                    if (entry.hmon == hmon) {
+                        resolve_target_size(entry.info.width, entry.info.height,
+                                             g_settings.resolution_preset,
+                                             &options.output_width, &options.output_height);
+                        break;
+                    }
+                }
             }
             return options;
         }());
@@ -2775,13 +2693,13 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         tray_add(hwnd);
         hotkeys_register(hwnd);
         media_start(hwnd);
-        ipc::start(hwnd, [&]() -> ipc::RecordingState {
+        ipc::start(g_settings.app_data_dir, hwnd, [&]() -> ipc::RecordingState {
             auto st = g_recording.state();
             return {
                 st == recording::RecordingState::Recording,
                 st == recording::RecordingState::Paused,
-                g_settings.replay_buffer_enabled,
-                g_settings.recording_enabled,
+                g_replay_enabled.load(std::memory_order_relaxed),
+                g_recording_enabled.load(std::memory_order_relaxed),
                 g_clip_generation.load(std::memory_order_relaxed),
             };
         }, handle_clip_mutation);
@@ -2871,10 +2789,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-    log_init();
+    // Logging is gated by advanced.logging_enabled, which load_app_settings()
+    // resolves — so settings must load first. Anything load_app_settings()
+    // itself would have logged is lost; acceptable startup-only gap.
+    load_app_settings();
+    log_init(g_settings.logging_enabled);
     log_msg("app", "initializing (Monolith: replay + manual recording)");
     audio::set_log_sink([](const char* tag, const char* msg) { log_msg(tag, msg); });
-    load_app_settings();
     reconcile_catalogs(); // self-heal clip catalogs on a background thread
     updater::init(g_settings.update_auto_check);
     if (g_settings.update_auto_check)
@@ -2912,6 +2833,5 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 
     winrt::uninit_apartment();
     CloseHandle(mutex);
-    if (g_log) fclose(g_log);
     return static_cast<int>(msg.wParam);
 }

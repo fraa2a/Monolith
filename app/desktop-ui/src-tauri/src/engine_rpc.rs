@@ -1,3 +1,4 @@
+use crate::paths;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -7,6 +8,15 @@ use std::time::Duration;
 const HOST: &str = "127.0.0.1:45991";
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+// Written by the engine at startup (user-only ACL); read fresh on every call
+// since the engine may restart and regenerate it while the UI stays open.
+fn read_token() -> String {
+    std::fs::read_to_string(paths::monolith_data_dir().join("ipc_token"))
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
 fn rpc(method: &str, params: Option<Value>) -> Result<Value, String> {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let payload = json!({
@@ -14,6 +24,7 @@ fn rpc(method: &str, params: Option<Value>) -> Result<Value, String> {
         "id": id,
         "method": method,
         "params": params,
+        "token": read_token(),
     });
 
     let mut stream = TcpStream::connect(HOST).map_err(|err| err.to_string())?;

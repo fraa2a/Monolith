@@ -1165,6 +1165,7 @@ body {
 .hotkey-capture svg { flex: none; opacity: .8; }
 .hotkey-capture:hover { border-color: var(--light); }
 .hotkey-capture.capturing { border-color: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, .08); }
+.hotkey-capture.invalid { border-color: var(--danger); }
 .hotkey-value { font-family: var(--mono); font-size: 13px; }
 .hotkey-capture.capturing .hotkey-value { color: var(--text-dim); }
 

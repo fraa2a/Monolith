@@ -10,7 +10,7 @@ a Win32 tray/message-loop host, a Tauri v2/WebView2 desktop UI sidecar, and an
 Elgato Stream Deck controller plugin.
 
 Current app version source is the root `CMakeLists.txt` project version
-(`1.4.1` locally unless CI overrides `MONOLITH_VERSION` from a tag).
+(`1.4.2` locally unless CI overrides `MONOLITH_VERSION` from a tag).
 
 ## Build
 
@@ -123,7 +123,14 @@ The settings UI writes `settings.db` and calls engine JSON-RPC
 
 ## IPC Contract
 
-Transport: newline-delimited JSON-RPC over TCP at `127.0.0.1:45991`.
+Transport: newline-delimited JSON-RPC over TCP at `127.0.0.1:45991`. The
+server threads one handler per connection (backlog 8), so the UI and Stream
+Deck plugin can stay connected at once.
+
+Every request must include a top-level `"token"` field matching the contents
+of `%LocalAppData%\Monolith\ipc_token` (written by the engine at startup,
+user-only ACL). Requests with a missing or wrong token get error `-32001` and
+no action is taken. See ADR-0016.
 
 Recorder commands:
 

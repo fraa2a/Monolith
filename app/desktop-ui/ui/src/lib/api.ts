@@ -18,6 +18,7 @@ export interface Clip {
   duration_seconds: number | null;
   game_process_name: string | null;
   game_display_name: string | null;
+  game_executable_path?: string | null;
   discord_app_id?: string | null;
   game_icon_url?: string | null;
   game_cover_url?: string | null;

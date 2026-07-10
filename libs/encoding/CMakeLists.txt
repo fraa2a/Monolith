@@ -19,7 +19,7 @@ target_compile_definitions(encoding
 
 find_package(FFMPEG REQUIRED)
 target_include_directories(encoding PRIVATE ${FFMPEG_INCLUDE_DIRS})
-target_link_libraries(encoding PRIVATE ${FFMPEG_LIBRARIES})
+target_link_libraries(encoding PRIVATE ${FFMPEG_LIBRARIES} platform_win)
 
 if(MSVC)
     target_compile_options(encoding PRIVATE /W4 /permissive-)

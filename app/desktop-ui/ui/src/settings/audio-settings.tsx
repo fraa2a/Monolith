@@ -5,7 +5,6 @@ import { Field, Section, Select, Toggle, VolumeSlider } from "./controls.tsx";
 interface Props {
   cfg: Config;
   rs: RuntimeStatus;
-  // deno-lint-ignore no-explicit-any
   update: (path: string, value: any) => void;
 }
 

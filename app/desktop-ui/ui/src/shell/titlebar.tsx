@@ -22,7 +22,7 @@ function cloneConfig(config: Config | null): Config {
 // "\\.\DISPLAY2" -> "Display 2". Device IDs are never user-facing copy.
 function monitorLabel(mon: { device: string; width: number; height: number; primary: boolean }, index: number) {
   const num = mon.device?.match(/(\d+)\s*$/)?.[1] ?? String(index + 1);
-  return `Display ${num}${mon.primary ? " · Primary" : ""}`;
+  return `Display ${num}${mon.primary}`;
 }
 
 // Custom title bar (the window is decorations-less). The whole bar is a drag

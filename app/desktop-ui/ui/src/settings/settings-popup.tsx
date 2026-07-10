@@ -46,16 +46,13 @@ interface Props {
   onClose: () => void;
 }
 
-// deno-lint-ignore no-explicit-any
 function getPath(obj: any, path: string): any {
   return path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
 }
 
-// deno-lint-ignore no-explicit-any
 function setPath(obj: any, path: string, value: any): any {
   const copy = structuredClone(obj);
   const keys = path.split(".");
-  // deno-lint-ignore no-explicit-any
   let cur: any = copy;
   for (let i = 0; i < keys.length - 1; i++) {
     if (cur[keys[i]] == null || typeof cur[keys[i]] !== "object") cur[keys[i]] = {};
@@ -63,6 +60,22 @@ function setPath(obj: any, path: string, value: any): any {
   }
   cur[keys[keys.length - 1]] = value;
   return copy;
+}
+
+function findHotkeyConflicts(entries: { label: string; value: string }[]): Set<string> {
+  const byNormalized = new Map<string, string[]>();
+  for (const { label, value } of entries) {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized || normalized === "none") continue;
+    const labels = byNormalized.get(normalized) ?? [];
+    labels.push(label);
+    byNormalized.set(normalized, labels);
+  }
+  const conflicts = new Set<string>();
+  for (const labels of byNormalized.values()) {
+    if (labels.length > 1) labels.forEach((l) => conflicts.add(l));
+  }
+  return conflicts;
 }
 
 export function SettingsPopup({ onClose }: Props) {
@@ -111,7 +124,6 @@ export function SettingsPopup({ onClose }: Props) {
     return () => clearTimeout(saveTimer.current);
   }, [draft]);
 
-  // deno-lint-ignore no-explicit-any
   const update = (path: string, value: any) => {
     skipSave.current = false;
     setDraft((d) => (d ? setPath(d, path, value) : d));
@@ -220,7 +232,6 @@ interface PagesProps {
   page: Page;
   cfg: Config;
   rs: RuntimeStatus;
-  // deno-lint-ignore no-explicit-any
   update: (path: string, value: any) => void;
 }
 
@@ -321,7 +332,7 @@ function Pages({ page, cfg, rs, update }: PagesProps) {
       const monOpts = [{ value: "", label: "Primary monitor" }].concat(
         (rs.monitors ?? []).map((m) => ({
           value: m.device,
-          label: `${m.device} (${m.width}×${m.height})${m.primary ? " • primary" : ""}`,
+          label: `${m.device} (${m.width}×${m.height})${m.primary}`,
         })),
       );
       // Hide presets larger than the selected monitor to prevent upscaling.
@@ -374,47 +385,36 @@ function Pages({ page, cfg, rs, update }: PagesProps) {
     case "audio":
       return <AudioSettings cfg={cfg} rs={rs} update={update} />;
 
-    case "hotkeys":
+    case "hotkeys": {
+      const hotkeyFields: { key: string; label: string }[] = [
+        { key: "hotkeys.save_replay", label: "Save replay" },
+        { key: "hotkeys.recording_start", label: "Start recording" },
+        { key: "hotkeys.recording_stop", label: "Stop recording" },
+        { key: "hotkeys.pause_resume", label: "Pause / resume" },
+      ];
+      const conflicts = findHotkeyConflicts(hotkeyFields.map((f) => ({
+        label: f.label,
+        value: String(val(f.key) ?? ""),
+      })));
       return (
         <Section title="Hotkeys" description="Click a field and press the key combination.">
-          <Field
-            label="Save replay"
-            control={
-              <HotkeyCapture
-                value={String(val("hotkeys.save_replay") ?? "")}
-                onChange={(v) => update("hotkeys.save_replay", v)}
-              />
-            }
-          />
-          <Field
-            label="Start recording"
-            control={
-              <HotkeyCapture
-                value={String(val("hotkeys.recording_start") ?? "")}
-                onChange={(v) => update("hotkeys.recording_start", v)}
-              />
-            }
-          />
-          <Field
-            label="Stop recording"
-            control={
-              <HotkeyCapture
-                value={String(val("hotkeys.recording_stop") ?? "")}
-                onChange={(v) => update("hotkeys.recording_stop", v)}
-              />
-            }
-          />
-          <Field
-            label="Pause / resume"
-            control={
-              <HotkeyCapture
-                value={String(val("hotkeys.pause_resume") ?? "")}
-                onChange={(v) => update("hotkeys.pause_resume", v)}
-              />
-            }
-          />
+          {hotkeyFields.map((f) => (
+            <Field
+              key={f.key}
+              label={f.label}
+              help={conflicts.has(f.label) ? "Already assigned to another action." : undefined}
+              control={
+                <HotkeyCapture
+                  value={String(val(f.key) ?? "")}
+                  onChange={(v) => update(f.key, v)}
+                  invalid={conflicts.has(f.label)}
+                />
+              }
+            />
+          ))}
         </Section>
       );
+    }
 
     case "advanced": {
       const device = String(val("video_encoder.device") ?? "gpu");
@@ -429,8 +429,8 @@ function Pages({ page, cfg, rs, update }: PagesProps) {
       if (hasHwEncoder) deviceOpts.unshift({ value: "gpu", label: "GPU", icon: "monitor" });
       // Friendly codec names; the technical encoder name is a secondary detail.
       const codecOpts = [
-        { value: "h264", label: "H.264 (AVC) — best compatibility" },
-        { value: "h265", label: "H.265 (HEVC) — smaller files" },
+        { value: "h264", label: "H.264 (AVC)" },
+        { value: "h265", label: "H.265 (HEVC)" },
       ];
       const bitrateOpts = BITRATE_PRESETS.map((mbps) => ({
         value: String(mbps * 1000),
@@ -516,6 +516,16 @@ function Pages({ page, cfg, rs, update }: PagesProps) {
                 <Toggle
                   checked={!!val("discord.rich_presence_enabled")}
                   onChange={(v) => update("discord.rich_presence_enabled", v)}
+                />
+              }
+            />
+            <Field
+              label="Logging"
+              help="Writes monolith.log to the app data folder. Off by default."
+              control={
+                <Toggle
+                  checked={!!val("advanced.logging_enabled")}
+                  onChange={(v) => update("advanced.logging_enabled", v)}
                 />
               }
             />

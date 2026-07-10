@@ -4,7 +4,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-// deno-lint-ignore no-explicit-any
 export type Config = Record<string, any>;
 
 export async function getConfig(): Promise<Config | null> {

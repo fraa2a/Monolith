@@ -80,7 +80,7 @@ CI then:
 
 ```powershell
 cmake --build build --config Release --parallel
-& "$env:LocalAppData\Programs\Inno Setup 6\ISCC.exe" /DMonolithVersion=1.4.1 installer\monolith.iss
+& "$env:LocalAppData\Programs\Inno Setup 6\ISCC.exe" /DMonolithVersion=X.Y.Z installer\monolith.iss
 ```
 
 Use a numeric `X.Y.Z` version for `VersionInfoVersion`.

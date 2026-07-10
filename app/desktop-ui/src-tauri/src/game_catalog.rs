@@ -4,6 +4,23 @@ use serde_json::Value;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// Discord is only ever used to enrich the display (name/icon/cover) of a game
+// the C++ recorder's local heuristic already detected — never to decide which
+// process is active. All reads used by the clip grid go through
+// resolve_artwork_cached (below), which never makes a network call; artwork
+// is populated/refreshed only by the scheduled background job in main.rs
+// (see refresh_stale) and by the live "currently playing" titlebar lookup.
+
+const DISCORD_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 #[derive(Clone, Serialize)]
 pub struct CatalogEntry {
@@ -12,6 +29,7 @@ pub struct CatalogEntry {
     pub discord_app_id: Option<String>,
     pub icon_url: Option<String>,
     pub cover_url: Option<String>,
+    pub last_updated: i64,
 }
 
 fn catalog_path() -> PathBuf {
@@ -87,17 +105,27 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
         discord_app_id: row.get(2)?,
         icon_url: row.get(3)?,
         cover_url: row.get(4)?,
+        last_updated: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
     })
+}
+
+fn select_expr(conn: &Connection) -> String {
+    let last_updated_expr = if has_column(conn, "game_catalog", "last_updated") {
+        "last_updated"
+    } else {
+        "0"
+    };
+    format!(
+        "process_name_lower, display_name, discord_app_id, icon_url, {}, {last_updated_expr}",
+        cover_expr(conn),
+    )
 }
 
 pub fn catalog_map() -> BTreeMap<String, CatalogEntry> {
     let Some(conn) = open(true) else {
         return BTreeMap::new();
     };
-    let sql = format!(
-        "SELECT process_name_lower, display_name, discord_app_id, icon_url, {} FROM game_catalog",
-        cover_expr(&conn),
-    );
+    let sql = format!("SELECT {} FROM game_catalog", select_expr(&conn));
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return BTreeMap::new();
     };
@@ -114,8 +142,8 @@ pub fn entry_by_process(process_name: &str) -> Option<CatalogEntry> {
     let key = process_name.to_lowercase();
     let conn = open(true)?;
     let sql = format!(
-        "SELECT process_name_lower, display_name, discord_app_id, icon_url, {} FROM game_catalog WHERE process_name_lower = ?1",
-        cover_expr(&conn),
+        "SELECT {} FROM game_catalog WHERE process_name_lower = ?1",
+        select_expr(&conn),
     );
     conn.query_row(&sql, params![key], row_to_entry).ok()
 }
@@ -123,8 +151,8 @@ pub fn entry_by_process(process_name: &str) -> Option<CatalogEntry> {
 pub fn entry_by_app_id(app_id: &str) -> Option<CatalogEntry> {
     let conn = open(true)?;
     let sql = format!(
-        "SELECT process_name_lower, display_name, discord_app_id, icon_url, {} FROM game_catalog WHERE discord_app_id = ?1",
-        cover_expr(&conn),
+        "SELECT {} FROM game_catalog WHERE discord_app_id = ?1",
+        select_expr(&conn),
     );
     conn.query_row(&sql, params![app_id], row_to_entry).ok()
 }
@@ -133,6 +161,32 @@ pub fn resolve_icon(process_name: &str) -> Option<String> {
     entry_by_process(process_name).and_then(|entry| entry.icon_url)
 }
 
+// Local-cache-only lookup: never makes a network call. Used by the clip grid
+// display path (list_clips), which must not block on/wait for Discord.
+pub fn resolve_artwork_cached(app_id: Option<&str>, process_name: Option<&str>) -> CatalogEntry {
+    if let Some(app_id) = app_id.filter(|id| !id.is_empty()) {
+        if let Some(entry) = entry_by_app_id(app_id) {
+            return entry;
+        }
+    }
+    if let Some(process_name) = process_name.filter(|name| !name.is_empty()) {
+        if let Some(entry) = entry_by_process(process_name) {
+            return entry;
+        }
+    }
+    CatalogEntry {
+        process_name_lower: process_name.unwrap_or_default().to_lowercase(),
+        display_name: String::new(),
+        discord_app_id: app_id.map(str::to_string),
+        icon_url: None,
+        cover_url: None,
+        last_updated: 0,
+    }
+}
+
+// Network-capable lookup: fetches from Discord (with an explicit timeout) when
+// the cache is missing or incomplete. Used only by explicit/live contexts
+// (the titlebar's "currently playing" indicator), never by the clip grid.
 pub fn resolve_artwork(app_id: Option<&str>, process_name: Option<&str>) -> CatalogEntry {
     if let Some(app_id) = app_id.filter(|id| !id.is_empty()) {
         if let Some(entry) = entry_by_app_id(app_id) {
@@ -180,6 +234,7 @@ fn fetch_and_cache_discord_app(app_id: &str, process_name: Option<&str>) -> Opti
     let url = format!("https://discord.com/api/v10/applications/{app_id}/rpc");
     let response = ureq::get(&url)
         .set("User-Agent", "Monolith/1.0")
+        .timeout(DISCORD_FETCH_TIMEOUT)
         .call()
         .ok()?;
     let value: Value = response.into_json().ok()?;
@@ -206,18 +261,20 @@ fn fetch_and_cache_discord_app(app_id: &str, process_name: Option<&str>) -> Opti
         .filter(|name| !name.is_empty())
         .map(str::to_lowercase)
         .unwrap_or_else(|| format!("discord:{app_id}"));
+    let last_updated = now_unix();
     if let Some(conn) = open(false) {
         ensure_schema(&conn);
         let _ = conn.execute(
             "INSERT INTO game_catalog
-                (process_name_lower, display_name, discord_app_id, icon_url, cover_url)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+                (process_name_lower, display_name, discord_app_id, icon_url, cover_url, last_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(process_name_lower) DO UPDATE SET
                 display_name=excluded.display_name,
                 discord_app_id=excluded.discord_app_id,
                 icon_url=excluded.icon_url,
-                cover_url=excluded.cover_url",
-            params![&key, &name, app_id, &icon_url, &cover_url],
+                cover_url=excluded.cover_url,
+                last_updated=excluded.last_updated",
+            params![&key, &name, app_id, &icon_url, &cover_url, last_updated],
         );
     }
 
@@ -227,5 +284,35 @@ fn fetch_and_cache_discord_app(app_id: &str, process_name: Option<&str>) -> Opti
         discord_app_id: Some(app_id.to_string()),
         icon_url,
         cover_url,
+        last_updated,
     })
+}
+
+// Background refresh: re-fetches any catalog row with a known discord_app_id
+// whose last_updated is older than max_age (or never set), so the clip grid's
+// cache-only reads (resolve_artwork_cached) stay reasonably fresh without ever
+// blocking a display path on the network. Call from a background thread.
+pub fn refresh_stale(max_age: Duration) {
+    let Some(conn) = open(true) else { return };
+    ensure_schema(&conn);
+    let cutoff = now_unix() - max_age.as_secs() as i64;
+    let sql = format!(
+        "SELECT {} FROM game_catalog WHERE discord_app_id IS NOT NULL AND last_updated < ?1",
+        select_expr(&conn),
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else { return };
+    let Ok(rows) = stmt.query_map(params![cutoff], row_to_entry) else { return };
+    let stale: Vec<CatalogEntry> = rows.flatten().collect();
+    drop(stmt);
+    drop(conn);
+
+    for entry in stale {
+        let Some(app_id) = entry.discord_app_id.as_deref() else { continue };
+        let process_name = if entry.process_name_lower.starts_with("discord:") {
+            None
+        } else {
+            Some(entry.process_name_lower.as_str())
+        };
+        fetch_and_cache_discord_app(app_id, process_name);
+    }
 }

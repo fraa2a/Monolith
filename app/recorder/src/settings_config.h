@@ -58,7 +58,7 @@ struct Config {
 
     // Capture mode: "always" keeps the replay buffer running; "game_only" stops
     // it after idle_timeout_seconds with no detected game and restarts on detect.
-    // Never stops an active manual recording. (deno.md §6)
+    // Never stops an active manual recording.
     std::string capture_mode = "always"; // "always" | "game_only"
     int capture_idle_timeout_seconds = 300; // clamped 30–3600
     bool capture_auto_record = false;
@@ -84,6 +84,9 @@ struct Config {
 
     // Auto-update (applied live via WinSparkle on settings reload).
     bool update_auto_check = true;
+
+    // Disabled by default; toggled live on settings reload (libs/logging).
+    bool logging_enabled = false;
 
     std::string hotkey_save_replay = "Ctrl+Shift+F8";
     std::string hotkey_recording_start = "Ctrl+Shift+F9";
