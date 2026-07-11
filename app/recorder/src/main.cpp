@@ -2260,15 +2260,8 @@ static void tray_add(HWND hwnd)
     g_nid.uID              = 1;
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    // LoadIconMetric (not LoadIconW) picks the closest-matching frame from the
-    // multi-resolution .ico for the shell's actual small-icon size at the
-    // current DPI, instead of grabbing the default system icon size and
-    // letting GDI stretch it — that stretch is what made the tray icon blurry.
-    if (FAILED(LoadIconMetric(GetModuleHandleW(nullptr),
-                               MAKEINTRESOURCEW(IDI_MONOLITH),
-                               LIM_SMALL,
-                               &g_nid.hIcon)))
-        g_nid.hIcon        = nullptr;
+    g_nid.hIcon            = LoadIconW(GetModuleHandleW(nullptr),
+                                       MAKEINTRESOURCEW(IDI_MONOLITH));
     if (!g_nid.hIcon)
         g_nid.hIcon        = LoadIconW(nullptr, IDI_APPLICATION);
     g_icon_base = g_nid.hIcon;

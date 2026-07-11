@@ -29,7 +29,11 @@ if(NPM_EXECUTABLE AND CARGO_EXECUTABLE)
         # 2. Compile the Tauri host. Plain `cargo build --release` is used (not
         #    `cargo tauri build`) so the tauri-cli is not required — bundling is
         #    disabled (tauri.conf.json bundle.active=false) and we ship the bare exe.
-        COMMAND "${CARGO_EXECUTABLE}" build --release --manifest-path "${TAURI_DIR}/Cargo.toml"
+        #    --features custom-protocol is REQUIRED: without it tauri's build
+        #    script sets cfg(dev)=true and the shipped exe loads build.devUrl
+        #    (localhost:1420) instead of the embedded frontend. `cargo tauri
+        #    build` would add this flag for us; plain cargo does not.
+        COMMAND "${CARGO_EXECUTABLE}" build --release --features custom-protocol --manifest-path "${TAURI_DIR}/Cargo.toml"
         # 3. Drop the exe next to the recorder as ui/Monolith.UI.exe.
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CARGO_EXE_OUT}" "${UI_INSTALL_DIR}/Monolith.UI.exe"

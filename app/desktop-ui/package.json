@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "postbuild": "cargo build --release --manifest-path src-tauri/Cargo.toml",
-    "build:dev": "vite build && cargo build --manifest-path src-tauri/Cargo.toml",
+    "postbuild": "cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo.toml",
+    "build:dev": "vite build && cargo build --features custom-protocol --manifest-path src-tauri/Cargo.toml",
     "dev": "vite",
     "tauri": "tauri",
     "tauri:dev": "tauri dev"

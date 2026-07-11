@@ -22,6 +22,17 @@ windows = { version = "0.58", features = [
 ] }
 png = "0.17"
 
+[features]
+# When this feature is OFF, tauri's build script sets cfg(dev)=true and the
+# webview navigates to build.devUrl (http://localhost:1420) — correct for
+# `tauri dev` (Vite HMR), fatal for a shipped exe ("localhost refused to
+# connect"). `cargo tauri build` enables it automatically; we build with plain
+# `cargo build --release` (no tauri-cli), so the release path must pass
+# `--features custom-protocol` explicitly to load the embedded frontendDist via
+# the tauri:// protocol. Do NOT enable it by default — that would break Vite
+# HMR under `tauri dev`.
+custom-protocol = ["tauri/custom-protocol"]
+
 [[bin]]
 name = "monolith_ui"
 path = "src/main.rs"

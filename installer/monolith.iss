@@ -70,13 +70,10 @@ Source: "{#PayloadDir}\sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\ui\*"; DestDir: "{app}\ui"; Flags: recursesubdirs ignoreversion
 ; Default config is resolved from <exe dir>\config\default-config.json.
 Source: "..\config\default-config.json"; DestDir: "{app}\config"; Flags: ignoreversion
-; Desktop-shortcut icon (branding), distinct from Monolith.exe's own embedded
-; icon.ico (used for the tray + the exe's own shell/taskbar icon).
-Source: "..\app\assets\exeicon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\{#MonolithName}"; Filename: "{app}\{#MonolithExe}"
-Name: "{userdesktop}\{#MonolithName}"; Filename: "{app}\{#MonolithExe}"; IconFilename: "{app}\exeicon.ico"; Tasks: desktopicon
+Name: "{userdesktop}\{#MonolithName}"; Filename: "{app}\{#MonolithExe}"; Tasks: desktopicon
 
 [Registry]
 ; Per-user autostart (HKCU — no elevation needed); removed on uninstall.
