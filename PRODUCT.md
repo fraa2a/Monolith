@@ -22,8 +22,12 @@ instantly in the library, and the app never gets in the way of the game.
 ## Brand Personality
 
 Quiet, precise, native. The app should feel like part of Windows: dark chrome,
-monochrome restraint, red reserved for recording/destructive meaning. No
-gamer-RGB styling, no streamer-brand loudness.
+monochrome restraint, red reserved for recording/destructive meaning. A single
+desaturated lavender-ice accent marks interactive/active/selected state
+(active nav item, active tab, focused input, primary button) — it never
+appears on recording or favorite affordances, and it's deliberately muted
+rather than saturated so it reads as UI state, not brand color. No gamer-RGB
+styling, no streamer-brand loudness.
 
 ## Anti-references
 
@@ -38,7 +42,9 @@ gamer-RGB styling, no streamer-brand loudness.
    without opening anything.
 2. Resolve, don't expose: every process, device, or file is shown by its
    human name and icon; identifiers stay internal.
-3. One accent, one meaning: red means recording or destruction, nothing else.
+3. One accent, one meaning: red means recording or destruction, gold means
+   favorited, and the lavender-ice accent means interactive/active/selected —
+   each color carries exactly one signal, never mixed or reused.
 4. Native fidelity: Windows-resident fonts, standard affordances, offline and
    CSP-clean assets.
 5. The game wins: the UI never demands attention while capture is running.

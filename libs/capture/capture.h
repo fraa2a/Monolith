@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <functional>
 
+struct ID3D11Texture2D;
+
 namespace capture {
 
 struct CaptureOptions {
@@ -78,6 +80,9 @@ public:
 private:
     struct Impl;
     Impl* impl_;
+
+    friend bool ensure_video_processor(Impl*, uint32_t, uint32_t, uint32_t, uint32_t);
+    friend bool gpu_downscale(Impl*, ID3D11Texture2D*, uint32_t, uint32_t, uint32_t, uint32_t);
 };
 
 } // namespace capture

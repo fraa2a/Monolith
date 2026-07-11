@@ -1,6 +1,6 @@
 ﻿# Active Handover
 
-Updated: 2026-07-08
+Updated: 2026-07-10
 
 ## Product Summary
 
@@ -171,3 +171,98 @@ npm run build
 - Process-loopback and active-game detection are best-effort on Windows.
 - Update path cannot be fully verified until first public release exists.
 - No broad automated test suite yet.
+
+## desktop-ui: UI redesign pass (UI_Todo.md)
+
+Executed the 9-task redesign plan in `UI_Todo.md` to bring `app/desktop-ui`
+closer to feature parity/polish with competitor products while keeping
+`PRODUCT.md`'s "quiet, precise, native" identity.
+
+Done:
+
+- New `--accent`/`--accent-hi`/`--accent-soft`/`--accent-ink` design tokens
+  (desaturated lavender-ice) applied to all interactive/active/selected UI
+  (`.btn-primary`, `.toggle.on`, `.seg.active`, `.side-item.active`,
+  `.settings-tab.active`, input/select focus, `.rec-dot.clip`). Red stays
+  recording-only, gold stays favorites-only — verified no overlap.
+  `PRODUCT.md` "Brand Personality" and Design Principle 3 updated to document
+  the third accent's single meaning.
+- Titlebar status cluster flex ratios fixed (`.tb-brand` no longer grows to
+  consume space, `.tb-status` sits anchored after it) plus a persistent chip
+  background on `.capture-feed`.
+- Settings popup: grouped nav (Recording / Output / Advanced sections),
+  content-driven modal height (was a fixed 640px regardless of content), and
+  a real "About" section on the General page using Tauri's `getVersion()`
+  (previously that page was near-empty).
+- Library clip cards: persistent (non-hover) action row — favorite, open
+  containing folder, delete — reusing the app's existing `ConfirmDialog` flow
+  for delete rather than a native `confirm()`. Added a new Tauri command
+  `reveal_in_explorer` (`explorer /select,<path>`) since no folder-reveal
+  capability existed anywhere in the codebase before this session.
+- Typography coherence pass: weight/tracking bumps on active nav/tab states
+  and section/card titles for clearer hierarchy. No new font bundled.
+
+Intentionally skipped (documented in `UI_Todo.md`'s own terms — don't fake
+data or add scope the app doesn't support):
+
+- **Sidebar storage/space indicator** — `RuntimeStatus` has no disk/storage
+  fields; adding them needs new backend work (`settings_store.rs` +
+  `commands.rs` + `settings-api.ts`) out of scope for a UI pass.
+- **Bundled display font** — marked optional in the spec; needs a separate
+  licensing/packaging decision.
+
+Build verified this session: `npm run build` (Vite) and
+`cargo build --release --manifest-path src-tauri\Cargo.toml` both succeed.
+Fixed one unrelated pre-existing compile error found along the way
+(`game_catalog.rs::resolve_artwork` was missing the `last_updated` field
+after the Discord cache redesign in a prior commit).
+
+Not done: manual runtime smoke test (build machine only, no interactive
+session) — verify titlebar/sidebar/library grid/settings modal/card actions
+visually before shipping, per `CLAUDE.md`'s manual runtime smoke checklist.
+
+## desktop-ui: clip card/detail/settings follow-up pass
+
+Follow-up session on top of the redesign pass above, addressing user feedback:
+
+- Clip card: removed the delete and "open containing folder" buttons entirely
+  (`.card-actions`/`.card-act` gone). Reveal-in-explorer moved into detail view:
+  clicking the clip title/name there now calls `clipApi.revealInExplorer(clip)`
+  instead of just being a label.
+- Detail view player: added a fullscreen button next to the volume slider
+  (`onFullscreen(clip)`, wired through `app.tsx` into the existing `Fullscreen`
+  component).
+- Clip card compact meta row reordered to `[game/source icon] · date · size`
+  (previously size/date/icon), matching the requested "Game, Date, Size" order.
+- Settings popup no longer resizes when switching categories: `.settings`
+  changed from `height: auto; max-height: min(640px, 90vh)` to a fixed
+  `height: min(640px, 90vh)`. `.settings-body`'s existing `overflow-y: auto`
+  now does all the scrolling; a sparse page just leaves empty space instead of
+  shrinking the whole popup.
+- Audio settings: new "Track Layout" section/toggle (`audio.track_layout`:
+  `"single" | "separate"`). Microphone always keeps its own track; every other
+  source (game desktop audio + other apps) either shares track 1 or gets its
+  own free track (3-6). This is purely a frontend concern — confirmed via
+  reading `settings_config.h`/`encoding.h` that the C++ engine already mixes
+  whatever `tracks: []` values a source is given, and confirmed via
+  `settings_store.rs` that config round-trips as an untyped JSON blob, so no
+  backend/schema changes were needed.
+- Audio settings "Other sources" now re-polls `getRuntimeStatus()` every 5s
+  while the Settings popup is open, so newly-detected audio-producing apps
+  show up without closing/reopening Settings. Note: this refresh happens at
+  the popup-mount level plus the 5s poll, not as an independent re-fetch on
+  every tab switch within one already-open popup session — in practice the 5s
+  poll means data is never more than 5s stale regardless of which tab is
+  active, but flagging the distinction since it wasn't asked for literally.
+
+Build verified this session: `npm run build` (Vite) and
+`cargo build --release --manifest-path src-tauri\Cargo.toml` both succeed, no
+compile errors.
+
+Not done: manual runtime smoke test of these specific changes (build machine
+only) — verify card layout, detail-view name-click/fullscreen button,
+settings popup fixed sizing across all category pages, and the audio track
+layout toggle actually changing recorded track assignment, before shipping.
+
+No git commit/push has been made — awaiting explicit user confirmation per
+standing instruction.
