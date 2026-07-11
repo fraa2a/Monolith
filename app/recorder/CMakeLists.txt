@@ -79,6 +79,7 @@ target_link_libraries(monolith
         shcore
         user32
         winmm
+        comctl32
 )
 
 if(MSVC)
