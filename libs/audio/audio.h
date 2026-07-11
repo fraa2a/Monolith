@@ -84,14 +84,36 @@ struct ActiveGameResult {
     bool fullscreen  = false;
 };
 
-// Config-driven active-game detection. Applies the blacklist/whitelist from cfg,
-// scores candidates with explicit bonuses (fullscreen, foreground, audio session,
-// whitelist/manual), and discards candidates below cfg.min_confidence.
-// Returns an ActiveGameResult with process_id == 0 when nothing qualifies.
+// One running process whose executable is present in the local game-list DB.
+// Detection is DB-gated: only DB-matched processes ever become candidates. The
+// window facts (foreground/fullscreen/capture_window) only order candidates and
+// select the capture target — they never gate membership. display_name /
+// discord_app_id come from the DB (UTF-8).
+struct GameCandidateInfo {
+    ProcessInfo process;
+    std::string display_name;
+    std::string discord_app_id;
+    bool     foreground = false;
+    bool     fullscreen = false;
+    bool     has_session = false;    // has an active audio render session
+    HWND     capture_window = nullptr; // main window to capture, if any
+};
+
+// DB-gated detection: returns every running process whose exe basename is in the
+// game-list DB (minus the user blacklist and built-in shell/self processes).
+// Selection among candidates is the caller's job. Empty when nothing matches or
+// the DB hasn't synced yet.
+std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg);
+
+// Config-driven active-game detection, now DB-gated: returns the single best
+// candidate from detect_game_candidates (foreground > fullscreen > audio session
+// > window area). process_id == 0 when nothing qualifies. The blacklist and
+// sticky_foreground_pid in cfg are honored; whitelist/manual_games/min_confidence
+// are inert (detection is purely DB membership now).
 ActiveGameResult detect_active_game(const DetectConfig& cfg);
 
-// Convenience overload: uses built-in defaults (shell/Monolith blacklisted,
-// min_confidence = 0 so any candidate is returned).
+// Convenience overload: built-in defaults (shell/Monolith excluded). Returns the
+// best DB-matched candidate, or an empty ProcessInfo when none is running.
 inline ProcessInfo detect_active_game()
 {
     return detect_active_game(DetectConfig{}).process;

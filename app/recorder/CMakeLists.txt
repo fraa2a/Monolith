@@ -62,6 +62,7 @@ target_link_libraries(monolith
         capture
         platform_win
         logging
+        gamelist
         audio
         encoding
         storage

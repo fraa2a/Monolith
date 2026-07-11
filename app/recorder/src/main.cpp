@@ -16,6 +16,7 @@
 
 #include <capture/capture.h>
 #include <audio/audio.h>
+#include <gamelist/gamelist.h>
 #include <encoding/encoding.h>
 #include <storage/storage.h>
 #include <replay-buffer/replay_buffer.h>
@@ -706,15 +707,15 @@ static void catalog_clip(std::wstring video_path, std::string source,
     row.source           = source;
     row.duration_seconds = probed_duration > 0.0 ? probed_duration : duration_seconds;
 
-    // Best-effort game association: heuristic foreground detection at save time
-    // (self-contained, off the UI thread). Empty when no game qualifies.
+    // Best-effort game association: DB-gated detection at save time
+    // (self-contained, off the UI thread). Empty when no known game is running.
     audio::ProcessInfo game = audio::detect_active_game();
     if (game.process_id != 0) {
         row.game_process_name = wide_to_utf8(game.process_name);
         row.game_display_name = wide_to_utf8(
             game.display_name.empty() ? game.process_name : game.display_name);
         row.game_executable_path = wide_to_utf8(game.executable_path);
-        row.game_source = "heuristic";
+        row.game_source = "gamelist";
     }
 
     if (dbh->insert_clip(row, &error) <= 0)
@@ -2762,6 +2763,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         uninstall_fg_hook();
         updater::shutdown();
         ipc::stop();
+        gamelist::shutdown();
         media_stop();
         hotkeys_unregister(hwnd);
         tray_remove();
@@ -2825,6 +2827,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     log_init(g_settings.logging_enabled);
     log_msg("app", "initializing (Monolith: replay + manual recording)");
     audio::set_log_sink([](const char* tag, const char* msg) { log_msg(tag, msg); });
+    // Game-list DB: detection is gated on it. Sync failures are surfaced via the
+    // always-on error log. init() kicks a background worker (startup + 72h sync);
+    // the tray/UI loop never blocks on the network or DB.
+    gamelist::set_log_sink([](const char* tag, const char* msg) { log_error(tag, msg); });
+    gamelist::init(app_data_dir());
     reconcile_catalogs(); // self-heal clip catalogs on a background thread
     updater::init(g_settings.update_auto_check);
     if (g_settings.update_auto_check)

@@ -21,6 +21,7 @@ target_link_libraries(audio
         propsys
     PRIVATE
         platform_win
+        gamelist
 )
 
 if(MSVC)
