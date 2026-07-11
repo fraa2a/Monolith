@@ -14,6 +14,8 @@
 
 #include <winrt/base.h>
 
+#include <unordered_map>
+
 #include <capture/capture.h>
 #include <audio/audio.h>
 #include <gamelist/gamelist.h>
@@ -322,12 +324,11 @@ static constexpr UINT_PTR kActiveGameTimerId = 1;
 // ceiling for the encoded-packet ring across supported bitrates/durations.
 static constexpr int64_t kReplayMemoryBudgetMb = 512;
 
-// Active-game detection runs on a fixed 5 s cadence; detection itself is a
-// pure local heuristic (foreground/fullscreen/audio-session/whitelist score
-// over running processes), no user configuration and no network calls.
-// Discord is used only to enrich display (name/artwork) for a detected game,
-// never to decide which process is active.
-static constexpr int kActiveGamePollMs = 5000;
+// Active-game detection runs on a fixed 3 s cadence. Detection is DB-gated: a
+// process only counts as a game when its executable is in the locally-cached
+// Discord detectable list (see libs/gamelist). Window facts (foreground/
+// fullscreen) only order candidates and pick the capture target, never gate.
+static constexpr int kActiveGamePollMs = 3000;
 
 static std::vector<int>          g_active_game_tracks;
 static float                     g_active_game_gain    = 1.0f; // volume of the active-game source
@@ -422,6 +423,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
     std::vector<uint8_t> local_bgra;
     int local_stride = 0, local_width = 0, local_height = 0;
     uint64_t local_last_id = 0;
+    bool frozen = false; // edge-detect for the minimized-window log
 
     // High-resolution waitable timer (Win10 1803+).  Falls back to the stop
     // event's timeout wait if unavailable.
@@ -449,11 +451,24 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
             if (w == WAIT_OBJECT_0) break;
         }
 
+        // Frozen-frame: when the captured game window is minimized, WGC delivers
+        // no (or degenerate) frames. Deliberately hold the last good frame — the
+        // CFR loop keeps duplicating local_bgra — instead of swapping in whatever
+        // WGC produces while iconic. Applies to both recording and replay since
+        // both consume this pacer -> encoder path.
+        HWND cap_target = g_capture_target_hwnd.load(std::memory_order_relaxed);
+        const bool minimized = cap_target && IsIconic(cap_target);
+        if (minimized != frozen) {
+            frozen = minimized;
+            log_msg("capture", minimized ? "captured game minimized: holding last frame"
+                                         : "captured game restored");
+        }
+
         // Pull the latest captured frame (if a new one arrived).  Swap buffers
         // under the lock instead of copying: the consumer takes ownership of the
         // shared frame's storage and hands back its own (reused next push), so
         // there is no per-frame full-frame memcpy on the consumer side.
-        {
+        if (!minimized) {
             std::lock_guard<std::mutex> lock(g_pacer_mutex);
             if (g_pacer_shared.frame_id != local_last_id) {
                 std::swap(local_bgra, g_pacer_shared.bgra);
@@ -800,71 +815,179 @@ static void media_start(HWND hwnd);
 static void media_stop();
 static void tray_set_recording(bool recording);
 
-// capture_mode "game_only": stops the replay-capture pipeline after the idle
-// timeout with no detected game and resumes it when a game reappears. Runs on
-// the UI thread (WM_TIMER), like the reload path, so calling media_start/stop is
-// safe. Never touches an active manual recording.
+// ── Detection / multi-game / auto-record shared state (UI thread only) ─────────
+//
+// poll_active_game() computes these each detection pass; evaluate_capture_mode()
+// consumes them for the capture pipeline + auto-record state machine. Keeping the
+// two split means the inline poll_active_game() calls inside media_start() don't
+// trigger capture churn.
 static uint64_t g_last_game_seen_ms  = 0;
 static bool     g_capture_mode_stopped = false; // capture idled off by game_only
 static bool     g_auto_recording_active = false;
 
+// The DB-matched games running right now, and which one is the effective target
+// (user selection, else most-recently-focused). Written by poll_active_game().
+static std::vector<uint32_t>                  g_candidate_pids;
+static std::unordered_map<uint32_t, uint64_t> g_focus_ms;        // pid -> last foreground tick
+static uint32_t                               g_effective_game_pid = 0;
+static uint32_t                               g_recording_game_pid = 0; // pid of the auto recording
+
+// User's explicit game selection (from the topbar via IPC). Shared with the IPC
+// thread. Empty exe = auto (most-recently-focused wins).
+static std::mutex  g_selected_game_mutex;
+static std::string g_selected_game_exe;   // lowercased exe basename
+
+// Capture target window for game_only mode; read by the pacer thread for the
+// frozen-frame (minimized) handling. nullptr = full-screen/monitor capture.
+static std::atomic<HWND> g_capture_target_hwnd{ nullptr };
+
+// Auto-record engine-startup grace: when games are already running as the engine
+// starts, wait for the user to foreground one (up to 60s) before auto-recording.
+enum class AutoState { WaitingForStartupFocus, Idle, AutoRecording };
+static AutoState g_auto_state = AutoState::WaitingForStartupFocus;
+static uint64_t  g_engine_start_ms = 0;
+static constexpr uint64_t kStartupFocusGraceMs = 60000;
+
+// Lowercased UTF-8 exe basename, used as the stable selection/lookup key.
+static std::string exe_key_of(const std::wstring& process_name)
+{
+    std::string s = wide_to_utf8(process_name);
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+// Starts the auto recording for the current effective target, if allowed. Returns
+// true when a recording was started.
+static bool auto_record_start(HWND hwnd)
+{
+    if (!g_settings.capture_auto_record) return false;
+    if (!g_recording_enabled.load(std::memory_order_relaxed)) return false;
+    if (g_recording.state() != recording::RecordingState::Idle) return false;
+    if (!g_video.running()) media_start(hwnd);
+    if (!g_recording.start(g_recordings_dir, g_recording_container)) return false;
+    g_auto_recording_active = true;
+    g_auto_state            = AutoState::AutoRecording;
+    g_recording_game_pid    = g_effective_game_pid;
+    log_path("recording", "auto recording started: ", g_recording.current_path());
+    feedback::play(feedback::Sound::RecordStart);
+    tray_set_recording(true);
+    return true;
+}
+
+// Stops + catalogs the current auto recording (never a user manual recording).
+static void auto_record_stop()
+{
+    if (!g_auto_recording_active ||
+        g_recording.state() == recording::RecordingState::Idle)
+        return;
+    std::wstring path;
+    if (g_recording.stop(&path)) {
+        if (path.empty()) log_msg("recording", "auto recording stopped: no packets written");
+        else {
+            log_path("recording", "auto recording saved: ", path);
+            std::thread(catalog_clip, path, std::string("manual"), 0.0).detach();
+        }
+        feedback::play(feedback::Sound::RecordStop);
+        tray_set_recording(false);
+    }
+    g_auto_recording_active = false;
+    g_recording_game_pid    = 0;
+}
+
+// Runs the game_only capture pipeline + auto-record state machine from the shared
+// detection state computed by the preceding poll_active_game(). UI thread only.
 static void evaluate_capture_mode(HWND hwnd)
 {
     if (g_settings.capture_mode != "game_only") {
-        g_capture_mode_stopped = false;
-        g_auto_recording_active = false;
+        // Screen mode: full-screen capture always runs; detection still happened
+        // (naming/icon/candidates), but capture/auto-record here is a no-op.
+        g_capture_mode_stopped  = false;
         return;
     }
 
     const uint64_t now = GetTickCount64();
+    if (g_engine_start_ms == 0) g_engine_start_ms = now;
     if (g_last_game_seen_ms == 0) g_last_game_seen_ms = now; // grace on first tick
 
-    audio::ProcessInfo game = audio::detect_active_game();
-    if (game.process_id != 0) {
+    const bool has_game = g_effective_game_pid != 0;
+    const bool clip_without_game = g_settings.capture_clip_without_game;
+
+    // ── A game is available ──────────────────────────────────────────────────
+    if (has_game) {
         g_last_game_seen_ms = now;
+
+        // Resume the replay pipeline if it was idled off while no game ran.
         if (g_replay_enabled.load(std::memory_order_relaxed) &&
             g_capture_mode_stopped && !g_video.running()) {
             log_msg("capture", "game_only: game detected, resuming capture");
             media_start(hwnd);
             g_capture_mode_stopped = false;
         }
-        if (g_settings.capture_auto_record &&
-            g_recording_enabled.load(std::memory_order_relaxed) &&
-            g_recording.state() == recording::RecordingState::Idle) {
-            if (!g_video.running())
-                media_start(hwnd);
-            if (g_recording.start(g_recordings_dir, g_recording_container)) {
-                g_auto_recording_active = true;
-                log_path("recording", "auto recording started: ", g_recording.current_path());
-                feedback::play(feedback::Sound::RecordStart);
-                tray_set_recording(true);
+
+        // Auto-next-on-close: the recorded game closed while others remain — the
+        // effective target already moved on; stop the old recording and start the
+        // new target.
+        if (g_auto_state == AutoState::AutoRecording &&
+            g_recording_game_pid != 0 &&
+            g_recording_game_pid != g_effective_game_pid) {
+            log_msg("recording", "recorded game changed; switching auto recording");
+            auto_record_stop();
+        }
+
+        // Startup grace: don't auto-start until the user foregrounds a running
+        // game (or 60s elapses).
+        if (g_auto_state == AutoState::WaitingForStartupFocus) {
+            bool focused_a_game = false;
+            for (uint32_t pid : g_candidate_pids) {
+                if (pid != g_effective_game_pid) continue;
+                auto it = g_focus_ms.find(pid);
+                if (it != g_focus_ms.end() && it->second >= g_engine_start_ms)
+                    focused_a_game = true;
+                break;
             }
+            if (focused_a_game || (now - g_engine_start_ms) >= kStartupFocusGraceMs)
+                g_auto_state = AutoState::Idle; // grace resolved; normal rules apply
+        }
+
+        if (g_auto_state != AutoState::WaitingForStartupFocus &&
+            g_recording.state() == recording::RecordingState::Idle) {
+            auto_record_start(hwnd);
         }
         return;
     }
 
-    if (g_auto_recording_active && g_recording.state() != recording::RecordingState::Idle) {
-        std::wstring path;
-        if (g_recording.stop(&path)) {
-            if (path.empty()) log_msg("recording", "auto recording stopped: no packets written");
-            else {
-                log_path("recording", "auto recording saved: ", path);
-                std::thread(catalog_clip, path, std::string("manual"), 0.0).detach();
-            }
-            feedback::play(feedback::Sound::RecordStop);
-            tray_set_recording(false);
-        }
-        g_auto_recording_active = false;
+    // ── No game detected ─────────────────────────────────────────────────────
+    // Stop an auto recording (never a user-started manual recording).
+    if (g_auto_recording_active) {
+        auto_record_stop();
     } else if (g_recording.state() != recording::RecordingState::Idle) {
         return; // never stop a user-started manual recording
     }
+    g_auto_state = AutoState::Idle;
 
+    // Clipping-without-game ON: keep the replay buffer alive on full-screen
+    // capture (capture-options falls back to the monitor when no target window).
+    if (clip_without_game) {
+        if (g_replay_enabled.load(std::memory_order_relaxed) && !g_video.running()) {
+            log_msg("capture", "no game: clip-without-game on, capturing full screen");
+            media_start(hwnd);
+        }
+        g_capture_mode_stopped = false;
+        return;
+    }
+
+    // Clipping-without-game OFF (default): disable the replay buffer once the idle
+    // timeout elapses with no game.
+    const uint64_t idle_ms =
+        static_cast<uint64_t>(g_settings.capture_idle_timeout_seconds) * 1000ull;
     if (g_replay_enabled.load(std::memory_order_relaxed) &&
-        g_video.running() && !g_capture_mode_stopped) {
-            log_msg("capture", "game_only: no supported game, stopping capture");
-            media_stop();
-            g_replay.clear();
-            g_capture_mode_stopped = true;
+        g_video.running() && !g_capture_mode_stopped &&
+        (now - g_last_game_seen_ms) >= idle_ms) {
+        log_msg("capture", "game_only: no game past idle timeout, stopping capture");
+        media_stop();
+        g_replay.clear();
+        g_capture_mode_stopped = true;
     }
 }
 
@@ -1511,7 +1634,7 @@ static void start_audio_system()
 }
 
 // True when the custom audio config contains an enabled active_game source.
-static bool active_game_source_configured()
+[[maybe_unused]] static bool active_game_source_configured()
 {
     if (g_settings.audio_mode != "custom") return false;
     for (const auto& source : g_settings.audio_sources) {
@@ -1563,7 +1686,12 @@ static void drop_active_game_capture(const char* reason_msg)
 // Hysteresis: a new candidate must remain the best choice for switch_debounce_ms
 // before the capture is swapped.  Only the Active Game capture is touched; other
 // captures, encoders, and the replay buffer are never restarted.
-static void poll_active_game_impl()
+// Drives ONLY the Active Game audio process-loopback capture toward `result`
+// (the effective target chosen by poll_active_game()). Does not publish the
+// active_game display block on the no-audio-source path — that is handled by
+// poll_active_game() so the UI shows the game even without an active-game audio
+// source configured.
+static void poll_active_game_impl(const audio::ActiveGameResult& result)
 {
     if (g_active_game_tracks.empty()) return;
     if (!g_settings.active_game.detection_enabled) return;
@@ -1572,8 +1700,6 @@ static void poll_active_game_impl()
     if (g_active_game_pid != 0 && !audio::process_alive(g_active_game_pid))
         drop_active_game_capture("active game exited; watching for a new one");
 
-    // Detect best candidate with config-driven blacklist/whitelist.
-    audio::ActiveGameResult result = audio::detect_active_game(build_detect_config());
     uint32_t best_pid = result.process.process_id;
 
     // ── No valid candidate ────────────────────────────────────────────────────
@@ -1717,13 +1843,134 @@ static void poll_active_game_impl()
     // Status flushed by the poll_active_game() wrapper after this returns.
 }
 
-// Public entry point: run a detection pass and always flush the updated status
-// to runtime-status.json so the UI reflects acquire/keep/lose transitions
-// (the timer/fast-scan callers relied on this; previously only the
-// acquire/switch branches published, so refreshes were lost).
+// Resolves the effective target among candidates: an explicit user selection (by
+// exe basename) wins; otherwise the most-recently-foregrounded game; ties broken
+// by fullscreen then audio session. Returns nullptr when there are no candidates.
+static const audio::GameCandidateInfo* resolve_effective_target(
+    const std::vector<audio::GameCandidateInfo>& candidates)
+{
+    if (candidates.empty()) return nullptr;
+
+    std::string sel;
+    {
+        std::lock_guard<std::mutex> lk(g_selected_game_mutex);
+        sel = g_selected_game_exe;
+    }
+    if (!sel.empty()) {
+        for (const auto& c : candidates)
+            if (exe_key_of(c.process.process_name) == sel) return &c;
+        // Selected game not currently running — fall through to auto.
+    }
+
+    const audio::GameCandidateInfo* best = nullptr;
+    uint64_t best_focus = 0;
+    int best_rank = -1;
+    for (const auto& c : candidates) {
+        auto it = g_focus_ms.find(c.process.process_id);
+        const uint64_t focus = (it != g_focus_ms.end()) ? it->second : 0;
+        const int rank = (c.fullscreen ? 2 : 0) + (c.has_session ? 1 : 0);
+        if (!best || focus > best_focus ||
+            (focus == best_focus && rank > best_rank)) {
+            best = &c;
+            best_focus = focus;
+            best_rank = rank;
+        }
+    }
+    return best;
+}
+
+// Public entry point: run one DB-gated detection pass, resolve the effective
+// target, drive the Active Game audio capture toward it, publish the active game
+// + full candidate list, and flush runtime-status.json. Does NOT touch the
+// capture pipeline / auto-record — evaluate_capture_mode() does, from the shared
+// state this leaves behind.
 static void poll_active_game()
 {
-    poll_active_game_impl();
+    if (!g_settings.active_game.detection_enabled) {
+        g_candidate_pids.clear();
+        g_effective_game_pid = 0;
+        g_capture_target_hwnd.store(nullptr, std::memory_order_relaxed);
+        publish_runtime_status();
+        return;
+    }
+
+    auto candidates = audio::detect_game_candidates(build_detect_config());
+
+    // Stamp foreground time; prune focus entries for games that are gone.
+    const uint64_t now = GetTickCount64();
+    std::vector<uint32_t> live_pids;
+    live_pids.reserve(candidates.size());
+    for (const auto& c : candidates) {
+        live_pids.push_back(c.process.process_id);
+        if (c.foreground) g_focus_ms[c.process.process_id] = now;
+    }
+    for (auto it = g_focus_ms.begin(); it != g_focus_ms.end();) {
+        if (std::find(live_pids.begin(), live_pids.end(), it->first) == live_pids.end())
+            it = g_focus_ms.erase(it);
+        else
+            ++it;
+    }
+    g_candidate_pids = live_pids;
+
+    const audio::GameCandidateInfo* target = resolve_effective_target(candidates);
+    g_effective_game_pid = target ? target->process.process_id : 0;
+    g_capture_target_hwnd.store(target ? target->capture_window : nullptr,
+                                std::memory_order_relaxed);
+
+    // Build the effective ActiveGameResult and drive the audio capture toward it.
+    audio::ActiveGameResult eff;
+    if (target) {
+        eff.process = target->process;
+        if (!target->display_name.empty())
+            eff.process.display_name = utf8_to_wide(target->display_name);
+        eff.confidence  = 100;
+        eff.reason      = "gamelist";
+        eff.has_session = target->has_session;
+        eff.fullscreen  = target->fullscreen;
+    }
+    poll_active_game_impl(eff);
+
+    // Publish the active game (display block) + full candidate list + selection.
+    {
+        std::lock_guard<std::mutex> lk(g_status_mutex);
+        auto& ag = g_runtime_status.active_game;
+        if (target) {
+            ag.process_id      = target->process.process_id;
+            ag.process_name    = target->process.process_name;
+            ag.display_name    = eff.process.display_name;
+            ag.executable_path = target->process.executable_path;
+            if (ag.confidence == 0) ag.confidence = 100;
+            if (ag.reason.empty()) ag.reason = "gamelist";
+        } else {
+            ag.process_id = 0;
+            ag.process_name.clear();
+            ag.display_name.clear();
+            ag.executable_path.clear();
+            ag.confidence = 0;
+            ag.reason.clear();
+            ag.capture_mode = "none";
+            ag.process_loopback_available = false;
+        }
+        ag.poll_interval_ms  = g_settings.active_game.poll_interval_ms;
+        ag.fast_scan_enabled = g_settings.active_game.fast_scan_enabled;
+
+        g_runtime_status.selected_game_pid = g_effective_game_pid;
+        g_runtime_status.game_candidates.clear();
+        for (const auto& c : candidates) {
+            settings::GameCandidateStatus s;
+            s.process_id      = c.process.process_id;
+            s.process_name    = c.process.process_name;
+            s.display_name    = c.display_name.empty()
+                                    ? c.process.display_name
+                                    : utf8_to_wide(c.display_name);
+            s.discord_app_id  = c.discord_app_id;
+            s.executable_path = c.process.executable_path;
+            s.foreground      = c.foreground;
+            s.fullscreen      = c.fullscreen;
+            g_runtime_status.game_candidates.push_back(std::move(s));
+        }
+    }
+
     publish_runtime_status();
 }
 
@@ -1868,8 +2115,9 @@ static void media_start(HWND hwnd)
     // ── Audio capture/routing ──────────────────────────────────────────────────
     g_main_hwnd = hwnd;
     start_audio_system();
-    if (active_game_source_configured() || g_settings.capture_mode == "game_only") {
-        // Fixed 5 s cadence; detection is fully automatic (no user config).
+    if (g_settings.active_game.detection_enabled) {
+        // Detection runs in ALL modes now (game_only AND screen): it drives
+        // naming/icon, the candidate list, and auto-record. Fixed 3 s cadence.
         SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
         // Foreground-change fast scan is always on for snappy game switches.
         install_fg_hook();
@@ -2100,17 +2348,30 @@ static void media_start(HWND hwnd)
             options.show_border = g_settings.show_capture_border;
             options.max_readback_fps = std::max(1, g_settings.video_fps);
             options.allow_unlimited_readback = false;
+
+            // In game_only, capture the effective target's window (resolved by the
+            // detection poll). When there is no target (no game, or its window is
+            // unavailable) we fall back to full-screen monitor capture — which is
+            // also the clip-without-game path.
+            HWND target = nullptr;
             if (g_settings.capture_mode == "game_only") {
-                audio::ProcessInfo game = audio::detect_active_game();
-                options.target_window = main_window_for_process(game.process_id);
-                if (options.target_window)
-                    log_msg("capture", "game_only: capturing detected game window");
-                else
-                    log_msg("capture", "game_only: game window unavailable, using selected monitor");
+                target = g_capture_target_hwnd.load(std::memory_order_relaxed);
+                if (!target) {
+                    // First start before a detection pass has run: resolve now.
+                    audio::ProcessInfo game = audio::detect_active_game();
+                    target = main_window_for_process(game.process_id);
+                    g_capture_target_hwnd.store(target, std::memory_order_relaxed);
+                }
+            }
+
+            if (target) {
+                options.target_window = target;
+                log_msg("capture", "game_only: capturing detected game window");
             } else {
-                // Native monitor size is known upfront here (unlike game_only,
-                // where the target window's size isn't known until the first
-                // frame), so the GPU downscale target can be set before start().
+                if (g_settings.capture_mode == "game_only")
+                    log_msg("capture", "game_only: no game window, capturing full screen");
+                // Native monitor size is known upfront here (unlike a window
+                // target), so the GPU downscale target can be set before start().
                 for (const auto& entry : monitors) {
                     if (entry.hmon == hmon) {
                         resolve_target_size(entry.info.width, entry.info.height,
@@ -2613,6 +2874,17 @@ static void hotkeys_unregister(HWND hwnd)
 
 // ── Command dispatch ──────────────────────────────────────────────────────────
 
+// True when a clip/record command must be blocked: game_only mode, no known game
+// running, and clip-without-game is off (so there is genuinely nothing to
+// capture). When clip-without-game is on we allow it — capture falls back to the
+// full screen.
+static bool game_gate_blocks()
+{
+    if (g_settings.capture_mode != "game_only") return false;
+    if (g_settings.capture_clip_without_game) return false;
+    return audio::detect_active_game().process_id == 0;
+}
+
 static void dispatch(Cmd cmd, HWND hwnd)
 {
     switch (cmd) {
@@ -2621,8 +2893,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("replay", "save_replay ignored: replay buffer disabled in settings");
             break;
         }
-        if (g_settings.capture_mode == "game_only" &&
-            audio::detect_active_game().process_id == 0) {
+        if (game_gate_blocks()) {
             log_msg("replay", "save_replay ignored: no supported game detected");
             break;
         }
@@ -2650,8 +2921,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("recording", "recording_start ignored: recording disabled in settings");
             break;
         }
-        if (g_settings.capture_mode == "game_only" &&
-            audio::detect_active_game().process_id == 0) {
+        if (game_gate_blocks()) {
             log_msg("recording", "recording_start ignored: no supported game detected");
             break;
         }
@@ -2732,7 +3002,16 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_recording_enabled.load(std::memory_order_relaxed),
                 g_clip_generation.load(std::memory_order_relaxed),
             };
-        }, handle_clip_mutation);
+        }, handle_clip_mutation,
+        [](const std::string& exe, uint32_t /*pid*/) {
+            // Runs on an IPC client thread: only touch synchronized state, then
+            // nudge the message loop to re-evaluate on the UI thread.
+            {
+                std::lock_guard<std::mutex> lk(g_selected_game_mutex);
+                g_selected_game_exe = exe; // already lowercased; "" = auto
+            }
+            PostMessageW(g_main_hwnd, WM_FAST_SCAN, 0, 0);
+        });
         publish_runtime_status();
         log_msg("app", "app shell ready");
         return 0;
@@ -2746,13 +3025,16 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return DefWindowProcW(hwnd, msg, wp, lp);
 
     case WM_FAST_SCAN: {
-        // Foreground-change fast scan, rate-limited to one pass per second.
+        // Foreground-change fast scan, rate-limited to one pass per second. Runs
+        // the capture/auto-record evaluation too, so the startup-focus grace and
+        // auto-record react immediately when the user foregrounds a game.
         g_fast_scan_pending = false;
         constexpr DWORD kFastScanMinGapMs = 1000;
         DWORD now_ms = GetTickCount();
         if ((now_ms - g_last_fast_scan_ms) >= kFastScanMinGapMs) {
             g_last_fast_scan_ms = now_ms;
             poll_active_game();
+            evaluate_capture_mode(hwnd);
         }
         return 0;
     }

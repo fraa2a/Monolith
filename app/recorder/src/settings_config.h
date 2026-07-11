@@ -24,7 +24,7 @@ struct AudioSourceConfig {
 // Configuration for the dynamic Active Game detection subsystem.
 struct ActiveGameSettings {
     bool detection_enabled         = true;
-    int  poll_interval_ms          = 5000;   // clamped 3000–30000
+    int  poll_interval_ms          = 3000;   // clamped 3000–30000
     int  switch_debounce_ms        = 3000;   // clamped 1000–15000
     int  min_confidence            = 50;     // clamped 0–100
     bool fast_scan_enabled         = true;
@@ -62,6 +62,11 @@ struct Config {
     std::string capture_mode = "always"; // "always" | "game_only"
     int capture_idle_timeout_seconds = 300; // clamped 30–3600
     bool capture_auto_record = false;
+    // When true, the replay buffer stays active even with no detected game: in
+    // game_only mode it falls back to full-screen capture until a game appears.
+    // When false (default) the replay buffer is disabled once no game is present
+    // (after the idle timeout).
+    bool capture_clip_without_game = false;
 
     // Capture (capture/encoder restart when no manual recording is active).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
@@ -150,11 +155,25 @@ struct ActiveGameStatus {
     bool fast_scan_enabled = true;
 };
 
+// One detected game (DB-matched running process) offered to the UI so the user
+// can pick which to record/clip when several are running at once.
+struct GameCandidateStatus {
+    uint32_t process_id = 0;
+    std::wstring process_name;
+    std::wstring display_name;
+    std::string  discord_app_id;
+    std::wstring executable_path;
+    bool foreground = false;
+    bool fullscreen = false;
+};
+
 struct RuntimeStatus {
     std::vector<RuntimeMonitor> monitors;
     std::vector<RuntimeAudioDevice> input_devices;
     std::vector<RuntimeAudioSession> audio_sessions;
     ActiveGameStatus active_game;           // extended; was RuntimeAudioSession
+    std::vector<GameCandidateStatus> game_candidates; // all DB-matched running games
+    uint32_t selected_game_pid = 0;         // the game being recorded/clipped (0 = auto)
     std::vector<std::string> available_encoders;
     std::string active_encoder;        // "" until the encoder opens
     std::string video_encoder_error;   // "" when ok; set when encoder open fails

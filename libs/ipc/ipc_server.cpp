@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -41,6 +42,7 @@ SOCKET                          g_server_socket = INVALID_SOCKET;
 HWND                            g_hwnd          = nullptr;
 std::function<RecordingState()> g_status_fn;
 ClipMutationFn                  g_mutation_fn;
+SelectGameFn                    g_select_fn;
 std::thread                     g_accept_thread;
 
 std::mutex               g_clients_mutex;
@@ -134,6 +136,22 @@ void handle_client(SOCKET client)
                 } else if (method == "reload_settings") {
                     PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
                     response = make_result(req_id, {{"status", "accepted"}});
+                } else if (method == "set_selected_game") {
+                    if (!g_select_fn) {
+                        response = make_error(req_id, -32601, "Selection unavailable");
+                    } else {
+                        const auto& p = req.contains("params") ? req["params"]
+                                                               : nlohmann::json::object();
+                        std::string exe = (p.contains("exe") && p["exe"].is_string())
+                                              ? p["exe"].get<std::string>() : std::string();
+                        std::transform(exe.begin(), exe.end(), exe.begin(),
+                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        uint32_t pid = (p.contains("pid") && p["pid"].is_number_unsigned())
+                                           ? p["pid"].get<uint32_t>() : 0u;
+                        if (exe == "auto") exe.clear();
+                        g_select_fn(exe, pid);
+                        response = make_result(req_id, {{"status", "accepted"}});
+                    }
                 } else if (method == "clip_set_favorite" ||
                            method == "clip_add_hashtag" ||
                            method == "clip_remove_hashtag" ||
@@ -211,11 +229,13 @@ void accept_loop()
 
 void start(HWND hwnd,
            std::function<RecordingState()> status_fn,
-           ClipMutationFn mutation_fn)
+           ClipMutationFn mutation_fn,
+           SelectGameFn select_fn)
 {
     g_hwnd        = hwnd;
     g_status_fn   = std::move(status_fn);
     g_mutation_fn = std::move(mutation_fn);
+    g_select_fn   = std::move(select_fn);
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;

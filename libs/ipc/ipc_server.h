@@ -36,15 +36,23 @@ struct ClipMutation {
 // Returns "" on success, or a human-readable error message on failure.
 using ClipMutationFn = std::function<std::string(const ClipMutation&)>;
 
+// UI-driven selection of which detected game to record/clip when several are
+// running. `exe` is the lowercased executable basename (stable across restarts);
+// `pid` is an optional live hint. Empty exe + pid 0 clears the selection (auto).
+// Called on an IPC client thread — the handler must only touch synchronized
+// state and defer engine work to the message loop.
+using SelectGameFn = std::function<void(const std::string& exe, uint32_t pid)>;
+
 // Start the JSON-RPC TCP server on 127.0.0.1:45991.
 // Recording commands (save_replay, recording_start/stop, pause_resume) are
 // dispatched via PostMessage to hwnd. `status_fn` answers get_status and
 // `mutation_fn` performs clip_* mutations; both may be called concurrently
 // from multiple client-handler threads and must be internally thread-safe.
-// `reload_settings` posts WM_APP+2 to hwnd.
+// `select_fn` handles set_selected_game. `reload_settings` posts WM_APP+2 to hwnd.
 void start(HWND hwnd,
            std::function<RecordingState()> status_fn,
-           ClipMutationFn mutation_fn = nullptr);
+           ClipMutationFn mutation_fn = nullptr,
+           SelectGameFn select_fn = nullptr);
 void stop();
 
 } // namespace ipc

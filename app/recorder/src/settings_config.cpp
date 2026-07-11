@@ -370,6 +370,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["capture_mode"]["mode"] = config.capture_mode;
     doc["capture_mode"]["idle_timeout_seconds"] = config.capture_idle_timeout_seconds;
     doc["capture_mode"]["auto_record"] = config.capture_auto_record;
+    doc["capture_mode"]["clip_without_game"] = config.capture_clip_without_game;
     // Active-game timing tunables are now fixed internally; scrub stale keys.
     if (doc.contains("active_game") && doc["active_game"].is_object()) {
         doc["active_game"].erase("poll_interval_ms");
@@ -504,6 +505,9 @@ Config config_from_json(
             auto ar = cm->find("auto_record");
             if (ar != cm->end() && ar->is_boolean())
                 config.capture_auto_record = ar->get<bool>();
+            auto cw = cm->find("clip_without_game");
+            if (cw != cm->end() && cw->is_boolean())
+                config.capture_clip_without_game = cw->get<bool>();
         }
         if (config.capture_mode != "always" && config.capture_mode != "game_only")
             config.capture_mode = "always";
@@ -700,6 +704,22 @@ std::string serialize_runtime_status(const RuntimeStatus& status)
         {"poll_interval_ms",          status.active_game.poll_interval_ms},
         {"fast_scan_enabled",         status.active_game.fast_scan_enabled},
     };
+    {
+        json candidates = json::array();
+        for (const auto& c : status.game_candidates) {
+            candidates.push_back({
+                {"process_id",      c.process_id},
+                {"process_name",    wide_to_utf8(c.process_name)},
+                {"display_name",    wide_to_utf8(c.display_name)},
+                {"discord_app_id",  c.discord_app_id},
+                {"executable_path", wide_to_utf8(c.executable_path)},
+                {"foreground",      c.foreground},
+                {"fullscreen",      c.fullscreen},
+            });
+        }
+        doc["game_candidates"] = std::move(candidates);
+        doc["selected_game_pid"] = status.selected_game_pid;
+    }
     doc["available_encoders"] = status.available_encoders;
     doc["active_encoder"] = status.active_encoder;
     doc["video_encoder_error"] = status.video_encoder_error;
