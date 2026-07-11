@@ -2260,8 +2260,15 @@ static void tray_add(HWND hwnd)
     g_nid.uID              = 1;
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon            = LoadIconW(GetModuleHandleW(nullptr),
-                                       MAKEINTRESOURCEW(IDI_MONOLITH));
+    // LoadIconMetric (not LoadIconW) picks the closest-matching frame from the
+    // multi-resolution .ico for the shell's actual small-icon size at the
+    // current DPI, instead of grabbing the default system icon size and
+    // letting GDI stretch it — that stretch is what made the tray icon blurry.
+    if (FAILED(LoadIconMetric(GetModuleHandleW(nullptr),
+                               MAKEINTRESOURCEW(IDI_MONOLITH),
+                               LIM_SMALL,
+                               &g_nid.hIcon)))
+        g_nid.hIcon        = nullptr;
     if (!g_nid.hIcon)
         g_nid.hIcon        = LoadIconW(nullptr, IDI_APPLICATION);
     g_icon_base = g_nid.hIcon;
@@ -2693,7 +2700,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         tray_add(hwnd);
         hotkeys_register(hwnd);
         media_start(hwnd);
-        ipc::start(g_settings.app_data_dir, hwnd, [&]() -> ipc::RecordingState {
+        ipc::start(hwnd, [&]() -> ipc::RecordingState {
             auto st = g_recording.state();
             return {
                 st == recording::RecordingState::Recording,

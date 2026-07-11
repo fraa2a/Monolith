@@ -181,6 +181,9 @@ export function FullscreenChrome(
               value={muted ? 0 : volume}
               onInput={onVolume}
             />
+            <button class="fs-btn" onClick={(e) => { e.stopPropagation(); onClose(); }} title="Exit fullscreen (Esc)">
+              <Icon name="minimize" size={17} />
+            </button>
           </div>
         </div>
       </div>

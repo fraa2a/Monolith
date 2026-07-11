@@ -125,12 +125,8 @@ The settings UI writes `settings.db` and calls engine JSON-RPC
 
 Transport: newline-delimited JSON-RPC over TCP at `127.0.0.1:45991`. The
 server threads one handler per connection (backlog 8), so the UI and Stream
-Deck plugin can stay connected at once.
-
-Every request must include a top-level `"token"` field matching the contents
-of `%LocalAppData%\Monolith\ipc_token` (written by the engine at startup,
-user-only ACL). Requests with a missing or wrong token get error `-32001` and
-no action is taken. See ADR-0016.
+Deck plugin can stay connected at once. Loopback-only (bound to
+`127.0.0.1`); no request-level auth token.
 
 Recorder commands:
 

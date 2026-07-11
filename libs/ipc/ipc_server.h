@@ -42,13 +42,7 @@ using ClipMutationFn = std::function<std::string(const ClipMutation&)>;
 // `mutation_fn` performs clip_* mutations; both may be called concurrently
 // from multiple client-handler threads and must be internally thread-safe.
 // `reload_settings` posts WM_APP+2 to hwnd.
-//
-// A random auth token is generated at startup and written to
-// <app_data_dir>\ipc_token (user-only ACL). Every JSON-RPC request must
-// include a matching top-level "token" field or it is rejected with a
-// -32001 error; `app_data_dir` is where that file is written.
-void start(const std::wstring& app_data_dir,
-           HWND hwnd,
+void start(HWND hwnd,
            std::function<RecordingState()> status_fn,
            ClipMutationFn mutation_fn = nullptr);
 void stop();

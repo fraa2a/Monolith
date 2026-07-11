@@ -76,6 +76,7 @@ target_link_libraries(monolith
         windowsapp
         ole32
         shell32
+        shcore
         user32
         winmm
 )
