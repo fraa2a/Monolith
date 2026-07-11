@@ -149,6 +149,23 @@ static void log_path(const char* tag, const char* prefix, const std::wstring& pa
     log_msg(tag, msg);
 }
 
+// Always-on error variants (bypass advanced.logging_enabled) — for failures the
+// user must be able to diagnose even without opting into verbose logging.
+static void log_error(const char* tag, const char* msg)
+{
+    logging::log_error(tag, msg);
+}
+
+static void log_error_path(const char* tag, const char* prefix, const std::wstring& path)
+{
+    char narrow[MAX_PATH * 2];
+    WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
+        narrow, sizeof(narrow), nullptr, nullptr);
+    char msg[MAX_PATH * 2 + 64];
+    snprintf(msg, sizeof(msg), "%s%s", prefix, narrow);
+    log_error(tag, msg);
+}
+
 using platform_win::utf8_to_wide;
 using platform_win::wide_to_utf8;
 
@@ -669,7 +686,9 @@ static void catalog_clip(std::wstring video_path, std::string source,
     if (encoding::generate_thumbnail(video_path, thumb_path))
         thumb_stored = thumb_base;
     else
-        log_path("storage", "thumbnail generation failed for ", video_path);
+        // Always surfaced (not gated by verbose logging): a missing thumbnail is
+        // the visible symptom, so the cause must be diagnosable by default.
+        log_error_path("storage", "thumbnail generation failed for ", video_path);
 
     std::string error;
     auto dbh = storage::ClipDb::open(folder, source, &error);
@@ -760,6 +779,16 @@ static std::string handle_clip_mutation(const ipc::ClipMutation& m)
     else if (m.method == "clip_regen_thumb")    ok = db->regenerate_thumbnail(m.id, &err);
     else if (m.method == "clip_delete")         ok = db->remove_clip(m.id, /*remove_files=*/true, &err);
     else return "unknown mutation: " + m.method;
+
+    if (!ok) {
+        // Always-on so a failed thumbnail regen / mutation is diagnosable.
+        log_error("storage", ("clip mutation '" + m.method + "' failed: " + err).c_str());
+    } else if (m.method == "clip_regen_thumb") {
+        // A regenerated thumbnail changes displayed data but doesn't insert a
+        // row; bump the generation so the UI clip-watch reloads and picks up the
+        // now-populated thumbnail_file.
+        g_clip_generation.fetch_add(1, std::memory_order_relaxed);
+    }
 
     return ok ? std::string() : err;
 }

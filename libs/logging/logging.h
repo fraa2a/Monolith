@@ -21,4 +21,11 @@ bool enabled();
 
 void log(const char* tag, const char* msg);
 
+// Always-on error channel. Unlike log(), this is NOT gated by enabled(): the
+// message is emitted to the debugger and appended to the log file (opened on
+// demand even when verbose logging is off) so genuine failures are never
+// silent. Reserve for real errors — it bypasses the opt-in and can create the
+// log file.
+void log_error(const char* tag, const char* msg);
+
 } // namespace logging

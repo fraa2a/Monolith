@@ -113,4 +113,24 @@ void log(const char* tag, const char* msg)
     OutputDebugStringA(buf);
 }
 
+void log_error(const char* tag, const char* msg)
+{
+    std::lock_guard<std::mutex> lk(g_mutex);
+
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "[%04d-%02d-%02dT%02d:%02d:%02dZ] [%-12s] ERROR: %s\n",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond,
+        tag, msg);
+
+    // Always surfaced: to the debugger, and to the log file — opened on demand
+    // even when verbose logging is disabled — so failures aren't silent.
+    OutputDebugStringA(buf);
+    if (!g_file) open_locked();
+    if (g_file) { fputs(buf, g_file); fflush(g_file); }
+}
+
 } // namespace logging

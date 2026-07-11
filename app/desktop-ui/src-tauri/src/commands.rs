@@ -102,14 +102,19 @@ pub async fn clip_set_duration(source: String, id: i64, duration: f64) -> Result
 #[tauri::command]
 pub async fn thumb_capture(source: String, id: i64, data_url: String) -> Result<String, String> {
     let src = parse_source(&source)?;
-    blocking_result(move || {
+    let result = blocking_result(move || {
         let encoded = data_url.split_once(',').map(|(_, data)| data).unwrap_or(&data_url);
         let decoded = general_purpose::STANDARD
             .decode(encoded.as_bytes())
             .map_err(|_| "bad thumbnail data".to_string())?;
         clip_catalog::save_thumbnail_capture(src, id, &decoded)
     })
-    .await
+    .await;
+    if let Err(err) = &result {
+        // Surface fallback-thumbnail failures instead of silently no-opping.
+        eprintln!("[thumb_capture] {source} clip {id} failed: {err}");
+    }
+    result
 }
 
 #[tauri::command]
@@ -178,11 +183,13 @@ pub async fn clip_regen_thumb(source: String, id: i64) -> Result<(), String> {
     if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
         Ok(())
     } else {
-        Err(result
+        let err = result
             .get("error")
             .and_then(Value::as_str)
             .unwrap_or("engine error")
-            .to_string())
+            .to_string();
+        eprintln!("[clip_regen_thumb] {source} clip {id} failed: {err}");
+        Err(err)
     }
 }
 

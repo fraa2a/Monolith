@@ -93,6 +93,19 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
       video.load();
     };
 
+    // WebView2 can't decode the default .mkv container, so the <video> canvas
+    // fallback below never fires for most clips. Ask the engine (FFmpeg, decodes
+    // mkv) to regenerate the thumbnail instead; on success it bumps the clip
+    // generation and the grid reloads with the populated thumbnail_file.
+    const fallbackToEngine = async () => {
+      if (cancelled || regenTried.current) return;
+      regenTried.current = true;
+      const res = await clipApi.regenThumb(clip);
+      if (!cancelled && res.ok) {
+        setThumbBust(Date.now());
+      }
+    };
+
     video.onloadedmetadata = async () => {
       if (cancelled) return;
       const duration = video.duration;
@@ -108,6 +121,7 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
       if (cancelled || !needsThumb) return;
       const dataUrl = drawVideoThumb(video);
       if (!dataUrl) {
+        await fallbackToEngine();
         finish();
         return;
       }
@@ -120,7 +134,15 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
       finish();
     };
 
-    video.onerror = finish;
+    video.onerror = () => {
+      // Container/codec unsupported by WebView2 (e.g. .mkv) — hand off to the
+      // engine regenerator instead of silently giving up.
+      if (needsThumb) {
+        void fallbackToEngine().finally(finish);
+      } else {
+        finish();
+      }
+    };
     video.src = mediaUrl(clip);
     video.load();
 

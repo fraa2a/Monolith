@@ -103,8 +103,13 @@ export function Titlebar({ view }: Props) {
   const activeGame = runtime.active_game;
   const gameProcess = activeGame?.process_id ? activeGame.process_name : "";
   const exePath = activeGame?.process_id ? (activeGame.executable_path ?? "") : "";
+  // Detected games are DB-gated, so display_name is always the game-list name
+  // (e.g. "AURA Gamers gioco") — show it verbatim, no prettify transform. Only
+  // fall back to appLabel for the rare case the engine emits a raw exe name.
   const gameName = activeGame?.process_id
-    ? appLabel(activeGame.display_name, activeGame.process_name)
+    ? (activeGame.display_name && !/\.exe$/i.test(activeGame.display_name)
+      ? activeGame.display_name
+      : appLabel(activeGame.display_name, activeGame.process_name))
     : "";
 
   useEffect(() => {
@@ -129,13 +134,13 @@ export function Titlebar({ view }: Props) {
       setExeIcon(null);
       return;
     }
-    exeIconUrl(exePath).then((dataUrl) => {
+    exeIconUrl(exePath, gameProcess).then((dataUrl) => {
       if (alive) setExeIcon(dataUrl);
     });
     return () => {
       alive = false;
     };
-  }, [exePath]);
+  }, [exePath, gameProcess]);
 
   const mode = String(config?.capture_mode?.mode ?? "always");
   const autoRecord = Boolean(config?.capture_mode?.auto_record ?? false);
