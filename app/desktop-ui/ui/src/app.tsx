@@ -35,7 +35,7 @@ export function App() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [tagDialog, setTagDialog] = useState<Clip | null>(null);
   const [confirmDel, setConfirmDel] = useState<Clip | null>(null);
-  const [fullscreen, setFullscreen] = useState<Clip | null>(null);
+  const [fullscreen, setFullscreen] = useState<{ clip: Clip; initialTime: number } | null>(null);
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -57,7 +57,11 @@ export function App() {
       item.source === next.source && item.id === next.id ? next : item
     )));
     setTagDialog((item) => item && item.source === next.source && item.id === next.id ? next : item);
-    setFullscreen((item) => item && item.source === next.source && item.id === next.id ? next : item);
+    setFullscreen((item) => (
+      item && item.clip.source === next.source && item.clip.id === next.id
+        ? { ...item, clip: next }
+        : item
+    ));
   }, []);
 
   useEffect(() => {
@@ -93,7 +97,7 @@ export function App() {
         setTagDialog(clip);
         break;
       case "fullscreen":
-        setFullscreen(clip);
+        setFullscreen({ clip, initialTime: 0 });
         break;
       case "delete":
         setMenu(null);
@@ -167,7 +171,7 @@ export function App() {
                     reload(true);
                   }}
                   onContextMenu={openMenu}
-                  onFullscreen={setFullscreen}
+                  onFullscreen={(c, t) => setFullscreen({ clip: c, initialTime: t })}
                   onOpenDetail={() => setDetailIndex(i)}
                 />
               ))}
@@ -208,7 +212,11 @@ export function App() {
       )}
 
       {fullscreen && (
-        <Fullscreen clip={fullscreen} onClose={() => setFullscreen(null)} />
+        <Fullscreen
+          clip={fullscreen.clip}
+          initialTime={fullscreen.initialTime}
+          onClose={() => setFullscreen(null)}
+        />
       )}
 
       {detailIndex !== null && clips.length > 0 && (

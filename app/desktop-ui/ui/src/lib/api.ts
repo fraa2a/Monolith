@@ -87,6 +87,7 @@ export const clipApi = {
     ok(invoke("clip_set_duration", { source: c.source, id: c.id, duration })),
   saveCapturedThumb: (c: Clip, dataUrl: string) =>
     ok(invoke("thumb_capture", { source: c.source, id: c.id, dataUrl })),
+  revealInExplorer: (c: Clip) => ok(invoke("reveal_in_explorer", { path: c.video_path })),
 };
 
 // Subscribes to live clip-list changes via a native Tauri event. Calls
@@ -169,9 +170,11 @@ export function recorderCommand(method: RecorderCommand): Promise<{ ok: boolean;
 
 // Native icon extracted from an executable, as a base64 data: URL (null when
 // the file has no icon). Preferred over remote artwork for status backgrounds.
-export async function exeIconUrl(executablePath: string): Promise<string | null> {
+// `processName` is the cache key on the Rust side (survives reinstalls/path
+// changes); pass "" when unknown (skips caching for that one lookup).
+export async function exeIconUrl(executablePath: string, processName: string): Promise<string | null> {
   try {
-    return await invoke<string | null>("exe_icon", { path: executablePath });
+    return await invoke<string | null>("exe_icon", { path: executablePath, process: processName });
   } catch {
     return null;
   }

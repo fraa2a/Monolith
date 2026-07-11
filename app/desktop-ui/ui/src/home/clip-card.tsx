@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi, exeIconUrl, mediaUrl, thumbUrl } from "../lib/api.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
-import { enableAllAudioTracks } from "../lib/player.ts";
+import { useMultiTrackAudio } from "../lib/multitrack.ts";
 
 interface Props {
   clip: Clip;
   onChanged: (clip: Clip) => void;
   onContextMenu: (e: MouseEvent, clip: Clip) => void;
-  onFullscreen: (clip: Clip) => void;
+  onFullscreen: (clip: Clip, initialTime: number) => void;
   onOpenDetail: (clip: Clip) => void;
 }
 
@@ -42,9 +42,11 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
   const [localThumb, setLocalThumb] = useState<string | null>(clip.thumbnail_file);
   const [displayDuration, setDisplayDuration] = useState<number | null>(clip.duration_seconds);
   const [exeIcon, setExeIcon] = useState<string | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const hoverTimer = useRef<number | undefined>(undefined);
   const regenTried = useRef(false);
+
+  const multitrack = useMultiTrackAudio(preview ? videoEl : null, preview ? mediaUrl(clip) : null);
 
   useEffect(() => {
     setLocalThumb(clip.thumbnail_file);
@@ -65,15 +67,16 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
       setExeIcon(null);
       return;
     }
-    exeIconUrl(clip.game_executable_path).then((dataUrl) => {
+    exeIconUrl(clip.game_executable_path, clip.game_process_name ?? "").then((dataUrl) => {
       if (active) setExeIcon(dataUrl);
     });
     return () => {
       active = false;
     };
-  }, [clip.game_executable_path]);
+  }, [clip.game_executable_path, clip.game_process_name]);
 
   const gameIcon = exeIcon ?? clip.game_icon_url ?? null;
+  const hasGame = !!(clip.game_process_name || clip.game_display_name);
 
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
 
@@ -142,7 +145,7 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
 
   function leave() {
     clearTimeout(hoverTimer.current);
-    const v = videoRef.current;
+    const v = videoEl;
     if (v) {
       v.pause();
       v.muted = true;
@@ -170,6 +173,15 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
     }
   }
 
+  async function toggleFavorite(e: MouseEvent) {
+    e.stopPropagation();
+    const res = await clipApi.setFavorite(clip, !clip.favorite);
+    if (res.ok) onChanged({ ...clip, favorite: !clip.favorite });
+  }
+
+  const tagCount = clip.hashtags.length;
+  const singleTag = tagCount === 1 ? clip.hashtags[0] : null;
+
   return (
     <div
       class="card"
@@ -191,13 +203,12 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
 
         {preview && (
           <video
-            ref={videoRef}
+            ref={setVideoEl}
             class={`card-video ${ready ? "ready" : ""}`}
             src={mediaUrl(clip)}
             muted={muted}
             loop
             playsInline
-            onLoadedMetadata={(e) => enableAllAudioTracks(e.currentTarget)}
             onLoadedData={(e) => {
               setReady(true);
               e.currentTarget.play().catch(() => {});
@@ -205,11 +216,14 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
           />
         )}
 
-        {clip.favorite && (
-          <div class="fav-badge" title="Favorite">
-            <Icon name="star" size={14} filled />
-          </div>
-        )}
+        <button
+          class={`fav-toggle ${clip.favorite ? "on" : ""}`}
+          title={clip.favorite ? "Remove from favorites" : "Add to favorites"}
+          onClick={toggleFavorite}
+        >
+          <Icon name="star" size={14} filled={clip.favorite} />
+        </button>
+
         {displayDuration
           ? <div class="dur-badge">{formatDuration(displayDuration)}</div>
           : null}
@@ -221,7 +235,11 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
               title={muted ? "Unmute" : "Mute"}
               onClick={(e) => {
                 e.stopPropagation();
-                setMuted((m) => !m);
+                setMuted((m) => {
+                  const next = !m;
+                  multitrack.setMuted(next);
+                  return next;
+                });
               }}
             >
               <Icon name={muted ? "volume-x" : "volume-2"} size={16} />
@@ -231,7 +249,7 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
               title="Fullscreen"
               onClick={(e) => {
                 e.stopPropagation();
-                onFullscreen(clip);
+                onFullscreen(clip, videoEl?.currentTime ?? 0);
               }}
             >
               <Icon name="maximize" size={16} />
@@ -240,26 +258,40 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
         )}
       </div>
 
-      <div class="card-meta">
-        <div class="card-name" title={clip.title}>{clip.title || "Untitled"}</div>
-        <div class="card-sub">
-          {gameIcon
-            ? <img class="game-icon" src={gameIcon} alt="" />
-            : <span class="game-icon placeholder"><Icon name="gamepad" size={13} /></span>}
-          <span class="game">
-            {appLabel(clip.game_display_name, clip.game_process_name)}
-          </span>
+      <div class="card-meta" onClick={() => onOpenDetail(clip)}>
+        <div class="card-name-row">
+          <div class="card-name" title={clip.title}>{clip.title || "Untitled"}</div>
+          {tagCount > 0 && (
+            <span class="tag blob" title={tagCount > 1 ? clip.hashtags.map((t) => `#${t}`).join(", ") : `#${singleTag}`}>
+              {tagCount > 1 ? "…" : `#${singleTag}`}
+            </span>
+          )}
         </div>
-        <div class="card-sub2">
-          <span>{formatSize(clip.size_bytes)}</span>
+        <div class="card-sub">
+          {hasGame
+            ? (gameIcon
+              ? <img class="game-icon" src={gameIcon} alt="" title={appLabel(clip.game_display_name, clip.game_process_name)} />
+              : (
+                <span class="game-icon placeholder" title={appLabel(clip.game_display_name, clip.game_process_name)}>
+                  <Icon name="gamepad" size={13} />
+                </span>
+              ))
+            : clip.source === "manual"
+            ? (
+              <span class="game-icon placeholder" title="Screen Recording">
+                <Icon name="monitor" size={13} />
+              </span>
+            )
+            : (
+              <span class="game-icon placeholder" title="None">
+                <Icon name="circle-slash" size={13} />
+              </span>
+            )}
           <span class="dot">·</span>
           <span>{formatDate(clip.created_at_utc)}</span>
+          <span class="dot">·</span>
+          <span>{formatSize(clip.size_bytes)}</span>
         </div>
-        {clip.hashtags.length > 0 && (
-          <div class="card-tags">
-            {clip.hashtags.map((t) => <span class="tag" key={t}>#{t}</span>)}
-          </div>
-        )}
       </div>
     </div>
   );

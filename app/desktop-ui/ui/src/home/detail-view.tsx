@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi, mediaUrl } from "../lib/api.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
-import { enableAllAudioTracks } from "../lib/player.ts";
+import { useMultiTrackAudio } from "../lib/multitrack.ts";
+import { appWindow } from "../lib/window.ts";
+import { FullscreenChrome } from "./fullscreen.tsx";
 
 interface Props {
   clips: Clip[];
@@ -123,6 +125,7 @@ export function DetailView(
 ) {
   const clip = clips[index];
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
 
   const [editing, setEditing] = useState(false);
   const [titleInput, setTitleInput] = useState("");
@@ -132,6 +135,9 @@ export function DetailView(
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [fsMode, setFsMode] = useState(false);
+
+  const multitrack = useMultiTrackAudio(videoEl, clip ? mediaUrl(clip) : null);
 
   const hasPrev = index > 0;
   const hasNext = index < clips.length - 1;
@@ -140,7 +146,7 @@ export function DetailView(
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (editing) return;
+      if (editing || fsMode) return;
       if (e.key === "Escape") onClose();
       if (e.key === "ArrowRight") next();
       if (e.key === "ArrowLeft") prev();
@@ -154,6 +160,7 @@ export function DetailView(
     setCurrent(0);
     setDuration(0);
     setActionError(null);
+    setFsMode(false);
     const v = videoRef.current;
     if (v && clip) {
       v.pause();
@@ -162,6 +169,14 @@ export function DetailView(
       v.play().catch(() => {});
     }
   }, [clip?.id, clip?.source]);
+
+  // Fullscreen reuses this same <video> element in place (see render below) —
+  // only the surrounding chrome/layout changes, so playback never restarts.
+  useEffect(() => {
+    if (!fsMode) return;
+    appWindow.maximize();
+    return () => { appWindow.unmaximize(); };
+  }, [fsMode]);
 
   if (!clip) return null;
 
@@ -213,10 +228,11 @@ export function DetailView(
     const val = Number((e.target as HTMLInputElement).value);
     setVolume(val);
     if (videoRef.current) videoRef.current.volume = val;
+    multitrack.setVolume(val);
   }
 
   return (
-    <div class="detail-backdrop" onMouseDown={onClose}>
+    <div class={`detail-backdrop ${fsMode ? "fs-active" : ""}`} onMouseDown={onClose}>
       <button
         class={`detail-nav left ${hasPrev ? "" : "disabled"}`}
         disabled={!hasPrev}
@@ -233,14 +249,13 @@ export function DetailView(
       <div class="detail" onMouseDown={(e) => e.stopPropagation()}>
         <div class="detail-player">
           <video
-            ref={videoRef}
+            ref={(el) => { videoRef.current = el; setVideoEl(el); }}
             src={mediaUrl(clip)}
             autoPlay
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
               setDuration(v.duration || 0);
               v.volume = volume;
-              enableAllAudioTracks(v);
             }}
             onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
             onClick={(e) => {
@@ -248,34 +263,51 @@ export function DetailView(
               v.paused ? v.play() : v.pause();
             }}
           />
-          <div class="detail-controls">
-            <input
-              class="timeline"
-              type="range"
-              min={0}
-              max={duration || 0}
-              step={0.05}
-              value={current}
-              onInput={onSeek}
-            />
-            <div class="detail-controls-row">
-              <span class="time">
-                {formatDuration(current)} / {formatDuration(duration)}
-              </span>
-              <div class="vol">
-                <Icon name="volume-2" size={16} />
+          {fsMode
+            ? (
+              <FullscreenChrome
+                videoEl={videoEl}
+                multitrack={multitrack}
+                onClose={() => setFsMode(false)}
+              />
+            )
+            : (
+              <div class="detail-controls">
                 <input
-                  class="vol-slider"
+                  class="timeline"
                   type="range"
                   min={0}
-                  max={1}
-                  step={0.01}
-                  value={volume}
-                  onInput={onVolume}
+                  max={duration || 0}
+                  step={0.05}
+                  value={current}
+                  onInput={onSeek}
                 />
+                <div class="detail-controls-row">
+                  <span class="time">
+                    {formatDuration(current)} / {formatDuration(duration)}
+                  </span>
+                  <div class="vol">
+                    <Icon name="volume-2" size={16} />
+                    <input
+                      class="vol-slider"
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={volume}
+                      onInput={onVolume}
+                    />
+                    <button
+                      class="act-btn"
+                      title="Fullscreen"
+                      onClick={() => setFsMode(true)}
+                    >
+                      <Icon name="maximize" size={16} />
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            )}
         </div>
 
         <div class="detail-panel">
@@ -301,8 +333,13 @@ export function DetailView(
                 </div>
               )
               : (
-                <div class="detail-name" title={clip.title}>
-                  <span class="name-text">{clip.title || "Untitled"}</span>
+                <div class="detail-name" title="Open containing folder">
+                  <span
+                    class="name-text"
+                    onClick={() => clipApi.revealInExplorer(clip)}
+                  >
+                    {clip.title || "Untitled"}
+                  </span>
                   <div class="detail-name-actions">
                     <button class="act-btn" title="Rename" onClick={startEdit}>
                       <Icon name="pencil" size={16} />

@@ -71,6 +71,7 @@ fn main() {
             commands::clip_rename,
             commands::clip_delete,
             commands::clip_regen_thumb,
+            commands::reveal_in_explorer,
             commands::get_settings,
             commands::save_settings,
             commands::runtime_status,

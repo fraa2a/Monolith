@@ -7,6 +7,8 @@ const win = getCurrentWindow();
 
 export const appWindow = {
   minimize: () => win.minimize(),
+  maximize: () => win.maximize(),
+  unmaximize: () => win.unmaximize(),
   toggleMaximize: () => win.toggleMaximize(),
   close: () => win.close(),
   // startDragging() hands off to the OS move-loop; one call on mousedown is enough.

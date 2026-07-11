@@ -1,24 +1,19 @@
 [package]
 name = "monolith-ui"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Base64-encodes exe icons / captured thumbnails for transport over invoke().
 base64 = "0.22"
 ureq = { version = "2", features = ["json"] }
-# Native Windows folder picker for directory settings (no manual path entry).
-# xdg-portal is Linux-only; on Windows this pulls the Win32 IFileDialog backend.
 rfd = "0.15"
-# Shell icon extraction for the title-bar capture status: the UI shows the real
-# application icon instead of Discord artwork or raw exe names (see exe_icon.rs).
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_UI_Shell",
@@ -31,8 +26,6 @@ png = "0.17"
 name = "monolith_ui"
 path = "src/main.rs"
 
-# The desktop UI is a foreground, human-driven window; optimize the release build
-# for size over raw throughput to keep the shipped exe small.
 [profile.release]
 opt-level = "s"
 lto = true

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { getVersion } from "@tauri-apps/api/app";
 import { type Config, getConfig, getRuntimeStatus, type RuntimeStatus, saveConfig } from "../lib/settings-api.ts";
+import { monitorDisplayName } from "../lib/format.ts";
 import { AudioSettings } from "./audio-settings.tsx";
 import {
   Field,
@@ -15,7 +17,7 @@ import { Icon } from "../shell/icons.tsx";
 
 type Page =
   | "general"
-  | "output"
+  | "recording"
   | "clip"
   | "capture"
   | "audio"
@@ -23,15 +25,33 @@ type Page =
   | "advanced"
   | "game";
 
-const PAGES: { id: Page; label: string; icon: string }[] = [
-  { id: "general", label: "General", icon: "sliders-horizontal" },
-  { id: "output", label: "Output", icon: "folder" },
-  { id: "clip", label: "Clip", icon: "film" },
-  { id: "capture", label: "Capture", icon: "monitor" },
-  { id: "audio", label: "Audio", icon: "volume-2" },
-  { id: "hotkeys", label: "Hotkeys", icon: "keyboard" },
-  { id: "advanced", label: "Advanced", icon: "gauge" },
-  { id: "game", label: "Game Detection", icon: "gamepad" },
+// Grouped so the nav reads as sections (like Windows Settings), not a flat
+// list — each group heading is real structure (recording pipeline vs. where
+// files land vs. power-user knobs), not decoration.
+const PAGE_GROUPS: { label: string; pages: { id: Page; label: string; icon: string }[] }[] = [
+  {
+    label: "Recording",
+    pages: [
+      { id: "general", label: "General", icon: "sliders-horizontal" },
+      { id: "capture", label: "Capture", icon: "monitor" },
+      { id: "audio", label: "Audio", icon: "volume-2" },
+      { id: "game", label: "Game Detection", icon: "gamepad" },
+    ],
+  },
+  {
+    label: "Output",
+    pages: [
+      { id: "recording", label: "Recording", icon: "folder" },
+      { id: "clip", label: "Clip", icon: "film" },
+    ],
+  },
+  {
+    label: "Advanced",
+    pages: [
+      { id: "hotkeys", label: "Hotkeys", icon: "keyboard" },
+      { id: "advanced", label: "Advanced", icon: "gauge" },
+    ],
+  },
 ];
 
 // Bitrate presets (Mbps). The heaviest two are flagged so the UI can warn about
@@ -84,6 +104,11 @@ export function SettingsPopup({ onClose }: Props) {
   const [page, setPage] = useState<Page>("general");
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion(null));
+  }, []);
 
   const skipSave = useRef(true);
   const saveTimer = useRef<number | undefined>(undefined);
@@ -95,6 +120,17 @@ export function SettingsPopup({ onClose }: Props) {
       setDraft(cfg);
       setRs(status);
     })();
+  }, []);
+
+  // Runtime status (audio sessions, active game, devices, monitors) is a live
+  // snapshot the engine keeps refreshing on its own cadence — re-poll it while
+  // the popup is open so e.g. "Other sources" reflects apps that start/stop
+  // playing audio without the user having to close and reopen Settings.
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      setRs(await getRuntimeStatus());
+    }, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -142,15 +178,20 @@ export function SettingsPopup({ onClose }: Props) {
         </button>
         <div class="settings-nav">
           <div class="settings-title">Settings</div>
-          {PAGES.map((pg) => (
-            <button
-              key={pg.id}
-              class={pg.id === page ? "settings-tab active" : "settings-tab"}
-              onClick={() => setPage(pg.id)}
-            >
-              <Icon name={pg.icon} size={16} />
-              <span>{pg.label}</span>
-            </button>
+          {PAGE_GROUPS.map((group) => (
+            <div class="settings-group" key={group.label}>
+              <div class="side-section">{group.label}</div>
+              {group.pages.map((pg) => (
+                <button
+                  key={pg.id}
+                  class={pg.id === page ? "settings-tab active" : "settings-tab"}
+                  onClick={() => setPage(pg.id)}
+                >
+                  <Icon name={pg.icon} size={16} />
+                  <span>{pg.label}</span>
+                </button>
+              ))}
+            </div>
           ))}
 
           <div class="side-spacer" />
@@ -169,7 +210,7 @@ export function SettingsPopup({ onClose }: Props) {
         <div class="settings-body">
           {!draft
             ? <div class="empty">Loading settings… (is the engine running?)</div>
-            : <Pages page={page} cfg={draft} rs={rs} update={update} />}
+            : <Pages page={page} cfg={draft} rs={rs} update={update} appVersion={appVersion} />}
         </div>
       </div>
     </div>
@@ -191,37 +232,33 @@ function ReplayDurationSection(
     >
       <Field
         label="Duration"
-        help="Choose a preset, or Custom to enter your own length."
+        help="Choose a preset, or Custom to enter your own length (5–600s)."
         control={
-          <Select
-            value={mode}
-            options={[
-              ...REPLAY_PRESETS.map((s) => ({ value: String(s), label: `${s} seconds` })),
-              { value: "custom", label: "Custom" },
-            ]}
-            onChange={(v) => {
-              if (v === "custom") {
-                setCustom(true);
-              } else {
-                setCustom(false);
-                onChange(Number(v));
-              }
-            }}
-          />
-        }
-      />
-      <Field
-        label="Custom length (seconds)"
-        help="Enabled only when Custom is selected (5–600)."
-        control={
-          <TextInput
-            type="number"
-            min={5}
-            max={600}
-            value={value}
-            disabled={!custom}
-            onInput={(v) => onChange(Number(v))}
-          />
+          <div class="duration-row">
+            <Select
+              value={mode}
+              options={[
+                ...REPLAY_PRESETS.map((s) => ({ value: String(s), label: `${s} seconds` })),
+                { value: "custom", label: "Custom" },
+              ]}
+              onChange={(v) => {
+                if (v === "custom") {
+                  setCustom(true);
+                } else {
+                  setCustom(false);
+                  onChange(Number(v));
+                }
+              }}
+            />
+            <TextInput
+              type="number"
+              min={5}
+              max={600}
+              value={value}
+              disabled={!custom}
+              onInput={(v) => onChange(Number(v))}
+            />
+          </div>
         }
       />
     </Section>
@@ -233,49 +270,84 @@ interface PagesProps {
   cfg: Config;
   rs: RuntimeStatus;
   update: (path: string, value: any) => void;
+  appVersion: string | null;
 }
 
-function Pages({ page, cfg, rs, update }: PagesProps) {
+function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
   const val = (p: string) => getPath(cfg, p);
 
   switch (page) {
     case "general":
       return (
-        <Section title="General" description="App-wide behaviour.">
+        <>
+          <Section title="General" description="App-wide behaviour.">
+            <Field
+              label="Automatic update checks"
+              help="Check for new Monolith releases in the background."
+              control={
+                <Toggle checked={!!val("update.auto_check")} onChange={(v) => update("update.auto_check", v)} />
+              }
+            />
+            <Field
+              label="Replay buffer"
+              help="Keep a rolling buffer so you can save the last moments."
+              control={
+                <Toggle
+                  checked={!!val("replay_buffer.enabled")}
+                  onChange={(v) => update("replay_buffer.enabled", v)}
+                />
+              }
+            />
+            <Field
+              label="Manual recording"
+              help="Allow starting and stopping full recordings."
+              control={
+                <Toggle
+                  checked={!!val("recording.enabled")}
+                  onChange={(v) => update("recording.enabled", v)}
+                />
+              }
+            />
+          </Section>
+          <Section title="About">
+            <Field label="Version" control={<span class="set-field-static">{appVersion ?? "—"}</span>} />
+          </Section>
+        </>
+      );
+
+    case "recording":
+      return (
+        <Section title="Recording Output" description="Where full recordings are saved and how they're encoded.">
           <Field
-            label="Automatic update checks"
-            help="Check for new Monolith releases in the background."
+            label="Output folder"
             control={
-              <Toggle checked={!!val("update.auto_check")} onChange={(v) => update("update.auto_check", v)} />
-            }
-          />
-          <Field
-            label="Replay buffer"
-            help="Keep a rolling buffer so you can save the last moments."
-            control={
-              <Toggle
-                checked={!!val("replay_buffer.enabled")}
-                onChange={(v) => update("replay_buffer.enabled", v)}
+              <FolderPicker
+                value={val("output.recordings_directory") ?? ""}
+                onPick={(p) => update("output.recordings_directory", p)}
               />
             }
           />
           <Field
-            label="Manual recording"
-            help="Allow starting and stopping full recordings."
+            label="Output format"
             control={
-              <Toggle
-                checked={!!val("recording.enabled")}
-                onChange={(v) => update("recording.enabled", v)}
+              <Select
+                value={String(val("recording.container") ?? "mkv")}
+                options={[{ value: "mkv", label: "MKV" }, { value: "mp4", label: "MP4" }]}
+                onChange={(v) => update("recording.container", v)}
               />
             }
           />
         </Section>
       );
 
-    case "output":
+    case "clip":
       return (
         <>
-          <Section title="Folders" description="Where clips and recordings are saved.">
+          <ReplayDurationSection
+            value={Number(val("replay_buffer.duration_seconds") ?? 30)}
+            onChange={(v) => update("replay_buffer.duration_seconds", v)}
+          />
+          <Section title="Clips Output" description="Where clips are saved and how they're encoded.">
             <Field
               label="Clips folder"
               control={
@@ -286,18 +358,7 @@ function Pages({ page, cfg, rs, update }: PagesProps) {
               }
             />
             <Field
-              label="Recordings folder"
-              control={
-                <FolderPicker
-                  value={val("output.recordings_directory") ?? ""}
-                  onPick={(p) => update("output.recordings_directory", p)}
-                />
-              }
-            />
-          </Section>
-          <Section title="Containers" description="File format for saved media.">
-            <Field
-              label="Clip container"
+              label="Clips format"
               control={
                 <Select
                   value={String(val("replay_buffer.save_container") ?? "mkv")}
@@ -306,33 +367,15 @@ function Pages({ page, cfg, rs, update }: PagesProps) {
                 />
               }
             />
-            <Field
-              label="Recording container"
-              control={
-                <Select
-                  value={String(val("recording.container") ?? "mkv")}
-                  options={[{ value: "mkv", label: "MKV" }, { value: "mp4", label: "MP4" }]}
-                  onChange={(v) => update("recording.container", v)}
-                />
-              }
-            />
           </Section>
         </>
       );
 
-    case "clip":
-      return (
-        <ReplayDurationSection
-          value={Number(val("replay_buffer.duration_seconds") ?? 30)}
-          onChange={(v) => update("replay_buffer.duration_seconds", v)}
-        />
-      );
-
     case "capture": {
       const monOpts = [{ value: "", label: "Primary monitor" }].concat(
-        (rs.monitors ?? []).map((m) => ({
+        (rs.monitors ?? []).map((m, i) => ({
           value: m.device,
-          label: `${m.device} (${m.width}×${m.height})${m.primary}`,
+          label: `${monitorDisplayName(m, i)} (${m.width}×${m.height})${m.primary ? " (Primary)" : ""}`,
         })),
       );
       // Hide presets larger than the selected monitor to prevent upscaling.

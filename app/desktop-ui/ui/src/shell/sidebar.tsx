@@ -23,7 +23,7 @@ export function Sidebar({ filter, onChange, onOpenSettings }: Props) {
           <Icon name="layout-grid" /> <span>Library</span>
         </button>
         <button
-          class={fav ? "side-item active" : "side-item"}
+          class={fav ? "side-item active fav-active" : "side-item"}
           onClick={() => onChange({ ...filter, favorite: true })}
         >
           <Icon name="star" filled={fav} /> <span>Favorites</span>

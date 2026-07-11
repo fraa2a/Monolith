@@ -1,6 +1,6 @@
 import { type Config, type RuntimeStatus } from "../lib/settings-api.ts";
 import { appLabel } from "../lib/format.ts";
-import { Field, Section, Select, Toggle, VolumeSlider } from "./controls.tsx";
+import { Field, Section, Segmented, Select, Toggle, VolumeSlider } from "./controls.tsx";
 
 interface Props {
   cfg: Config;
@@ -97,10 +97,36 @@ export function AudioSettings({ cfg, rs, update }: Props) {
   const processFor = (procName: string): Source | undefined =>
     find((s) => s.type === "process" && s.process_name?.toLowerCase() === procName.toLowerCase());
 
+  // Track layout: the microphone always gets its own track (track 2) — that's
+  // never up for debate since a mixed-in mic can't be un-mixed later. Every
+  // *other* audio source (game desktop audio + each other app) either all
+  // share the game's track (single track) or each gets its own free track
+  // (separate tracks, tracks 1/3/4/5/6). Defaults to "separate" to match the
+  // behaviour this UI shipped with before the toggle existed.
+  const trackLayout: "single" | "separate" = audio.track_layout === "single" ? "single" : "separate";
+
   const nextFreeTrack = (): number => {
-    const used = new Set(sources.flatMap((s) => s.tracks ?? []));
+    if (trackLayout === "single") return 1;
+    const used = new Set(sources.flatMap((s) => (s.type === "input" ? [] : s.tracks ?? [])));
     for (let t = 3; t <= 6; t++) if (!used.has(t)) return t;
     return 1; // overflow: mix into game-audio track
+  };
+
+  const setTrackLayout = (mode: "single" | "separate") => {
+    update("audio.track_layout", mode);
+    const base = withBaseline(sources);
+    if (mode === "single") {
+      commit(base.map((s) => (s.type === "input" ? s : { ...s, tracks: [1] })));
+      return;
+    }
+    // Switching to "separate": keep game audio on track 1, hand out fresh
+    // free tracks (3..6) to every other non-mic source in list order.
+    let next = 3;
+    commit(base.map((s) => {
+      if (s.type === "input") return s;
+      if (s.type === "desktop") return { ...s, tracks: [1] };
+      return { ...s, tracks: [Math.min(next++, 6)] };
+    }));
   };
 
   const setProcess = (s: { process_id: number; process_name: string; display_name: string }, patch: Partial<Source>) =>
@@ -121,6 +147,28 @@ export function AudioSettings({ cfg, rs, update }: Props) {
 
   return (
     <>
+      <Section
+        title="Track Layout"
+        description="The microphone always records on its own track. Choose how every other audio source (game audio, other apps) is recorded."
+      >
+        <Field
+          label="Track layout"
+          help={trackLayout === "single"
+            ? "Game audio and every other app are mixed into one track."
+            : "Game audio and each other app get their own track."}
+          control={
+            <Segmented
+              value={trackLayout}
+              options={[
+                { value: "single", label: "One track" },
+                { value: "separate", label: "Separate tracks" },
+              ]}
+              onChange={(v) => setTrackLayout(v as "single" | "separate")}
+            />
+          }
+        />
+      </Section>
+
       <Section title="Game Audio" description="Desktop audio, including the game you are playing.">
         <Field
           label="Capture game audio"
@@ -176,7 +224,9 @@ export function AudioSettings({ cfg, rs, update }: Props) {
 
       <Section
         title="Other sources"
-        description="Applications currently producing audio. Each records on its own track."
+        description={trackLayout === "single"
+          ? "Applications currently producing audio. Mixed into the game audio track."
+          : "Applications currently producing audio. Each records on its own track."}
       >
         {sessions.length === 0 && (
           <div class="set-field">

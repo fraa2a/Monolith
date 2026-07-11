@@ -8,7 +8,7 @@ import {
 } from "../lib/api.ts";
 import { appWindow } from "../lib/window.ts";
 import { getConfig, getRuntimeStatus, saveConfig, type Config, type RuntimeStatus } from "../lib/settings-api.ts";
-import { appLabel } from "../lib/format.ts";
+import { appLabel, monitorDisplayName } from "../lib/format.ts";
 import { Icon } from "./icons.tsx";
 
 interface Props {
@@ -17,12 +17,6 @@ interface Props {
 
 function cloneConfig(config: Config | null): Config {
   return JSON.parse(JSON.stringify(config ?? {}));
-}
-
-// "\\.\DISPLAY2" -> "Display 2". Device IDs are never user-facing copy.
-function monitorLabel(mon: { device: string; width: number; height: number; primary: boolean }, index: number) {
-  const num = mon.device?.match(/(\d+)\s*$/)?.[1] ?? String(index + 1);
-  return `Display ${num}${mon.primary}`;
 }
 
 // Custom title bar (the window is decorations-less). The whole bar is a drag
@@ -271,7 +265,7 @@ export function Titlebar({ view }: Props) {
                           <span class="monitor-preview" style={{ aspectRatio: ratio }}>
                             <Icon name="monitor" size={20} />
                           </span>
-                          <span class="monitor-name">{monitorLabel(mon, i)}</span>
+                          <span class="monitor-name">{monitorDisplayName(mon, i)}</span>
                           <span class="monitor-size">{mon.width} x {mon.height}</span>
                         </button>
                       );

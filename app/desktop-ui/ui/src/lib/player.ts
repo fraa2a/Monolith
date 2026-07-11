@@ -1,21 +1,5 @@
 // Video player helpers shared by the card preview and the detail player.
-
-// Enables every audio track on a <video> so playback reflects the real file.
-// Monolith records multiple audio tracks (game, mic, apps), but browsers play
-// only the first enabled track by default. Chromium/WebView2 exposes the tracks
-// via `video.audioTracks`; when that API is unavailable we simply leave the
-// default track playing and document the limitation.
-export function enableAllAudioTracks(video: HTMLVideoElement): void {
-  const tracks = (video as any).audioTracks;
-  if (!tracks || typeof tracks.length !== "number") return;
-  for (let i = 0; i < tracks.length; i++) {
-    try {
-      tracks[i].enabled = true;
-    } catch {
-      /* read-only in some engines; ignore */
-    }
-  }
-}
+// See multitrack.ts for simultaneous multi-track audio playback.
 
 // Fully resets a <video> element's audio/playback state before it is reused for
 // a different clip, so leftover audio from the previous clip can't bleed through

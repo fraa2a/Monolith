@@ -41,6 +41,19 @@ export function appLabel(displayName?: string | null, processName?: string | nul
   return prettyAppName(name || processName);
 }
 
+// Same as appLabel, but for clips specifically: when no game was detected,
+// the label depends on how the clip was captured rather than falling back to
+// the generic "Desktop" — a manual recording with no game is a screen
+// recording, while a replay-buffer save with no game genuinely has none.
+export function clipSourceLabel(
+  clip: { source: "replay" | "manual"; game_display_name?: string | null; game_process_name?: string | null },
+): string {
+  if (clip.game_display_name || clip.game_process_name) {
+    return appLabel(clip.game_display_name, clip.game_process_name);
+  }
+  return clip.source === "manual" ? "Screen Recording" : "None";
+}
+
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
@@ -68,6 +81,16 @@ export function formatDate(iso: string): string {
     return `${month} ${d.getDate()} ${time}`;
   }
   return `${month} ${d.getDate()}, ${d.getFullYear()} ${time}`;
+}
+
+// Windows device paths ("\\.\DISPLAY2") are never user-facing copy — derive
+// a friendly "Display N" label from the trailing device number instead.
+export function monitorDisplayName(
+  mon: { device?: string | null },
+  index: number,
+): string {
+  const num = mon.device?.match(/(\d+)\s*$/)?.[1] ?? String(index + 1);
+  return `Display ${num}`;
 }
 
 export function formatDuration(seconds: number | null): string {

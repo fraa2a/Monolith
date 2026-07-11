@@ -70,6 +70,7 @@ fn ensure_schema(conn: &Connection) {
         ("discord_app_id", "TEXT"),
         ("icon_url", "TEXT"),
         ("cover_url", "TEXT"),
+        ("exe_icon_png", "BLOB"),
     ] {
         if !has_column(conn, "game_catalog", name) {
             let _ = conn.execute(&format!("ALTER TABLE game_catalog ADD COLUMN {name} {ty}"), []);
@@ -161,6 +162,40 @@ pub fn resolve_icon(process_name: &str) -> Option<String> {
     entry_by_process(process_name).and_then(|entry| entry.icon_url)
 }
 
+// Executable icons (PNG bytes extracted via SHDefExtractIconW, see exe_icon.rs)
+// are cached here by process name rather than by install path, so the same
+// game keeps its icon across reinstalls/relocations/different machines
+// instead of re-extracting (and never sharing a cache entry) every time the
+// exe's on-disk path differs. Reuses the same table as Discord artwork: an
+// exe icon and Discord artwork for the same process name are just two
+// columns of the one row keyed by process_name_lower.
+pub fn cached_exe_icon(process_name: &str) -> Option<Vec<u8>> {
+    let key = process_name.to_lowercase();
+    let conn = open(true)?;
+    if !has_column(&conn, "game_catalog", "exe_icon_png") {
+        return None;
+    }
+    conn.query_row(
+        "SELECT exe_icon_png FROM game_catalog WHERE process_name_lower = ?1",
+        params![key],
+        |row| row.get::<_, Option<Vec<u8>>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+pub fn store_exe_icon(process_name: &str, png: &[u8]) {
+    let key = process_name.to_lowercase();
+    let Some(conn) = open(false) else { return };
+    ensure_schema(&conn);
+    let _ = conn.execute(
+        "INSERT INTO game_catalog (process_name_lower, exe_icon_png)
+         VALUES (?1, ?2)
+         ON CONFLICT(process_name_lower) DO UPDATE SET exe_icon_png=excluded.exe_icon_png",
+        params![&key, png],
+    );
+}
+
 // Local-cache-only lookup: never makes a network call. Used by the clip grid
 // display path (list_clips), which must not block on/wait for Discord.
 pub fn resolve_artwork_cached(app_id: Option<&str>, process_name: Option<&str>) -> CatalogEntry {
@@ -219,6 +254,7 @@ pub fn resolve_artwork(app_id: Option<&str>, process_name: Option<&str>) -> Cata
         discord_app_id: app_id.map(str::to_string),
         icon_url: None,
         cover_url: None,
+        last_updated: 0,
     }
 }
 

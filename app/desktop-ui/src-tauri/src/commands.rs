@@ -148,6 +148,23 @@ pub async fn clip_delete(source: String, id: i64) -> Result<(), String> {
     blocking_result(move || clip_catalog::remove_clip(src, id)).await
 }
 
+// Opens Explorer with the clip's video file pre-selected. `/select,` is an
+// Explorer-native flag (no shell interpretation of the path), so this is safe
+// against injection as long as `path` is a real filesystem path from the
+// catalog rather than arbitrary user text.
+#[tauri::command]
+pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
+    blocking_result(move || {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
 // Only mutation that still needs the engine: thumbnail regeneration decodes a
 // video frame via FFmpeg, which only the recorder process links against.
 #[tauri::command]
@@ -252,9 +269,9 @@ pub async fn pick_folder(current: Option<String>) -> Option<String> {
 // ── Native app icon (PNG extracted from an exe, base64 data URL) ─────────
 
 #[tauri::command]
-pub async fn exe_icon(path: String) -> Option<String> {
+pub async fn exe_icon(path: String, process: String) -> Option<String> {
     blocking(move || {
-        exe_icon::icon_png(&path)
+        exe_icon::icon_png(&path, &process)
             .map(|bytes| format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(bytes)))
     })
     .await

@@ -56,6 +56,12 @@ const PATHS: Record<string, JSX.Element> = {
       <line x1="12" x2="12" y1="17" y2="21" />
     </>
   ),
+  "circle-slash": (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="5" x2="19" y1="19" y2="5" />
+    </>
+  ),
   "volume-2": (
     <>
       <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" />
@@ -162,6 +168,24 @@ const PATHS: Record<string, JSX.Element> = {
   ),
   check: <path d="M20 6 9 17l-5-5" />,
   "play": <polygon points="6 3 20 12 6 21 6 3" />,
+  pause: (
+    <>
+      <rect width="4" height="16" x="6" y="4" rx="1" />
+      <rect width="4" height="16" x="14" y="4" rx="1" />
+    </>
+  ),
+  "rotate-ccw": (
+    <>
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </>
+  ),
+  "rotate-cw": (
+    <>
+      <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+    </>
+  ),
 };
 
 interface Props {

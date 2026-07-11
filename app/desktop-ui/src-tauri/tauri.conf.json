@@ -1,11 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Monolith.UI",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "identifier": "dev.scatola.monolith.ui",
   "build": {
     "frontendDist": "../dist",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev"
   },
   "app": {
     "windows": [],
@@ -20,6 +22,6 @@
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": ["../../../app/assets/icon.ico"]
+    "icon": ["../../../app/assets/exeicon.ico"]
   }
 }
