@@ -1,6 +1,49 @@
 ﻿# Active Handover
 
-Updated: 2026-07-10
+Updated: 2026-07-12
+
+## Session 2026-07-12 — DB-gated detection + auto-record features
+
+Landed across 4 commits on `main` (all Windows CI green; native engine NOT
+built locally — vcpkg absent — so runtime behavior is unverified and needs a
+real-machine smoke test).
+
+- **Bug fixes**: topbar exe-icon call was missing its `processName` arg
+  (`titlebar.tsx`) — fixed; topbar now shows the DB `display_name` verbatim (no
+  `prettyAppName`). Thumbnail failures were silent (verbose logging off by
+  default) and the frontend `<video>` fallback can't decode `.mkv` in WebView2 —
+  added an always-on `logging::log_error` channel, the frontend now hands off to
+  the engine FFmpeg regenerator, and `clip_regen_thumb` bumps `clip_generation`
+  so the grid reloads.
+- **New `libs/gamelist`**: recorder-owned SQLite cache of the Discord detectable
+  list (`https://discord.com/api/v10/applications/detectable`), fetched via
+  WinHTTP on a worker thread (startup + 72h + refetch-if-missing), lock-free
+  snapshot. `%LocalAppData%\Monolith\game_list.db`.
+- **DB-gated detection** (`libs/audio`): `detect_game_candidates()` enumerates
+  all processes (Toolhelp), gates on game-list membership; heuristic scoring and
+  foreground-fallback removed. `detect_active_game()` now returns the best
+  DB-matched candidate.
+- **Engine state machine** (`main.cpp`): 3 s cadence; `poll_active_game()`
+  resolves an effective target (user selection by exe, else most-recently-
+  focused) and publishes `game_candidates[]` + `selected_game_pid`;
+  `evaluate_capture_mode()` runs auto-record (startup 60 s focus grace,
+  auto-next-on-close, manual switch). New `set_selected_game` IPC command +
+  `SelectGameFn`. `capture_mode.clip_without_game` setting; idle-timeout now
+  honored. Pacer holds the last frame while the captured game window is minimized
+  (game_only only). Screen mode auto-follows the game's monitor unless pinned.
+- **UI**: topbar multi-game picker + Clip-Without-Game toggle; Settings > Game
+  page toggles (mode, auto-record, clip-without-game, idle timeout).
+
+Open items for next session:
+- Runtime smoke test on a real machine with a real game (detection match,
+  auto-record start/stop/switch, frozen frame, thumbnail generation) — none of
+  this is independently verifiable from CI compile alone.
+- Confirm the live Discord detectable JSON shape matches the parser in
+  `gamelist.cpp` (`[{id, name, executables:[{name, os, is_launcher}]}]`).
+- Rust `game_catalog.db` still holds artwork only; `discord_app_id` from the new
+  gamelist is now on candidates but not yet threaded into clip rows for artwork.
+
+Updated (previous): 2026-07-10
 
 ## Product Summary
 
