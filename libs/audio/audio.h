@@ -97,6 +97,11 @@ struct GameCandidateInfo {
     bool     fullscreen = false;
     bool     has_session = false;    // has an active audio render session
     HWND     capture_window = nullptr; // main window to capture, if any
+    // True when several games share this executable (e.g. many Java games use
+    // javaw.exe) AND the main-window title matched one of them, so display_name/
+    // discord_app_id below were resolved to that specific game rather than an
+    // arbitrary same-exe sibling. Purely informational.
+    bool     title_matches_db = false;
 };
 
 // DB-gated detection: returns every running process whose exe basename is in the

@@ -469,9 +469,10 @@ static bool window_fills_monitor(HWND hwnd)
 // Per-pid window facts gathered in one EnumWindows pass. The "best" window per
 // process is the largest visible unowned top-level window — the capture target.
 struct WindowFacts {
-    HWND    hwnd       = nullptr;
-    int64_t area       = 0;
-    bool    fullscreen = false;
+    HWND         hwnd       = nullptr;
+    int64_t      area       = 0;
+    bool         fullscreen = false;
+    std::wstring title;         // main-window title, for DB-keyword disambiguation
 };
 
 struct AnnotateContext {
@@ -505,8 +506,36 @@ static BOOL CALLBACK annotate_window_enum_proc(HWND hwnd, LPARAM lp)
         wf.area       = area;
         wf.hwnd       = hwnd;
         wf.fullscreen = window_fills_monitor(hwnd);
+        wchar_t buf[256];
+        const int n = GetWindowTextW(hwnd, buf, 256);
+        wf.title.assign(buf, n > 0 ? static_cast<size_t>(n) : 0);
     }
     return TRUE;
+}
+
+// True when `title` plausibly names the DB game `display_name`: the title
+// contains the whole display name, or any of its alphanumeric tokens of length
+// >= 3. Case-insensitive. Only used to disambiguate several processes sharing
+// one executable; a loose match here just biases selection, never gates it.
+static bool title_matches_db_name(const std::string& display_name_utf8,
+                                  const std::wstring& window_title)
+{
+    if (display_name_utf8.empty() || window_title.empty()) return false;
+    const std::wstring name  = to_lower(platform_win::utf8_to_wide(display_name_utf8));
+    const std::wstring title = to_lower(window_title);
+    if (name.empty()) return false;
+    if (title.find(name) != std::wstring::npos) return true;
+
+    std::wstring tok;
+    for (wchar_t ch : name) {
+        if (iswalnum(ch)) {
+            tok.push_back(ch);
+        } else {
+            if (tok.size() >= 3 && title.find(tok) != std::wstring::npos) return true;
+            tok.clear();
+        }
+    }
+    return tok.size() >= 3 && title.find(tok) != std::wstring::npos;
 }
 
 std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg)
@@ -543,6 +572,10 @@ std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg)
 
     const uint32_t self_pid = GetCurrentProcessId();
     std::vector<uint32_t> matched_pids;
+    // Parallel to `out`: the full set of DB games sharing each candidate's exe,
+    // used below to resolve the right game by window title when several share one
+    // executable (e.g. javaw.exe). Points into `games`, which outlives this call.
+    std::vector<const gamelist::GameList*> cand_entries;
 
     PROCESSENTRY32W pe{};
     pe.dwSize = sizeof(pe);
@@ -561,19 +594,23 @@ std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg)
 
             const std::string exe_key = platform_win::wide_to_utf8(lower);
             auto it = games->find(exe_key);
-            if (it == games->end()) continue; // DB gate: not a known game
+            if (it == games->end() || it->second.empty())
+                continue; // DB gate: not a known game
 
             GameCandidateInfo ci;
             ci.process = process_info(pid);
             if (ci.process.process_name.empty())
                 ci.process.process_name = pe.szExeFile;
-            // Always use the DB display name (Bug 2: never a prettified exe).
-            ci.display_name   = it->second.display_name;
-            ci.discord_app_id = it->second.discord_app_id;
+            // Provisional identity: the first game registered for this exe. When
+            // the exe is shared it is refined by window title after the window
+            // pass below. Always a DB display name (Bug 2: never a prettified exe).
+            ci.display_name   = it->second.front().display_name;
+            ci.discord_app_id = it->second.front().discord_app_id;
             ci.has_session    = has_audio_session(pid);
             ci.foreground     = (pid == fg_pid);
             out.push_back(std::move(ci));
             matched_pids.push_back(pid);
+            cand_entries.push_back(&it->second);
         } while (Process32NextW(snap, &pe));
     }
     CloseHandle(snap);
@@ -585,11 +622,30 @@ std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg)
     AnnotateContext ctx{ &matched_pids, &facts };
     EnumWindows(annotate_window_enum_proc, reinterpret_cast<LPARAM>(&ctx));
 
-    for (auto& ci : out) {
+    for (size_t i = 0; i < out.size(); ++i) {
+        GameCandidateInfo& ci = out[i];
         auto fit = facts.find(ci.process.process_id);
         if (fit != facts.end()) {
             ci.capture_window = fit->second.hwnd;
             ci.fullscreen     = fit->second.fullscreen;
+            if (!fit->second.title.empty())
+                ci.process.window_title = fit->second.title;
+        }
+
+        // Disambiguate shared executables (e.g. javaw.exe used by Minecraft,
+        // Spiral Knights, ...): pick the game whose name matches the window
+        // title. With a single registered game there is nothing to resolve; if
+        // none matches, the provisional first game stands (normal behavior).
+        const gamelist::GameList& entries = *cand_entries[i];
+        if (entries.size() > 1 && !ci.process.window_title.empty()) {
+            for (const auto& e : entries) {
+                if (title_matches_db_name(e.display_name, ci.process.window_title)) {
+                    ci.display_name     = e.display_name;
+                    ci.discord_app_id   = e.discord_app_id;
+                    ci.title_matches_db = true;
+                    break;
+                }
+            }
         }
     }
     return out;

@@ -14,26 +14,29 @@ export function Sidebar({ filter, onChange, onOpenSettings }: Props) {
 
   return (
     <aside class="sidebar">
-      <div class="side-section">Library</div>
       <nav class="side-nav">
         <button
           class={!fav ? "side-item active" : "side-item"}
           onClick={() => onChange({ ...filter, favorite: undefined })}
+          title="Library"
+          aria-label="Library"
         >
-          <Icon name="layout-grid" /> <span>Library</span>
+          <Icon name="layout-grid" />
         </button>
         <button
           class={fav ? "side-item active fav-active" : "side-item"}
           onClick={() => onChange({ ...filter, favorite: true })}
+          title="Favorites"
+          aria-label="Favorites"
         >
-          <Icon name="star" filled={fav} /> <span>Favorites</span>
+          <Icon name="star" filled={fav} />
         </button>
       </nav>
 
       <div class="side-spacer" />
 
-      <button class="side-item" onClick={onOpenSettings}>
-        <Icon name="settings" /> <span>Settings</span>
+      <button class="side-item" onClick={onOpenSettings} title="Settings" aria-label="Settings">
+        <Icon name="settings" />
       </button>
     </aside>
   );

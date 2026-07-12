@@ -1,14 +1,8 @@
-# Monolith Desktop UI — Tauri v2 (WebView2). `cargo build --release` produces a
+# Monolith Desktop UI Tauri v2 (WebView2). `cargo build --release` produces a
 # single self-contained exe (src-tauri/target/release/monolith_ui.exe) that starts
 # its own loopback HTTP server and opens the WebView2 window. It is copied to
 # <recorder-output>/ui/Monolith.UI.exe; the recorder's tray "Settings…" entry
 # launches it (settings_window.cpp), preferring it over the legacy WinUI sidecar.
-#
-# Two toolchains are needed: `npm` builds the Preact frontend into dist/
-# (vite.config.ts, embedded into the exe via include_dir!) and `cargo` compiles
-# the Tauri host. If either is absent, CMake warns and skips the UI build — the
-# recorder and the legacy settings sidecar still build, mirroring the
-# .NET-SDK-optional behaviour.
 
 find_program(NPM_EXECUTABLE   NAMES npm npm.cmd)
 find_program(CARGO_EXECUTABLE NAMES cargo cargo.exe)

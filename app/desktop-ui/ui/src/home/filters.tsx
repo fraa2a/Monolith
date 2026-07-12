@@ -1,4 +1,5 @@
 import type { Filter } from "../lib/api.ts";
+import { FilterMenu } from "./filter-menu.tsx";
 
 interface Props {
   games: string[];
@@ -7,13 +8,37 @@ interface Props {
   onChange: (f: Filter) => void;
 }
 
-// Content toolbar: search + game / hashtag filters. App identity, Favorites and
-// Settings now live in the sidebar rail (see shell/sidebar.tsx).
+// Content toolbar: icon filter menus (game / hashtag) on the left, a small
+// search box on the right. Each filter opens a custom searchable dropdown.
 export function Filters({ games, hashtags, filter, onChange }: Props) {
   const set = (patch: Partial<Filter>) => onChange({ ...filter, ...patch });
 
   return (
     <div class="toolbar">
+      <div class="filter-menus">
+        <FilterMenu
+          icon="gamepad"
+          title="Filter by game"
+          placeholder="Search games…"
+          allLabel="All games"
+          options={games}
+          value={filter.game}
+          onChange={(v) => set({ game: v })}
+        />
+        <FilterMenu
+          icon="hash"
+          title="Filter by hashtag"
+          placeholder="Search hashtags…"
+          allLabel="All hashtags"
+          options={hashtags}
+          value={filter.hashtag}
+          onChange={(v) => set({ hashtag: v })}
+          format={(t) => `#${t}`}
+        />
+      </div>
+
+      <div class="spacer" />
+
       <div class="search-wrap">
         <input
           class="input search"
@@ -22,26 +47,6 @@ export function Filters({ games, hashtags, filter, onChange }: Props) {
           onInput={(e) => set({ search: (e.target as HTMLInputElement).value || undefined })}
         />
       </div>
-
-      <div class="spacer" />
-
-      <select
-        class="select"
-        value={filter.game ?? ""}
-        onChange={(e) => set({ game: (e.target as HTMLSelectElement).value || undefined })}
-      >
-        <option value="">All games</option>
-        {games.map((g) => <option value={g} key={g}>{g}</option>)}
-      </select>
-
-      <select
-        class="select"
-        value={filter.hashtag ?? ""}
-        onChange={(e) => set({ hashtag: (e.target as HTMLSelectElement).value || undefined })}
-      >
-        <option value="">All hashtags</option>
-        {hashtags.map((t) => <option value={t} key={t}>#{t}</option>)}
-      </select>
     </div>
   );
 }

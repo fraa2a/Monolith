@@ -411,16 +411,6 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
               />
             }
           />
-          <Field
-            label="Show capture border"
-            help="Draw the yellow border around the captured display."
-            control={
-              <Toggle
-                checked={!!val("capture.show_capture_border")}
-                onChange={(v) => update("capture.show_capture_border", v)}
-              />
-            }
-          />
         </Section>
       );
     }

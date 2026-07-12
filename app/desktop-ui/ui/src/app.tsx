@@ -155,12 +155,6 @@ export function App() {
         )
         : (
           <>
-            <div class="grid-head">
-              <span class="grid-count">
-                <b>{clips.length}</b> {clips.length === 1 ? "clip" : "clips"}
-              </span>
-              <span class="rule" />
-            </div>
             <div class="grid">
               {clips.map((c, i) => (
                 <ClipCard

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdlib>
 #include <chrono>
 #include <condition_variable>
 #include <ctime>
@@ -45,6 +46,11 @@ constexpr std::time_t kEmptyRetrySeconds = 60 * 60;
 // A real response has thousands of entries; anything tiny is treated as a bad
 // fetch and must never overwrite a good DB.
 constexpr size_t kMinPlausibleEntries = 50;
+
+// Bump when the `games` table layout changes so old DBs are rebuilt. v1 keyed on
+// exe_lower alone (one game per exe); v2 allows many games per exe (composite key
+// exe_lower+discord_app_id) so shared executables like javaw.exe keep every game.
+constexpr int kSchemaVersion = 2;
 
 std::function<void(const char*, const char*)> g_log_sink;
 
@@ -106,15 +112,47 @@ sqlite3* open_db()
     exec(db, "PRAGMA synchronous=NORMAL;");
     exec(db, "PRAGMA busy_timeout=4000;");
     if (!exec(db,
-            "CREATE TABLE IF NOT EXISTS games ("
-            "  exe_lower TEXT PRIMARY KEY,"
-            "  display_name TEXT NOT NULL,"
-            "  discord_app_id TEXT NOT NULL"
-            ");")
-        || !exec(db,
             "CREATE TABLE IF NOT EXISTS meta ("
             "  key TEXT PRIMARY KEY,"
             "  value TEXT NOT NULL"
+            ");")) {
+        sqlite3_close(db);
+        return nullptr;
+    }
+
+    // Migrate on schema change: drop a stale `games` table so it is recreated
+    // with the current layout (and re-synced from the network on the next tick).
+    int stored_version = 0;
+    {
+        sqlite3_stmt* vs = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key='schema_version'",
+                               -1, &vs, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(vs) == SQLITE_ROW) {
+                const char* v = reinterpret_cast<const char*>(sqlite3_column_text(vs, 0));
+                if (v) stored_version = std::atoi(v);
+            }
+            sqlite3_finalize(vs);
+        }
+    }
+    if (stored_version != kSchemaVersion) {
+        exec(db, "DROP TABLE IF EXISTS games;");
+        sqlite3_stmt* ms = nullptr;
+        if (sqlite3_prepare_v2(db,
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                -1, &ms, nullptr) == SQLITE_OK) {
+            const std::string v = std::to_string(kSchemaVersion);
+            sqlite3_bind_text(ms, 1, v.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(ms);
+            sqlite3_finalize(ms);
+        }
+    }
+
+    if (!exec(db,
+            "CREATE TABLE IF NOT EXISTS games ("
+            "  exe_lower TEXT NOT NULL,"
+            "  display_name TEXT NOT NULL,"
+            "  discord_app_id TEXT NOT NULL,"
+            "  PRIMARY KEY (exe_lower, discord_app_id)"
             ");")) {
         sqlite3_close(db);
         return nullptr;
@@ -138,7 +176,7 @@ std::shared_ptr<GameMap> load_from_db(sqlite3* db)
         GameEntry e;
         e.display_name = name ? name : "";
         e.discord_app_id = app ? app : "";
-        (*map)[exe] = std::move(e);
+        (*map)[exe].push_back(std::move(e));
     }
     sqlite3_finalize(st);
     return map;
@@ -171,16 +209,18 @@ bool write_games(sqlite3* db, const GameMap& map, std::time_t now)
         exec(db, "ROLLBACK;");
         return false;
     }
-    for (const auto& [exe, entry] : map) {
-        sqlite3_bind_text(st, 1, exe.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, entry.display_name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 3, entry.discord_app_id.c_str(), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(st) != SQLITE_DONE) {
-            sqlite3_finalize(st);
-            exec(db, "ROLLBACK;");
-            return false;
+    for (const auto& [exe, entries] : map) {
+        for (const auto& entry : entries) {
+            sqlite3_bind_text(st, 1, exe.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 2, entry.display_name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 3, entry.discord_app_id.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(st) != SQLITE_DONE) {
+                sqlite3_finalize(st);
+                exec(db, "ROLLBACK;");
+                return false;
+            }
+            sqlite3_reset(st);
         }
-        sqlite3_reset(st);
     }
     sqlite3_finalize(st);
 
@@ -256,8 +296,16 @@ bool http_get(std::string* body)
 
 std::string basename_lower(const std::string& name)
 {
-    size_t slash = name.find_last_of("/\\");
-    std::string base = (slash == std::string::npos) ? name : name.substr(slash + 1);
+    // Discord marks some executables with a leading '>' — the game runs as a
+    // child/launched process rather than the top-level exe (e.g. Minecraft is
+    // listed as ">javaw.exe"). Strip that marker so the key is the real process
+    // basename we can match against a running process.
+    size_t start = 0;
+    while (start < name.size() && (name[start] == '>' || name[start] == ' '))
+        ++start;
+    const std::string trimmed = name.substr(start);
+    size_t slash = trimmed.find_last_of("/\\");
+    std::string base = (slash == std::string::npos) ? trimmed : trimmed.substr(slash + 1);
     std::transform(base.begin(), base.end(), base.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return base;
@@ -288,8 +336,13 @@ bool parse_detectables(const std::string& json, GameMap* out)
             if (raw.empty()) continue;
             const std::string key = basename_lower(raw);
             if (key.empty()) continue;
-            // First writer wins; the list is largely unique per exe anyway.
-            out->emplace(key, GameEntry{display, app_id});
+            // Keep every game for this exe (many share e.g. javaw.exe), but avoid
+            // storing the same Discord app twice under one exe.
+            GameList& list = (*out)[key];
+            bool dup = false;
+            for (const auto& e : list)
+                if (e.discord_app_id == app_id) { dup = true; break; }
+            if (!dup) list.push_back(GameEntry{display, app_id});
         }
     }
     return true;
@@ -412,7 +465,7 @@ bool contains(const std::string& exe_basename_lower)
     return snap && snap->find(exe_basename_lower) != snap->end();
 }
 
-bool lookup(const std::string& exe_basename_lower, GameEntry* out)
+bool lookup(const std::string& exe_basename_lower, GameList* out)
 {
     auto snap = snapshot();
     if (!snap) return false;

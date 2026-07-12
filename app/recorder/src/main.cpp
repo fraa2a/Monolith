@@ -2370,7 +2370,9 @@ static void media_start(HWND hwnd)
                              static_cast<int>(f.height));
         }, [&]() {
             capture::CaptureOptions options;
-            options.show_border = g_settings.show_capture_border;
+            // Capture border is always suppressed; the toggle was removed from the
+            // UI and the WGC yellow border is never wanted for a recorder.
+            options.show_border = false;
             options.max_readback_fps = std::max(1, g_settings.video_fps);
             options.allow_unlimited_readback = false;
 
@@ -2411,11 +2413,9 @@ static void media_start(HWND hwnd)
         log_msg("capture", ok ? "WGC display capture started"
                                : "WARNING: WGC display capture failed");
         if (ok) {
-            log_msg("capture", g_settings.show_capture_border
-                ? "capture border: enabled by config"
-                : (g_video.border_suppressed()
-                    ? "capture border: suppressed (IsBorderRequired=false)"
-                    : "capture border: suppression DENIED by OS (border visible)"));
+            log_msg("capture", g_video.border_suppressed()
+                ? "capture border: suppressed (IsBorderRequired=false)"
+                : "capture border: suppression DENIED by OS (border visible)");
         }
         {
             std::lock_guard<std::mutex> lk(g_status_mutex);

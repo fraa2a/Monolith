@@ -20,7 +20,7 @@
   --sidebar: #161616;  /* main app sidebar rail + titlebar */
   --settings-rail: #1f1f1f; /* settings popup's own sidebar rail */
   --mid:    #161616;   /* elevated surfaces: cards, menus, modals, dropdowns */
-  --light:  #343434;   /* highlight: hover / active */
+  --light:  #1f1f1f;   /* highlight: hover / active */
   --light-hi: #4e4e4e; /* brighter step for hover feedback where needed */
 
   --card:  #161616;
@@ -28,7 +28,7 @@
   --line-soft: rgba(255, 255, 255, .05);
   --field:     rgba(255, 255, 255, .045);
 
-  --text:       #f1f1f1;
+  --text:       #ffffff;
   --text-dim:   rgba(255, 255, 255, .56);
   --text-faint: rgba(255, 255, 255, .34);
 
@@ -90,7 +90,7 @@ body {
 
 /* ── Custom title bar ────────────────────────────────────────────────────── */
 .titlebar {
-  height: 44px;
+  height: 50px;
   flex: none;
   display: flex;
   align-items: stretch;
@@ -140,7 +140,7 @@ body {
 
 .connect-toast {
   position: fixed;
-  top: 44px;
+  top: 50px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 50;
@@ -172,7 +172,8 @@ body {
 .tb-status {
   position: relative;
   margin-left: 14px;
-  align-self: center;
+  /* Fill the bar's full height; only the width is constrained below. */
+  align-self: stretch;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 208px;
@@ -182,15 +183,16 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 30px;
-  padding: 0 14px;
-  background: var(--field);
+  /* Fill the bar vertically (text stays centered); only the width is limited. */
+  height: 100%;
+  padding: 0 20px;
+  background: none;
   border: none;
-  border-radius: var(--r-sm);
+  border-radius: 0;
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: background .12s, 
+  transition: background .12s,
   border-color .12s;
 }
 .capture-feed:hover { background: var(--light); border-color: var(--light-hi); }
@@ -205,54 +207,62 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent);
 }
 .feed-bg {
   overflow: hidden;
   opacity: .4;
   transition: opacity .18s;
+  /* The element itself only carries the image so ::before can inherit it; hide
+     its own (unrotated) tiling so only the angled ::before pattern shows. */
+  background-size: 0;
 }
 .feed-bg::before {
   content: "";
   position: absolute;
-  inset: -130% -35%;
+  /* Oversized + centered so the rotated tile field fully covers the pill's
+     corners and bottom (the removed base layer used to fill those). */
+  inset: -180% -70%;
   background-image: inherit;
   background-repeat: repeat;
-  background-size: 40px 40px;
+  background-position: center;
+  /* Tile scaled from 40px (3 angled rows) to 24px so 5 rows fit (40 * 3/5). */
+  background-size: 32px 32px;
   transform: rotate(-35deg);
 }
 .capture-feed.screen .feed-bg {
   opacity: 1;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34' height='26' viewBox='0 0 34 26'%3E%3Cg fill='none' stroke='rgba(255,255,255,.16)' stroke-width='1.2'%3E%3Crect x='7' y='4' width='20' height='14' rx='2'/%3E%3Cpath d='M14 22h6M17 18v4'/%3E%3C/g%3E%3C/svg%3E");
 }
-.capture-feed.screen .feed-bg::before { background-size: 34px 26px; }
+/* Same 3->5 row scale (34*3/5, 26*3/5), keeping the tile's proportions. */
+.capture-feed.screen .feed-bg::before { background-size: 20.4px 15.6px; }
 .feed-shade { background: linear-gradient(180deg, rgba(7, 7, 7, .35), rgba(7, 7, 7, .72)); }
 .capture-feed:hover .feed-bg { opacity: .55; }
 .capture-feed.screen:hover .feed-bg { opacity: 1; }
 .capture-feed:hover .rec-subject { color: var(--text); }
 
 .rec-dot {
-  width: 8px;
-  height: 8px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: var(--text-faint);
   flex: none;
 }
-.rec-dot.on { background: var(--danger); box-shadow: 0 0 0 3px rgba(229,84,75,.16); }
-.rec-dot.clip { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.rec-dot.on { background: var(--danger); box-shadow: 0 0 0 4px rgba(229,84,75,.16); }
+.rec-dot.clip { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 .rec-dot.disconnected { background: var(--text-faint); box-shadow: none; }
 .rec-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .rec-state {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 12.5px;
   letter-spacing: .08em;
   text-transform: uppercase;
   line-height: 1;
 }
 .rec-subject {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.05;
   white-space: nowrap;
   overflow: hidden;
@@ -379,38 +389,27 @@ body {
 }
 
 .sidebar {
-  width: 214px;
+  width: 55px;
   flex: none;
   background: var(--sidebar);
   display: flex;
   flex-direction: column;
-  padding: 14px 12px 16px;
-  gap: 2px;
+  align-items: center;
+  padding: 10px 6px 12px;
+  gap: 4px;
 }
-.side-section {
-  font-family: var(--mono);
-  font-weight: 600;
-  font-size: 10px;
-  letter-spacing: .2em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  padding: 4px 11px 7px;
-}
-.side-nav { display: flex; flex-direction: column; gap: 3px; }
+.side-nav { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; }
 .side-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 11px;
+  justify-content: center;
   width: 100%;
-  padding: 9px 12px;
+  padding: 12px 0;
   background: none;
   border: none;
   border-radius: var(--r-sm);
   color: var(--text-dim);
-  font-family: var(--ui);
-  font-size: 14px;
-  text-align: left;
   cursor: pointer;
   transition: background .12s, color .12s;
 }
@@ -421,7 +420,7 @@ body {
 .side-item.active::before {
   content: "";
   position: absolute;
-  left: -12px; top: 50%;
+  left: -6px; top: 50%;
   transform: translateY(-50%);
   width: 3px; height: 18px;
   background: var(--accent);
@@ -438,7 +437,7 @@ body {
   flex: 1;
   min-width: 0;
   background: var(--dark);
-  overflow-y: auto;
+  overflow: hidden auto;
   border-top-left-radius: 14px;
   padding: 0 26px 36px;
 }
@@ -451,16 +450,20 @@ body {
   position: sticky;
   top: 0;
   z-index: 20;
-  padding: 18px 0 15px;
-  background: linear-gradient(var(--dark) 74%, transparent);
+  /* Full-bleed gray header band: negative margins cancel .content's 26px padding
+     so the background spans edge to edge, while the inner padding keeps the
+     controls aligned with the grid below. */
+  margin: 0 -26px 8px;
+  padding: 10px 26px;
+  background: var(--light);
 }
 .spacer { flex: 1; }
 
 .search-wrap {
   position: relative;
-  min-width: 220px;
-  max-width: 380px;
-  flex: 1 1 300px;
+  /* Small, anchored to the right (filters live on the left). */
+  flex: 0 0 auto;
+  width: 240px;
 }
 .search-wrap::before {
   content: "⌕";
@@ -468,10 +471,94 @@ body {
   left: 12px; top: 50%;
   transform: translateY(-50%);
   font-size: 17px;
-  color: var(--text-faint);
+  color: var(--text);
   pointer-events: none;
 }
 .search-wrap .input { width: 100%; padding-left: 34px; }
+
+/* Search field and the filter selects share one fixed height so they line up
+   exactly (native <input> and <select> differ by a couple of px otherwise).
+   Only vertical padding is zeroed — horizontal padding (search icon, select
+   arrow) is preserved. */
+.toolbar .input,
+.toolbar .select {
+  height: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* ── Icon filter menus (game / hashtag) with searchable dropdown ──────────── */
+.filter-menus { display: flex; align-items: center; gap: 8px; }
+.filter-menu { position: relative; }
+.filter-btn {
+  height: 36px;
+  padding: 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--field);
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--text);            /* white icon */
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.filter-btn:hover { background: var(--light); }
+.filter-btn.active { background: var(--accent-soft); color: var(--accent-hi); }
+.filter-btn > svg { width: 18px; height: 18px; }
+/* Dropdown affordance: a small caret that flips when the menu is open. */
+.filter-caret {
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+  transition: transform .15s, color .12s;
+}
+.filter-caret svg { width: 13px; height: 13px; }
+.filter-btn:hover .filter-caret { color: var(--text); }
+.filter-btn.active .filter-caret { color: var(--accent-hi); }
+.filter-btn.open .filter-caret { transform: rotate(180deg); }
+
+.filter-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 250px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: var(--mid);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+}
+.filter-pop-search { width: 100%; }
+.filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.filter-opt {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  font-family: var(--ui);
+  font-size: 13.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .12s, color .12s;
+}
+.filter-opt:hover { background: var(--light); color: var(--text); }
+.filter-opt.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.filter-empty { color: var(--text-faint); font-size: 12.5px; padding: 8px 10px; }
 
 .input, .select {
   background: var(--field);
@@ -487,11 +574,6 @@ body {
 .input { user-select: text; }
 .input::placeholder { color: var(--text-faint); }
 .input:hover, .select:hover { border-color: var(--light); }
-.input:focus, .select:focus {
-  border-color: var(--accent);
-  background: rgba(255, 255, 255, .07);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
 
 .select {
   appearance: none;
@@ -1105,6 +1187,18 @@ body {
 .settings-tab.active svg { opacity: 1; color: var(--accent-hi); }
 .settings-group { display: flex; flex-direction: column; gap: 3px; }
 .settings-group + .settings-group { margin-top: 14px; }
+/* Section label — now only used inside the settings popup (the main sidebar is
+   icon-only). Kept here since the base .side-section rule was removed with the
+   main sidebar's text labels. */
+.side-section {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 4px 11px 7px;
+}
 .settings-group .side-section { padding: 10px 11px 5px; }
 
 .settings-body { padding: 24px 26px; overflow-y: auto; }

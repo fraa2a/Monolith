@@ -20,9 +20,9 @@ function cloneConfig(config: Config | null): Config {
   return JSON.parse(JSON.stringify(config ?? {}));
 }
 
-// Custom title bar (the window is decorations-less). The whole bar is a drag
-// region except controls. Live capture status + manual-record control sit left,
-// at a fixed offset from the brand, and fill the bar's full height.
+// Custom title bar (the window is decorations-less). The whole bar is a drag region except controls. 
+// Live capture status + manual-record control sit left, at a fixed offset from the brand, and fill the bar's full height.
+
 export function Titlebar({ view }: Props) {
   const [runtime, setRuntime] = useState<RuntimeStatus>({});
   const [engine, setEngine] = useState<EngineStatus>({});
@@ -107,12 +107,6 @@ export function Titlebar({ view }: Props) {
   // Detected games are DB-gated, so display_name is always the game-list name
   // (e.g. "AURA Gamers gioco") — show it verbatim, no prettify transform. Only
   // fall back to appLabel for the rare case the engine emits a raw exe name.
-  const gameName = activeGame?.process_id
-    ? (activeGame.display_name && !/\.exe$/i.test(activeGame.display_name)
-      ? activeGame.display_name
-      : appLabel(activeGame.display_name, activeGame.process_name))
-    : "";
-
   useEffect(() => {
     let alive = true;
     if (!gameProcess) {
@@ -155,7 +149,13 @@ export function Titlebar({ view }: Props) {
   const recording = !!engine.recording;
   const clipping = !recording && !!engine.replay_enabled;
   const statusLabel = !connected ? "Disconnected" : recording ? "Recording" : clipping ? "Clipping" : "Idle";
-  const subject = !connected ? "No engine" : gameName || ((recording || clipping) ? "Screen" : "Ready");
+  // active_game is an object; render its label, never the object itself (doing so
+  // makes Preact treat it as a vnode → "Objects are not valid as a child" + a
+  // re-render loop that hangs the whole app).
+  const gameLabel = activeGame?.process_id
+    ? appLabel(activeGame.display_name, activeGame.process_name)
+    : "";
+  const subject = !connected ? "No engine" : (gameLabel || ((recording || clipping) ? "Screen" : "Ready"));
   const patternIcon = exeIcon ?? art.icon ?? null;
 
   const persist = async (mutate: (draft: Config) => void) => {
@@ -208,7 +208,7 @@ export function Titlebar({ view }: Props) {
     <>
       {showConnectToast && (
         <div class="connect-toast">
-          <span>Couldn't reach the Monolith engine — is it running?</span>
+          <span>Couldn't reach the Monolith engine, is it running?</span>
           <button
             class="connect-toast-close"
             onClick={() => setShowConnectToast(false)}
@@ -302,7 +302,7 @@ export function Titlebar({ view }: Props) {
                         <span class="toggle-knob" />
                       </button>
                     </div>
-                    {!gameName && <div class="mode-warning">No supported game detected.</div>}
+                    {!activeGame && <div class="mode-warning">No supported game detected.</div>}
                   </div>
                 )
                 : (

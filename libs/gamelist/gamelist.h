@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 // Local, DB-backed Discord game list. Detection is gated on membership in this
 // list: a running process is only treated as a "game" when its executable
@@ -27,8 +28,13 @@ struct GameEntry {
     std::string discord_app_id;  // Discord `id` (used later for artwork lookup)
 };
 
-// exe basename, lowercased UTF-8 (e.g. "cs2.exe") -> entry.
-using GameMap = std::unordered_map<std::string, GameEntry>;
+// One executable can be shared by many games (e.g. Minecraft, Spiral Knights and
+// dozens of other Java games all run as javaw.exe). We therefore keep every game
+// that maps to a given exe and let the caller disambiguate (by window title).
+using GameList = std::vector<GameEntry>;
+
+// exe basename, lowercased UTF-8 (e.g. "cs2.exe") -> all games using that exe.
+using GameMap = std::unordered_map<std::string, GameList>;
 
 // Optional diagnostic sink (tag, message) so the host can route sync/DB
 // failures into its own always-on error log. Set once before init().
@@ -46,8 +52,9 @@ std::shared_ptr<const GameMap> snapshot();
 // Convenience membership test against the current snapshot.
 bool contains(const std::string& exe_basename_lower);
 
-// Looks up an entry in the current snapshot; returns false when absent.
-bool lookup(const std::string& exe_basename_lower, GameEntry* out);
+// Looks up all games registered for an exe in the current snapshot; returns
+// false when absent. `out` receives every game sharing that executable.
+bool lookup(const std::string& exe_basename_lower, GameList* out);
 
 // Wakes the worker to refresh now. `force` re-downloads even if not yet stale.
 void request_refresh(bool force);

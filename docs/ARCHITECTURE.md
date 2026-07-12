@@ -1,64 +1,55 @@
-﻿# Architecture
+# Architecture
 
 ## Product Shape
 
-Monolith is a Windows-first recording and clipping app. It is recorder-first,
-not broadcaster-first, and remains a custom implementation rather than an OBS
-fork.
+Monolith = Windows-first record+clip app. Recorder-first, not broadcaster-first. Custom build, not OBS fork.
 
-The current product consists of:
+Product now got:
 
 - Native recorder/tray engine: `Monolith.exe`.
 - Tauri/WebView2 desktop UI sidecar: `Monolith.UI.exe`.
 - Stream Deck remote-control plugin.
-- Per-user installer and WinSparkle updater.
+- Per-user installer + WinSparkle updater.
 
 ## Process Model
 
 ### Current: single recording process plus UI sidecar
 
-`app/recorder` is the single recording process. It owns:
+`app/recorder` = single record process. Own:
 
-- Win32 tray and message-only window.
+- Win32 tray + message-only window.
 - Single-instance guard.
 - Global hotkeys.
-- Capture, audio, encode, replay, manual recording.
+- Capture, audio, encode, replay, manual record.
 - Clip catalog writes.
-- Settings reload and runtime status publishing.
+- Settings reload + runtime status publish.
 - Local JSON-RPC server.
 - WinSparkle update checks.
 
-`app/desktop-ui` is a sidecar UI process. It does not record. It reads clip
-catalogs read-only, writes settings, serves the embedded frontend, and sends
-commands/mutations to the engine over JSON-RPC.
+`app/desktop-ui` = sidecar UI process. No record. Read clip catalogs read-only, write settings, serve embedded frontend, send commands/mutations to engine over JSON-RPC.
 
 ### Future: headless engine split
 
-The long-term target remains a separate headless recording engine process with a
-UI/tray process in front of it. The split is deferred until the MVP is stable to
-avoid early IPC complexity.
+Long-term target = separate headless record engine process + UI/tray process in front. Split deferred til MVP stable, dodge early IPC mess.
 
 ## Modules
 
-- `app/recorder`: orchestrator, tray, hotkeys, app state, settings reload,
-  updater, runtime status, and command dispatch.
-- `app/desktop-ui`: Tauri v2/WebView2 host plus Preact frontend. Rust modules:
+- `app/recorder`: orchestrator, tray, hotkeys, app state, settings reload, updater, runtime status, command dispatch.
+- `app/desktop-ui`: Tauri v2/WebView2 host + Preact frontend. Rust modules:
   `server.rs`, `media.rs`, `settings_store.rs`, `clip_catalog.rs`,
   `engine_rpc.rs`, `game_catalog.rs`, `paths.rs`.
 - `libs/capture`: Windows.Graphics.Capture display capture over D3D11.
-- `libs/audio`: WASAPI loopback, microphone/input device capture,
-  process-loopback, active-game detection.
-- `libs/encoding`: FFmpeg H.264/H.265/AAC wrappers, thumbnail generation,
-  mux helpers, and `TrackMixer`.
-- `libs/replay-buffer`: encoded-packet ring buffer and keyframe-safe clip save.
-- `libs/recording`: manual recording state and live writer.
-- `libs/storage`: SQLite clip catalogs and `settings.db` key/value storage.
+- `libs/audio`: WASAPI loopback, mic/input device capture, process-loopback, active-game detect.
+- `libs/encoding`: FFmpeg H.264/H.265/AAC wrappers, thumbnail gen, mux helpers, `TrackMixer`.
+- `libs/replay-buffer`: encoded-packet ring buffer + keyframe-safe clip save.
+- `libs/recording`: manual record state + live writer.
+- `libs/storage`: SQLite clip catalogs + `settings.db` key/value store.
 - `libs/ipc`: newline-delimited JSON-RPC TCP server on `127.0.0.1:45991`.
 - `plugins/stream-deck`: Elgato SDK TypeScript plugin.
 
 ## Data Flow
 
-Video path today:
+Video path now:
 
 ```text
 Windows.Graphics.Capture frame
@@ -70,7 +61,7 @@ Windows.Graphics.Capture frame
   -> replay buffer and manual recorder
 ```
 
-Audio path today:
+Audio path now:
 
 ```text
 WASAPI source
@@ -80,37 +71,32 @@ WASAPI source
   -> replay buffer and manual recorder
 ```
 
-Data crossing replay/recording boundaries is encoded packets, not raw frames.
+Data cross replay/record boundary = encoded packets, not raw frames.
 
 ## Settings
 
 Store of record: `%LocalAppData%\Monolith\settings.db`.
 
-`config/default-config.json` is the seed schema and compiled fallback. Legacy
-`config.json` is imported once on first run when the DB is empty, then renamed
-to `config.json.imported.bak`.
+`config/default-config.json` = seed schema + compiled fallback. Legacy `config.json` imported once on first run when DB empty, then renamed to `config.json.imported.bak`.
 
 Settings apply scopes:
 
-- Output folders and hotkeys: live for future operations.
-- Replay duration: restarts/reconfigures replay buffer.
-- Replay memory budget: fixed internally at 512 MB.
-- Audio/capture/encoder changes: restart pipelines only when no manual
-  recording is active.
-- Unsafe changes during manual recording: deferred.
+- Output folders + hotkeys: live for future ops.
+- Replay duration: restart/reconfig replay buffer.
+- Replay memory budget: fixed internal at 512 MB.
+- Audio/capture/encoder change: restart pipelines only when no manual record active.
+- Unsafe change during manual record: deferred.
 
-The UI writes settings through its Rust host and calls `reload_settings` over
-engine IPC.
+UI write settings thru its Rust host, call `reload_settings` over engine IPC.
 
 ## Clip Catalogs
 
-Each output folder is self-contained:
+Each output folder self-contained:
 
-- Replay folder: `clips.db` plus `.thumbs\`.
-- Manual recording folder: `recs.db` plus `.thumbs\`.
+- Replay folder: `clips.db` + `.thumbs\`.
+- Manual record folder: `recs.db` + `.thumbs\`.
 
-The engine is the single writer. The UI opens catalogs read-only and sends all
-mutations to the engine:
+Engine = single writer. UI open catalogs read-only, send all mutations to engine:
 
 - favorite
 - hashtag add/remove
@@ -119,31 +105,21 @@ mutations to the engine:
 - thumbnail regenerate
 - delete
 
-`get_status.clip_generation` lets the UI refresh after saves without restart.
+`get_status.clip_generation` let UI refresh after save, no restart.
 
 ## Active Game And Audio
 
-Default audio mode records desktop audio to track 1 and the selected microphone
-to track 2 when available.
+Default audio mode: record desktop audio to track 1, selected mic to track 2 when got.
 
-Custom mode can route desktop, input devices, process sessions, and Active Game
-to up to six logical tracks. Tracks with two or more enabled sources use
-`TrackMixer`; single-source tracks feed an encoder directly with gain applied.
+Custom mode can route desktop, input devices, process sessions, Active Game to up to six logical tracks. Tracks with 2+ enabled sources use `TrackMixer`; single-source tracks feed encoder direct with gain applied.
 
-Active Game detection is best-effort. It uses fullscreen/foreground/audio
-signals plus configured process lists. The engine polls on a fixed 5s cadence
-and also performs foreground-change fast scans. Process-loopback can fail closed
-without breaking default recording.
+Active Game detect = best-effort. Use fullscreen/foreground/audio signals + configured process lists. Engine poll on fixed 5s cadence + also do foreground-change fast scans. Process-loopback can fail closed, no break default record.
 
 ## UI Architecture
 
-The UI uses a system WebView2 window through Tauri v2. This exception applies
-only to `app/desktop-ui`; the recording engine remains native and does not embed
-a browser runtime.
+UI use system WebView2 window thru Tauri v2. This exception apply only to `app/desktop-ui`; record engine stay native, no embed browser runtime.
 
-The Tauri host runs a loopback HTTP server and navigates the WebView to
-`http://127.0.0.1:<port>/`. This preserves normal frontend `fetch()`, media,
-thumbnail, and SSE routes without rewriting components to Tauri `invoke()`.
+Tauri host run loopback HTTP server, navigate WebView to `http://127.0.0.1:<port>/`. Keep normal frontend `fetch()`, media, thumbnail, SSE routes, no rewrite components to Tauri `invoke()`.
 
 ## Runtime Paths
 
@@ -162,10 +138,10 @@ Current high-cost area:
 GPU texture -> CPU staging -> BGRA vector -> sws_scale/color conversion
 ```
 
-Priority performance work:
+Priority perf work:
 
 1. GPU downscale before CPU readback.
 2. Output-sized staging texture.
 3. Explicit color range/matrix in CPU path.
 4. D3D11/NV12 hardware encoder path.
-5. AVPacket lifetime/ref-counting improvements in mux path.
+5. AVPacket lifetime/ref-counting improve in mux path.
