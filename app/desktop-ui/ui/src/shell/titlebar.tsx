@@ -3,6 +3,7 @@ import {
   exeIconUrl,
   fetchEngineStatus,
   fetchGameArtwork,
+  setSelectedGame,
   type EngineStatus,
   type GameArtwork,
 } from "../lib/api.ts";
@@ -144,8 +145,11 @@ export function Titlebar({ view }: Props) {
 
   const mode = String(config?.capture_mode?.mode ?? "always");
   const autoRecord = Boolean(config?.capture_mode?.auto_record ?? false);
+  const clipWithoutGame = Boolean(config?.capture_mode?.clip_without_game ?? false);
   const selectedMonitor = String(config?.capture?.monitor_device ?? "");
   const monitors = runtime.monitors ?? [];
+  const candidates = runtime.game_candidates ?? [];
+  const selectedGamePid = runtime.selected_game_pid ?? 0;
 
   const connected = engine.connected !== false;
   const recording = !!engine.recording;
@@ -180,6 +184,18 @@ export function Titlebar({ view }: Props) {
     persist((draft) => {
       draft.capture_mode.auto_record = value;
     });
+  };
+
+  const setClipWithoutGame = (value: boolean) => {
+    persist((draft) => {
+      draft.capture_mode.clip_without_game = value;
+    });
+  };
+
+  // Selecting a game is engine runtime state (not settings): it takes effect
+  // immediately via IPC and is reflected on the next runtime-status poll.
+  const pickGame = (exe: string) => {
+    void setSelectedGame(exe);
   };
 
   const onMouseDown = (e: MouseEvent) => {
@@ -248,12 +264,41 @@ export function Titlebar({ view }: Props) {
               {mode === "game_only"
                 ? (
                   <div class="mode-body">
+                    {candidates.length > 1 && (
+                      <div class="game-picker">
+                        <div class="mode-label">Recording</div>
+                        <div class="game-pick-list">
+                          {candidates.map((c) => (
+                            <button
+                              key={c.process_id}
+                              class={`game-pick ${c.process_id === selectedGamePid ? "active" : ""}`}
+                              onClick={() => pickGame(c.process_name)}
+                              title={appLabel(c.display_name, c.process_name)}
+                            >
+                              {appLabel(c.display_name, c.process_name)}
+                            </button>
+                          ))}
+                          <button class="game-pick auto" onClick={() => pickGame("auto")} title="Automatic (most recently focused)">
+                            Auto
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <div class="mode-row">
                       <div>
                         <div class="mode-label">Auto Record</div>
                         <div class="mode-help">Starts when a supported game appears and stops when it exits.</div>
                       </div>
                       <button class={`toggle ${autoRecord ? "on" : ""}`} onClick={() => setAutoRecord(!autoRecord)} title="Auto Record">
+                        <span class="toggle-knob" />
+                      </button>
+                    </div>
+                    <div class="mode-row">
+                      <div>
+                        <div class="mode-label">Clip Without Game</div>
+                        <div class="mode-help">Keep clipping the full screen even when no game is detected.</div>
+                      </div>
+                      <button class={`toggle ${clipWithoutGame ? "on" : ""}`} onClick={() => setClipWithoutGame(!clipWithoutGame)} title="Clip Without Game">
                         <span class="toggle-knob" />
                       </button>
                     </div>

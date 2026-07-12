@@ -581,25 +581,47 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
       return (
         <Section
           title="Game Detection"
-          description="Detection is automatic (Discord + running processes) and runs every 5 seconds."
+          description="Games are matched against the Discord detectable list (cached locally) and checked every 3 seconds."
         >
           <Field
             label="Capture mode"
-            help="Only-while-gaming stops the buffer when idle; never stops a recording."
+            help="Game records only the detected game's window; Screen records the full monitor. Detection runs in both."
             control={
-              <Select
+              <Segmented
                 value={String(val("capture_mode.mode") ?? "always")}
                 options={[
-                  { value: "always", label: "Always capture" },
-                  { value: "game_only", label: "Only while a game is running" },
+                  { value: "game_only", label: "Game" },
+                  { value: "always", label: "Screen" },
                 ]}
                 onChange={(v) => update("capture_mode.mode", v)}
               />
             }
           />
-          {val("capture_mode.mode") === "game_only" && (
+          <Field
+            label="Auto record"
+            help="Start a recording when a game launches and stop it when the game exits."
+            control={
+              <Toggle
+                checked={!!val("capture_mode.auto_record")}
+                onChange={(v) => update("capture_mode.auto_record", v)}
+              />
+            }
+          />
+          <Field
+            label="Clip without a game"
+            help="Keep the replay buffer active with no game detected (falls back to full-screen in Game mode)."
+            control={
+              <Toggle
+                checked={!!val("capture_mode.clip_without_game")}
+                onChange={(v) => update("capture_mode.clip_without_game", v)}
+              />
+            }
+          />
+          {val("capture_mode.mode") === "game_only" &&
+            !val("capture_mode.clip_without_game") && (
             <Field
               label="Idle timeout (seconds)"
+              help="How long to keep capturing after the last game closes before disabling the buffer."
               control={
                 <TextInput
                   type="number"

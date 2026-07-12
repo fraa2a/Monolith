@@ -91,6 +91,25 @@ pub async fn recorder_command(method: String) -> Result<(), String> {
     }
 }
 
+// Selects which detected game the engine should record/clip when several are
+// running. `exe` is the executable basename ("" or "auto" clears the selection).
+#[tauri::command]
+pub async fn set_selected_game(exe: String, pid: Option<u32>) -> Result<(), String> {
+    let params = serde_json::json!({ "exe": exe, "pid": pid.unwrap_or(0) });
+    let result = blocking(move || engine_rpc::mutate_clip("set_selected_game", params)).await;
+    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        Ok(())
+    } else {
+        let err = result
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("engine error")
+            .to_string();
+        eprintln!("[set_selected_game] failed: {err}");
+        Err(err)
+    }
+}
+
 // ── Clip mutations (direct SQLite writes; work without the engine) ───────
 
 #[tauri::command]

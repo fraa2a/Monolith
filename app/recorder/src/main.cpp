@@ -418,6 +418,11 @@ static void pacer_release_buffers()
     g_pacer_shared.frame_id = 0;
 }
 
+// Capture target window for game_only mode; read by the pacer thread for the
+// frozen-frame (minimized) handling. nullptr = full-screen/monitor capture.
+// Declared here (before the pacer) since the pacer thread reads it.
+static std::atomic<HWND> g_capture_target_hwnd{ nullptr };
+
 static DWORD WINAPI pacer_thread_proc(LPVOID)
 {
     std::vector<uint8_t> local_bgra;
@@ -836,10 +841,6 @@ static uint32_t                               g_recording_game_pid = 0; // pid o
 // thread. Empty exe = auto (most-recently-focused wins).
 static std::mutex  g_selected_game_mutex;
 static std::string g_selected_game_exe;   // lowercased exe basename
-
-// Capture target window for game_only mode; read by the pacer thread for the
-// frozen-frame (minimized) handling. nullptr = full-screen/monitor capture.
-static std::atomic<HWND> g_capture_target_hwnd{ nullptr };
 
 // Auto-record engine-startup grace: when games are already running as the engine
 // starts, wait for the user to foreground one (up to 60s) before auto-recording.
@@ -1914,8 +1915,12 @@ static void poll_active_game()
 
     const audio::GameCandidateInfo* target = resolve_effective_target(candidates);
     g_effective_game_pid = target ? target->process.process_id : 0;
-    g_capture_target_hwnd.store(target ? target->capture_window : nullptr,
-                                std::memory_order_relaxed);
+    // Only the game_only window-capture path uses this (capture target + pacer
+    // frozen-frame). In screen mode we capture the whole monitor, so leave it
+    // null — a minimized game must NOT freeze full-screen capture.
+    g_capture_target_hwnd.store(
+        (target && g_settings.capture_mode == "game_only") ? target->capture_window : nullptr,
+        std::memory_order_relaxed);
 
     // Build the effective ActiveGameResult and drive the audio capture toward it.
     audio::ActiveGameResult eff;
@@ -2080,6 +2085,26 @@ static void media_start(HWND hwnd)
     std::vector<MonitorEntry> monitors = enumerate_monitors();
     std::wstring used_device;
     HMONITOR hmon = monitor_from_settings(monitors, &used_device);
+
+    // Screen-mode auto-follow: with no manual monitor pin, capture the screen the
+    // detected game is on. A manual pick (monitor_device set) always wins and is
+    // already returned by monitor_from_settings above.
+    if (g_settings.capture_mode == "always" && g_settings.monitor_device.empty() &&
+        g_effective_game_pid != 0) {
+        HWND gw = main_window_for_process(g_effective_game_pid);
+        if (gw) {
+            HMONITOR gm = MonitorFromWindow(gw, MONITOR_DEFAULTTONEAREST);
+            for (const auto& entry : monitors) {
+                if (entry.hmon == gm) {
+                    hmon = gm;
+                    used_device = entry.info.device;
+                    log_msg("capture", "screen mode: following detected game's monitor");
+                    break;
+                }
+            }
+        }
+    }
+
     log_path("capture", "capture monitor: ",
              used_device.empty() ? L"(primary)" : used_device);
 

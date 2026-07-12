@@ -308,6 +308,26 @@ body {
   font-family: var(--mono);
   font-size: 11px;
 }
+.mode-row + .mode-row { margin-top: 8px; }
+.game-picker { margin-bottom: 8px; }
+.game-picker .mode-label { margin-bottom: 6px; }
+.game-pick-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.game-pick {
+  padding: 6px 10px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: var(--r-sm);
+  background: rgba(255,255,255,.035);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.game-pick:hover { background: rgba(255,255,255,.08); }
+.game-pick.active { border-color: var(--accent, #6ea8fe); background: rgba(110,168,254,.16); }
+.game-pick.auto { font-style: italic; color: var(--text-dim); }
 .monitor-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(134px, 1fr));

@@ -62,6 +62,7 @@ fn main() {
             commands::distinct_hashtags,
             commands::engine_status,
             commands::recorder_command,
+            commands::set_selected_game,
             commands::clip_set_duration,
             commands::thumb_capture,
             commands::clip_set_favorite,

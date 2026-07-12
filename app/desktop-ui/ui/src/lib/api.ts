@@ -168,6 +168,12 @@ export function recorderCommand(method: RecorderCommand): Promise<{ ok: boolean;
   return ok(invoke("recorder_command", { method }));
 }
 
+// Picks which detected game the engine records/clips when several are running.
+// Pass the executable basename, or "" / "auto" to return to automatic selection.
+export function setSelectedGame(exe: string): Promise<{ ok: boolean; error?: string }> {
+  return ok(invoke("set_selected_game", { exe, pid: null }));
+}
+
 // Native icon extracted from an executable, as a base64 data: URL (null when
 // the file has no icon). Preferred over remote artwork for status backgrounds.
 // `processName` is the cache key on the Rust side (survives reinstalls/path

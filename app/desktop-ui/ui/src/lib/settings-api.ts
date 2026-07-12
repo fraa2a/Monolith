@@ -54,6 +54,18 @@ export interface RuntimeStatus {
     poll_interval_ms?: number;
     fast_scan_enabled?: boolean;
   };
+  // All DB-matched games running right now, for the multi-game picker.
+  game_candidates?: {
+    process_id: number;
+    process_name: string;
+    display_name: string;
+    discord_app_id?: string;
+    executable_path?: string;
+    foreground?: boolean;
+    fullscreen?: boolean;
+  }[];
+  // Which candidate the engine is currently recording/clipping (0 = auto).
+  selected_game_pid?: number;
 }
 
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {
