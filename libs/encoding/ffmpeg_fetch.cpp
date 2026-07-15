@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shlobj.h>
 #include <winhttp.h>
 #include <bcrypt.h>
 
