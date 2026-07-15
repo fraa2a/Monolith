@@ -341,6 +341,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
     doc["video_encoder"]["fps"] = config.video_fps;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
+    doc["video_encoder"]["ffmpeg_path"] = wide_to_utf8(config.ffmpeg_path);
     // Legacy encoder keys scrubbed from older configs.
     if (doc.contains("video_encoder") && doc["video_encoder"].is_object()) {
         doc["video_encoder"].erase("backend");
@@ -461,6 +462,7 @@ Config config_from_json(
         config.video_fps = 60;
 
     config.extra_ffmpeg_options = utf8_at(doc, "video_encoder", "extra_ffmpeg_options", "");
+    config.ffmpeg_path = utf8_to_wide(utf8_at(doc, "video_encoder", "ffmpeg_path", ""));
 
     config.hotkey_save_replay = utf8_at(doc, "hotkeys", "save_replay", "Ctrl+Shift+F8");
     config.hotkey_recording_start = utf8_at(doc, "hotkeys", "recording_start", "Ctrl+Shift+F9");

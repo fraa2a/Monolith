@@ -86,6 +86,9 @@ struct Config {
     int video_fps = 60;                   // presets 24/30/60/120/144
     std::string scaling_filter = "bilinear"; // fixed to bilinear (UI selector removed)
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
+    // Optional explicit path to ffmpeg.exe. Empty = auto-locate (bundled next to
+    // the executable, then system PATH). Used by the external-encoder path.
+    std::wstring ffmpeg_path;
 
     // Auto-update (applied live via WinSparkle on settings reload).
     bool update_auto_check = true;
