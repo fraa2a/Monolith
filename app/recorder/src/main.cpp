@@ -288,7 +288,7 @@ static std::wstring          g_rec_path; // current recording output path
 static std::mutex            g_rec_path_mutex;
 
 // Audio track params planned for the current session, shared by both engines.
-static std::vector<encoding::SegmentReplay::AudioTrack> g_audio_track_plan;
+static std::vector<encoding::SegmentReplayConfig::AudioTrack> g_audio_track_plan;
 static std::mutex g_audio_track_plan_mutex;
 
 static int g_enc_w = 0; // configured encoder width (even-aligned)
@@ -759,7 +759,7 @@ static std::string resolve_active_encoder()
     return r.empty() ? std::string("libx264") : r;
 }
 
-static std::vector<encoding::SegmentReplay::AudioTrack> current_audio_track_plan()
+static std::vector<encoding::SegmentReplayConfig::AudioTrack> current_audio_track_plan()
 {
     std::lock_guard lk(g_audio_track_plan_mutex);
     return g_audio_track_plan;
@@ -829,7 +829,13 @@ static bool recording_engine_start()
     cfg.fps           = g_settings.video_fps;
     cfg.bitrate_kbps  = g_settings.video_bitrate_kbps;
     cfg.video_encoder = resolve_active_encoder();
-    cfg.audio_tracks  = current_audio_track_plan();
+    for (const auto& t : current_audio_track_plan()) {
+        encoding::RecordingProcessConfig::AudioTrack rt;
+        rt.stream_index = t.stream_index;
+        rt.sample_rate  = t.sample_rate;
+        rt.channels     = t.channels;
+        cfg.audio_tracks.push_back(rt);
+    }
 
     return g_recording_process.start(cfg,
         [](const std::string& l) { log_msg("recording-ffmpeg", l.c_str()); });
@@ -1537,10 +1543,10 @@ static void release_routes(const std::vector<AudioRoute>& routes)
 // 48k/stereo format.
 static void publish_audio_params()
 {
-    std::vector<encoding::SegmentReplay::AudioTrack> plan;
+    std::vector<encoding::SegmentReplayConfig::AudioTrack> plan;
     for (int track = 1; track <= 6; ++track) {
         if (!g_track_mixers[track]) continue;
-        encoding::SegmentReplay::AudioTrack t;
+        encoding::SegmentReplayConfig::AudioTrack t;
         t.stream_index = track;
         t.sample_rate  = 48000;
         t.channels     = 2;
