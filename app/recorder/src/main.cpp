@@ -871,6 +871,27 @@ static std::string exe_key_of(const std::wstring& process_name)
     return s;
 }
 
+// ── Replay/recording mutual exclusion ───────────────────────────────────────
+// Unless the user opted into concurrent capture, a manual/auto recording
+// temporarily suspends the replay buffer so only one encoder runs. Suspending
+// clears the ring (its retained history is meaningless while paused) and the
+// gate stops feeding it; restoring re-arms the gate for future frames.
+
+static void suspend_replay_for_recording()
+{
+    if (g_settings.allow_concurrent_capture) return;
+    if (g_replay_suspended_for_recording.exchange(true)) return;
+    g_replay.clear();
+    log_msg("replay", "replay buffer suspended while recording (concurrent capture off)");
+}
+
+static void restore_replay_after_recording()
+{
+    if (!g_replay_suspended_for_recording.exchange(false)) return;
+    if (g_replay_enabled.load(std::memory_order_relaxed))
+        log_msg("replay", "replay buffer resumed after recording");
+}
+
 // Starts the auto recording for the current effective target, if allowed. Returns
 // true when a recording was started.
 static bool auto_record_start(HWND hwnd)
@@ -909,27 +930,6 @@ static void auto_record_stop()
     restore_replay_after_recording();
     g_auto_recording_active = false;
     g_recording_game_pid    = 0;
-}
-
-// ── Replay/recording mutual exclusion ───────────────────────────────────────
-// Unless the user opted into concurrent capture, a manual/auto recording
-// temporarily suspends the replay buffer so only one encoder runs. Suspending
-// clears the ring (its retained history is meaningless while paused) and the
-// gate stops feeding it; restoring re-arms the gate for future frames.
-
-static void suspend_replay_for_recording()
-{
-    if (g_settings.allow_concurrent_capture) return;
-    if (g_replay_suspended_for_recording.exchange(true)) return;
-    g_replay.clear();
-    log_msg("replay", "replay buffer suspended while recording (concurrent capture off)");
-}
-
-static void restore_replay_after_recording()
-{
-    if (!g_replay_suspended_for_recording.exchange(false)) return;
-    if (g_replay_enabled.load(std::memory_order_relaxed))
-        log_msg("replay", "replay buffer resumed after recording");
 }
 
 // Runs the game_only capture pipeline + auto-record state machine from the shared

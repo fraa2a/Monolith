@@ -25,17 +25,6 @@ static std::wstring utf8_to_wide(const std::string& s)
     return w;
 }
 
-static std::string wide_to_utf8(const std::wstring& w)
-{
-    if (w.empty()) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(),
-                                nullptr, 0, nullptr, nullptr);
-    std::string s(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(),
-                        s.data(), n, nullptr, nullptr);
-    return s;
-}
-
 // ── Command-line quoting (CommandLineToArgvW rules) ─────────────────────────────
 
 // Quotes one argument per the Windows CRT / CommandLineToArgvW convention:
