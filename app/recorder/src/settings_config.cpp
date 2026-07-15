@@ -340,12 +340,12 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["video_encoder"]["codec"] = config.encoder_codec;
     doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
     doc["video_encoder"]["fps"] = config.video_fps;
-    doc["video_encoder"]["scaling_filter"] = config.scaling_filter;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
     // Legacy encoder keys scrubbed from older configs.
     if (doc.contains("video_encoder") && doc["video_encoder"].is_object()) {
         doc["video_encoder"].erase("backend");
         doc["video_encoder"].erase("quality");
+        doc["video_encoder"].erase("scaling_filter"); // scaler is now fixed to bilinear
     }
     doc["audio"]["mode"] = config.audio_mode;
     doc["audio"]["primary_microphone_device_id"] = wide_to_utf8(config.primary_microphone_device_id);
@@ -452,7 +452,8 @@ Config config_from_json(
     config.video_bitrate_kbps = int_at(doc, "video_encoder", "bitrate_kbps", 20000);
     if (config.video_bitrate_kbps < 1000 || config.video_bitrate_kbps > 200000)
         config.video_bitrate_kbps = 20000;
-    config.scaling_filter = utf8_at(doc, "video_encoder", "scaling_filter", "bilinear");
+    // Scaling filter is fixed to bilinear (UI selector removed); keep the struct
+    // default, don't read it back from config.
 
     config.video_fps = int_at(doc, "video_encoder", "fps", 60);
     if (config.video_fps != 24 && config.video_fps != 30 && config.video_fps != 60 &&

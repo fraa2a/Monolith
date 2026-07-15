@@ -1049,7 +1049,6 @@ static bool capture_encoder_config_changed(const settings::Config& a,
         || a.encoder_codec != b.encoder_codec
         || a.video_bitrate_kbps != b.video_bitrate_kbps
         || a.video_fps != b.video_fps
-        || a.scaling_filter != b.scaling_filter
         || a.extra_ffmpeg_options != b.extra_ffmpeg_options;
 }
 
@@ -2299,7 +2298,7 @@ static void media_start(HWND hwnd)
                 vcfg.fps               = g_settings.video_fps;
                 vcfg.quality           = 0; // 0 = CBR
                 vcfg.bitrate           = static_cast<int64_t>(g_settings.video_bitrate_kbps) * 1000;
-                vcfg.scaling_filter    = g_settings.scaling_filter;
+                vcfg.scaling_filter    = "bilinear"; // fixed; scaler choice removed from UI
                 vcfg.preferred_encoder = resolved; // "" → probe order fallback
                 vcfg.extra_options     = g_settings.extra_ffmpeg_options;
 

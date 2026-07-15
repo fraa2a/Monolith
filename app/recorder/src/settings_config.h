@@ -84,7 +84,7 @@ struct Config {
     std::string encoder_codec  = "h264";  // "h264" | "h265"
     int video_bitrate_kbps = 20000;       // CBR target, clamped 1000–200000
     int video_fps = 60;                   // presets 24/30/60/120/144
-    std::string scaling_filter = "bilinear"; // "bilinear" | "bicubic" | "lanczos"
+    std::string scaling_filter = "bilinear"; // fixed to bilinear (UI selector removed)
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
 
     // Auto-update (applied live via WinSparkle on settings reload).

@@ -383,6 +383,8 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
       const mon = (rs.monitors ?? []).find((m) => m.device === selDev) ??
         (rs.monitors ?? []).find((m) => m.primary);
       const nativeH = mon?.height ?? 0;
+      // Preset list kept deliberately simple (native + fixed heights). Options
+      // above the monitor's native height are hidden to prevent upscaling.
       const resOpts = [{ value: "source", label: "Match source (native)" }].concat(
         [480, 720, 1080, 1440]
           .filter((h) => nativeH === 0 || h < nativeH)
@@ -510,21 +512,6 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
                   value={String(val("video_encoder.fps") ?? 60)}
                   options={FPS_PRESETS.map((f) => ({ value: String(f), label: `${f} FPS` }))}
                   onChange={(v) => update("video_encoder.fps", Number(v))}
-                />
-              }
-            />
-            <Field
-              label="Scaling filter"
-              help="Used only when the output resolution differs from native."
-              control={
-                <Select
-                  value={String(val("video_encoder.scaling_filter") ?? "bilinear")}
-                  options={[
-                    { value: "bilinear", label: "Bilinear" },
-                    { value: "bicubic", label: "Bicubic" },
-                    { value: "lanczos", label: "Lanczos" },
-                  ]}
-                  onChange={(v) => update("video_encoder.scaling_filter", v)}
                 />
               }
             />
