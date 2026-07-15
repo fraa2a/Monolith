@@ -19,11 +19,17 @@
 
 namespace encoding {
 
+// Directory where an auto-downloaded ffmpeg lives:
+// <localAppData>\Monolith\ffmpeg\bin. Returned as an absolute path (empty if
+// %LocalAppData% can't be resolved). locate_ffmpeg searches here too.
+std::wstring ffmpeg_download_dir();
+
 // Resolves a usable ffmpeg.exe. Order:
 //   1. `configured` — explicit user override (settings), if set and it runs.
 //   2. Bundled next to the running executable: <exe_dir>\ffmpeg.exe, then
 //      <exe_dir>\ffmpeg\ffmpeg.exe, then <exe_dir>\bin\ffmpeg.exe.
-//   3. System PATH ("ffmpeg"), resolved to an absolute path.
+//   3. Auto-downloaded copy under ffmpeg_download_dir().
+//   4. System PATH ("ffmpeg"), resolved to an absolute path.
 // Each candidate is verified by actually running it (`-version`). Returns the
 // resolved absolute path, or an empty string if nothing runnable was found.
 std::wstring locate_ffmpeg(const std::wstring& configured);
@@ -31,6 +37,14 @@ std::wstring locate_ffmpeg(const std::wstring& configured);
 // Same resolution for ffprobe (used by metadata/duration probing). Bundled
 // name is ffprobe.exe; falls through to PATH.
 std::wstring locate_ffprobe(const std::wstring& configured);
+
+// Downloads a trusted Windows FFmpeg build (gyan.dev release-essentials),
+// verifies its SHA-256 against the upstream .sha256, extracts ffmpeg.exe +
+// ffprobe.exe into ffmpeg_download_dir(), and returns true on success. Skips
+// the work and returns true immediately if a runnable ffmpeg is already present
+// there. Blocking + network + disk I/O — call from a background thread only.
+// `progress` (optional) receives short human-readable status lines.
+bool ensure_ffmpeg_downloaded(std::function<void(const std::string&)> progress = nullptr);
 
 // Verifies a binary launches and self-identifies (runs "<exe> -version" and
 // checks the exit code and banner). Safe to call on an untrusted path.

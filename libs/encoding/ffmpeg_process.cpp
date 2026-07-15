@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cctype>
@@ -114,6 +115,18 @@ bool verify_ffmpeg_binary(const std::wstring& exe, const char* expect_token)
 
 // ── locate_ffmpeg / locate_ffprobe ──────────────────────────────────────────────
 
+std::wstring ffmpeg_download_dir()
+{
+    PWSTR raw = nullptr;
+    std::wstring base;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT,
+                                       nullptr, &raw)) && raw)
+        base = raw;
+    if (raw) CoTaskMemFree(raw);
+    if (base.empty()) return {};
+    return base + L"\\Monolith\\ffmpeg\\bin";
+}
+
 static std::wstring locate_tool(const std::wstring& configured,
                                 const wchar_t*       exe_name,
                                 const char*          expect_token)
@@ -137,7 +150,15 @@ static std::wstring locate_tool(const std::wstring& configured,
         }
     }
 
-    // 3. System PATH — let verify run the bare name; if it works, resolve to an
+    // 3. Auto-downloaded copy under %LocalAppData%\Monolith\ffmpeg\bin.
+    std::wstring dl = ffmpeg_download_dir();
+    if (!dl.empty()) {
+        std::wstring c = dl + L"\\" + exe_name;
+        if (file_exists(c) && verify_ffmpeg_binary(c, expect_token))
+            return c;
+    }
+
+    // 4. System PATH — let verify run the bare name; if it works, resolve to an
     // absolute path via SearchPath for a stable command line.
     std::wstring bare(exe_name);
     if (verify_ffmpeg_binary(bare, expect_token)) {

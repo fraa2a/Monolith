@@ -3337,6 +3337,17 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     // the tray/UI loop never blocks on the network or DB.
     gamelist::set_log_sink([](const char* tag, const char* msg) { log_error(tag, msg); });
     gamelist::init(app_data_dir());
+    // FFmpeg is required for all encoding and is not bundled. Kick a background
+    // download on first run (no-op if already present next to the exe, in the
+    // download dir, or on PATH). The tray/UI loop never blocks on it; media_start
+    // re-resolves ffmpeg each time the pipeline (re)starts, so a clip/recording
+    // triggered before the download finishes simply retries once it's ready.
+    if (encoding::locate_ffmpeg(g_settings.ffmpeg_path).empty()) {
+        std::thread([]() {
+            encoding::ensure_ffmpeg_downloaded(
+                [](const std::string& s) { log_msg("ffmpeg-fetch", s.c_str()); });
+        }).detach();
+    }
     reconcile_catalogs(); // self-heal clip catalogs on a background thread
     updater::init(g_settings.update_auto_check);
     if (g_settings.update_auto_check)

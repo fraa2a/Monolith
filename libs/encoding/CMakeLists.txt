@@ -1,6 +1,7 @@
 add_library(encoding STATIC
     encoding.cpp
     ffmpeg_process.cpp
+    ffmpeg_fetch.cpp
     segment_replay.cpp
     recording_process.cpp
     mux_common.cpp
@@ -22,7 +23,7 @@ target_compile_definitions(encoding
 
 find_package(FFMPEG REQUIRED)
 target_include_directories(encoding PRIVATE ${FFMPEG_INCLUDE_DIRS})
-target_link_libraries(encoding PRIVATE ${FFMPEG_LIBRARIES} platform_win)
+target_link_libraries(encoding PRIVATE ${FFMPEG_LIBRARIES} platform_win winhttp bcrypt shell32)
 
 if(MSVC)
     target_compile_options(encoding PRIVATE /W4 /permissive-)
