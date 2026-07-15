@@ -157,7 +157,7 @@ jobs:
       - name: Build Stream Deck plugin package
         shell: pwsh
         working-directory: plugins/stream-deck
-        run: .\scripts\package-plugin.ps1 -Version "${{ steps.version.outputs.version }}"
+        run: .\scripts\package-plugin.ps1 -Version "${{ steps.version.outputs.numeric }}"
 
       - name: Verify build output
         shell: pwsh
@@ -167,7 +167,7 @@ jobs:
             "build/app/recorder/Release/ui/Monolith.UI.exe",
             "build/app/recorder/Release/WinSparkle.dll",
             "build/app/recorder/Release/sqlite3.dll",
-            "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin"
+            "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.numeric }}.streamDeckPlugin"
           )) {
             if (-not (Test-Path $f)) {
               Write-Error "Build output not found: $f"
