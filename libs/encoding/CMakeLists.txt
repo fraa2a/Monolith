@@ -1,6 +1,7 @@
 add_library(encoding STATIC
     encoding.cpp
     ffmpeg_process.cpp
+    segment_replay.cpp
     mux_common.cpp
     thumbnail.cpp
 )
