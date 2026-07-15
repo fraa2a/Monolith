@@ -66,9 +66,11 @@ Name: "startupicon"; Description: "Start {#MonolithName} when you sign in"; Grou
 ; root output directory cannot be bundled accidentally.
 Source: "{#PayloadDir}\Monolith.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\WinSparkle.dll"; DestDir: "{app}"; Flags: ignoreversion
+; FFmpeg runtime DLLs (LGPL avcodec/avformat/avutil/swscale/swresample). The
+; GPL x264/x265 (lib*.dll) are no longer linked in-process — encode/mux run in
+; an external ffmpeg.exe — so only av*/sw* remain.
 Source: "{#PayloadDir}\av*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\sw*.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\lib*.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; SQLite (vcpkg, dynamically linked by the engine for settings.db + clip DBs).
 Source: "{#PayloadDir}\sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Self-contained Tauri UI (Monolith.UI.exe) lives in a subfolder.
