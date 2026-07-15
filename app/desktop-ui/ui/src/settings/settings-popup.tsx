@@ -82,6 +82,28 @@ function setPath(obj: any, path: string, value: any): any {
   return copy;
 }
 
+// Maps a concrete FFmpeg encoder name to a human-readable vendor + codec, so the
+// UI can show "NVIDIA NVENC · H.265" instead of a bare codec that hides whether
+// encoding runs in software (x264/OpenH264) or on which GPU vendor. Covers both
+// the current in-process encoder set and the post-refactor names.
+function encoderLabel(
+  raw: string | undefined,
+): { vendor: string; codec: string; kind: "hw" | "sw" } | null {
+  if (!raw) return null;
+  const map: Record<string, { vendor: string; codec: string; kind: "hw" | "sw" }> = {
+    h264_nvenc: { vendor: "NVIDIA NVENC", codec: "H.264", kind: "hw" },
+    hevc_nvenc: { vendor: "NVIDIA NVENC", codec: "H.265", kind: "hw" },
+    h264_amf: { vendor: "AMD AMF", codec: "H.264", kind: "hw" },
+    hevc_amf: { vendor: "AMD AMF", codec: "H.265", kind: "hw" },
+    h264_qsv: { vendor: "Intel QuickSync", codec: "H.264", kind: "hw" },
+    hevc_qsv: { vendor: "Intel QuickSync", codec: "H.265", kind: "hw" },
+    libx264: { vendor: "Software (x264)", codec: "H.264", kind: "sw" },
+    libx265: { vendor: "Software (x265)", codec: "H.265", kind: "sw" },
+    libopenh264: { vendor: "Software (OpenH264)", codec: "H.264", kind: "sw" },
+  };
+  return map[raw] ?? { vendor: raw, codec: "", kind: "sw" };
+}
+
 function findHotkeyConflicts(entries: { label: string; value: string }[]): Set<string> {
   const byNormalized = new Map<string, string[]>();
   for (const { label, value } of entries) {
@@ -472,12 +494,16 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
         label: `${mbps} Mbps${mbps >= 70 ? "  •  high disk usage" : ""}`,
         danger: mbps >= 70,
       }));
+      const active = encoderLabel(rs.active_encoder);
+      const activeText = active
+        ? `${active.vendor}${active.codec ? ` · ${active.codec}` : ""}`
+        : "resolving…";
       return (
         <>
           <Section title="Encoder" description="Pick where encoding runs, then the codec.">
             <Field
               label="Encoder device"
-              help={rs.active_encoder ? `Active: ${rs.active_encoder}` : "GPU is faster; CPU is more compatible."}
+              help="GPU is faster; CPU is more compatible."
               control={
                 <Segmented
                   value={hasHwEncoder ? device : "cpu"}
@@ -491,6 +517,11 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
               control={
                 <Select value={codec} options={codecOpts} onChange={(v) => update("video_encoder.codec", v)} />
               }
+            />
+            <Field
+              label="Encoding with"
+              help="The actual encoder resolved for your device + codec on this machine."
+              control={<span class="set-field-static">{activeText}</span>}
             />
           </Section>
 
