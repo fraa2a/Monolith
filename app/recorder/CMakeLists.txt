@@ -66,8 +66,6 @@ target_link_libraries(monolith
         audio
         encoding
         storage
-        replay_buffer
-        recording
         ipc
         nlohmann_json::nlohmann_json
         "${WINSPARKLE_LIBRARY}"

@@ -30,11 +30,17 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $ver = $tag.TrimStart("v")
-          if ($ver -notmatch '^\d+\.\d+\.\d+$') {
-            Write-Error "Tag must look like vX.Y.Z, got: $tag"
+          # Accept X.Y.Z (stable) or X.Y.Z-rcN / -betaN etc. (pre-release).
+          if ($ver -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
+            Write-Error "Tag must look like vX.Y.Z or vX.Y.Z-rcN, got: $tag"
             exit 1
           }
+          $isPre = if ($ver -match '-') { "true" } else { "false" }
+          # Inno Setup's AppVersion wants a plain numeric X.Y.Z; strip any suffix.
+          $numeric = ($ver -split '-')[0]
           "version=$ver" >> $env:GITHUB_OUTPUT
+          "numeric=$numeric" >> $env:GITHUB_OUTPUT
+          "prerelease=$isPre" >> $env:GITHUB_OUTPUT
 
       # Pinned to the builtin-baseline commit in vcpkg.json so dependency
       # versions (FFmpeg DLL ABIs etc.) are reproducible across CI runs.
@@ -129,7 +135,7 @@ jobs:
       - name: Configure
         shell: pwsh
         env:
-          MONOLITH_VERSION: ${{ steps.version.outputs.version }}
+          MONOLITH_VERSION: ${{ steps.version.outputs.numeric }}
         run: |
           cmake -S . -B build `
             -G "Ninja Multi-Config" `
@@ -151,7 +157,7 @@ jobs:
       - name: Build Stream Deck plugin package
         shell: pwsh
         working-directory: plugins/stream-deck
-        run: .\scripts\package-plugin.ps1 -Version "${{ steps.version.outputs.version }}"
+        run: .\scripts\package-plugin.ps1 -Version "${{ steps.version.outputs.numeric }}"
 
       - name: Verify build output
         shell: pwsh
@@ -161,7 +167,7 @@ jobs:
             "build/app/recorder/Release/ui/Monolith.UI.exe",
             "build/app/recorder/Release/WinSparkle.dll",
             "build/app/recorder/Release/sqlite3.dll",
-            "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin"
+            "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.numeric }}.streamDeckPlugin"
           )) {
             if (-not (Test-Path $f)) {
               Write-Error "Build output not found: $f"
@@ -177,13 +183,15 @@ jobs:
         shell: pwsh
         run: |
           $ver = "${{ steps.version.outputs.version }}"
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMonolithVersion=$ver installer\monolith.iss
+          $num = "${{ steps.version.outputs.numeric }}"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMonolithVersion=$num /DMonolithFullVersion=$ver installer\monolith.iss
           if (-not (Test-Path "installer/Output/MonolithSetup-$ver.exe")) {
             Write-Error "Installer was not produced"
             exit 1
           }
 
       - name: Sign installer and generate appcast
+        if: steps.version.outputs.prerelease != 'true'
         shell: pwsh
         env:
           WINSPARKLE_ED_PRIVATE_KEY: ${{ secrets.WINSPARKLE_ED_PRIVATE_KEY }}
@@ -197,7 +205,6 @@ jobs:
             -PrivateKeyPem $env:WINSPARKLE_ED_PRIVATE_KEY `
             -OutputPath appcast.xml
 
-      # GPLv3: the public release must offer the corresponding source.
       - name: Create source archive
         shell: pwsh
         run: |
@@ -209,8 +216,9 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Monolith ${{ steps.version.outputs.version }}
-          make_latest: true
-          fail_on_unmatched_files: true
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.version.outputs.prerelease != 'true' }}
+          fail_on_unmatched_files: false
           files: |
             installer/Output/MonolithSetup-*.exe
             appcast.xml

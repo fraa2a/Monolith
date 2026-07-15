@@ -333,6 +333,7 @@ void write_runtime_fields(json& doc, const Config& config)
         doc["replay_buffer"].erase("memory_budget_mb");
     doc["recording"]["enabled"] = config.recording_enabled;
     doc["recording"]["container"] = config.recording_container;
+    doc["advanced"]["allow_concurrent_capture"] = config.allow_concurrent_capture;
     // Dead key removed from the schema; scrub it from older configs.
     if (doc.contains("recording") && doc["recording"].is_object())
         doc["recording"].erase("pause_behavior");
@@ -413,6 +414,7 @@ Config config_from_json(
     if (config.recording_container != "mkv" && config.recording_container != "mp4")
         config.recording_container = "mkv";
     config.recording_enabled = bool_at(doc, "recording", "enabled", true);
+    config.allow_concurrent_capture = bool_at(doc, "advanced", "allow_concurrent_capture", false);
 
     config.update_auto_check = bool_at(doc, "update", "auto_check", true);
     config.logging_enabled = bool_at(doc, "advanced", "logging_enabled", false);

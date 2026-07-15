@@ -20,9 +20,10 @@
 #include <audio/audio.h>
 #include <gamelist/gamelist.h>
 #include <encoding/encoding.h>
+#include <encoding/ffmpeg_process.h>
+#include <encoding/segment_replay.h>
+#include <encoding/recording_process.h>
 #include <storage/storage.h>
-#include <replay-buffer/replay_buffer.h>
-#include <recording/recording.h>
 #include <platform-win/platform_win.h>
 #include <logging/logging.h>
 
@@ -242,19 +243,32 @@ static void apply_native_window_theme(HWND hwnd)
 }
 
 static capture::DisplayCapture      g_video;
-static encoding::VideoEncoder       g_video_enc;
-static std::array<encoding::AudioEncoder, 6> g_audio_encoders;
 
-// Per-track mixers (index 1..6; index 0 unused). A track gets a mixer only when
-// two or more enabled sources route to it; single-source tracks push straight to
-// their encoder. The mixer's sink forwards summed PCM into that track's encoder.
+// External-ffmpeg encode engines. Replay writes rotating segments; recording
+// writes one continuous file. Both take raw BGRA frames (from the pacer) and raw
+// per-track PCM (from the audio mixers). The old in-process libav encoders
+// (VideoEncoder/AudioEncoder) and muxers (ReplayBuffer/ManualRecorder) are gone;
+// ffmpeg does encode + mux out-of-process, keeping GPL x264/x265 out of the ARR
+// binary.
+static encoding::SegmentReplay      g_segment_replay;
+static encoding::RecordingProcess   g_recording_process;
+
+// Resolved ffmpeg.exe path + the encoder names this build exposes (probed once
+// per media_start via `ffmpeg -encoders`). Guarded by g_status_mutex for reads
+// from the UI publish path.
+static std::wstring                 g_ffmpeg_path;
+static std::vector<std::string>     g_ffmpeg_available_encoders;
+static std::string                  g_active_video_encoder; // resolved concrete name
+
+// Per-track mixers (index 1..6; index 0 unused). Every enabled audio track now
+// routes through a mixer, which converts each source's WASAPI PCM to the
+// canonical interleaved-float format the named pipe expects and sums multiple
+// sources. The mixer sink forwards that PCM to the active engine(s) for the track.
 static std::array<std::unique_ptr<encoding::TrackMixer>, 7> g_track_mixers;
 
-// One output route for a source: which track, and (when that track is mixed) the
-// source's id within the mixer. mixer_src == -1 means push directly to encoder.
-// gain is the source's linear volume (0.0–1.0), applied to the recorded audio:
-// for mixed tracks it lives in the mixer source; for direct tracks it is applied
-// in-place before push_pcm.
+// One output route for a source: which track, and the source's id within that
+// track's mixer. gain is the source's linear volume (0.0–1.0), carried by the
+// mixer source.
 struct AudioRoute { int track = 0; int mixer_src = -1; float gain = 1.0f; };
 
 // A live capture plus the routes its callback writes to. Routes are kept so that
@@ -264,8 +278,18 @@ struct ActiveCapture {
     std::vector<AudioRoute> routes;
 };
 static std::vector<ActiveCapture> g_audio_captures;
-static replay_buffer::ReplayBuffer  g_replay;
-static recording::ManualRecorder    g_recording;
+
+// Recording lifecycle state (was recording::ManualRecorder). Kept as a simple
+// tri-state so the many existing call sites (tray gating, capture-mode machine)
+// read the same enum. Pause = stop feeding ffmpeg (cuts wall-clock time).
+enum class RecState { Idle, Recording, Paused };
+static std::atomic<RecState> g_rec_state{ RecState::Idle };
+static std::wstring          g_rec_path; // current recording output path
+static std::mutex            g_rec_path_mutex;
+
+// Audio track params planned for the current session, shared by both engines.
+static std::vector<encoding::SegmentReplayConfig::AudioTrack> g_audio_track_plan;
+static std::mutex g_audio_track_plan_mutex;
 
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
@@ -304,6 +328,19 @@ static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
 static std::atomic<bool> g_recording_enabled{ true };
 
+// Runtime mutex between the replay buffer and manual recording. Unless the user
+// opts into concurrent capture, a recording temporarily suspends the replay
+// buffer (two encoders would otherwise encode every frame twice). This flag is
+// AND-ed with the user's g_replay_enabled setting at every replay gate, so the
+// user's own on/off preference is never overwritten.
+static std::atomic<bool> g_replay_suspended_for_recording{ false };
+
+static inline bool replay_active()
+{
+    return g_replay_enabled.load(std::memory_order_relaxed) &&
+           !g_replay_suspended_for_recording.load(std::memory_order_relaxed);
+}
+
 // Snapshot of the two output folders, guarded so the IPC thread can resolve the
 // right clip DB for UI-driven mutations without racing settings reloads on the
 // UI thread. Updated in apply_runtime_settings().
@@ -323,6 +360,71 @@ static constexpr UINT_PTR kActiveGameTimerId = 1;
 // Replay-buffer memory budget, fixed internally (no UI knob). 512 MB is a safe
 // ceiling for the encoded-packet ring across supported bitrates/durations.
 static constexpr int64_t kReplayMemoryBudgetMb = 512;
+
+// ── External-ffmpeg video pipeline coordinator ──────────────────────────────
+// Bridges the pacer (raw BGRA) and the audio mixers (raw PCM) to the external
+// ffmpeg engines. Under the default capture mutex only one engine runs at a
+// time; with allow_concurrent_capture both run and each frame/PCM block is
+// pushed to both.
+
+// Scratch dir for the replay segmenter's rotating .ts files.
+static std::wstring replay_segment_dir()
+{
+    std::wstring dir = app_data_dir();
+    if (dir.empty()) return {};
+    dir += L"\\replay-segments";
+    ensure_directory(dir);
+    return dir;
+}
+
+// Compacts a BGRA frame to contiguous rows (stride == width*4) which is what
+// ffmpeg's rawvideo demuxer expects, then returns a pointer+size. Reuses a
+// thread-local buffer (the pacer thread is the only caller).
+static const uint8_t* compact_bgra(const uint8_t* bgra, int stride, int width,
+                                   int height, size_t* out_size)
+{
+    const int row_bytes = width * 4;
+    thread_local std::vector<uint8_t> packed;
+    if (stride == row_bytes) {
+        *out_size = static_cast<size_t>(row_bytes) * height;
+        return bgra;
+    }
+    packed.resize(static_cast<size_t>(row_bytes) * height);
+    for (int y = 0; y < height; ++y)
+        memcpy(packed.data() + static_cast<size_t>(y) * row_bytes,
+               bgra + static_cast<size_t>(y) * stride, row_bytes);
+    *out_size = packed.size();
+    return packed.data();
+}
+
+// True while at least one engine wants frames.
+static bool vpipe_video_active()
+{
+    return g_segment_replay.is_running() || g_recording_process.is_running();
+}
+
+// Pushes one already-compacted BGRA frame to whichever engine(s) are running.
+// A paused recording is skipped (pause = cut wall-clock time).
+static void vpipe_push_video(const uint8_t* bgra, size_t size)
+{
+    if (g_segment_replay.is_running())
+        g_segment_replay.push_video(bgra, size);
+    if (g_recording_process.is_running() &&
+        g_rec_state.load(std::memory_order_relaxed) == RecState::Recording)
+        g_recording_process.push_video(bgra, size);
+}
+
+// Pushes mixed PCM for one track to the running engine(s). Paused recording is
+// skipped so audio and video stay aligned across the pause gap.
+static void vpipe_push_audio(int stream_index, const uint8_t* pcm, size_t size)
+{
+    if (g_segment_replay.is_running())
+        g_segment_replay.push_audio(stream_index, pcm, size);
+    if (g_recording_process.is_running() &&
+        g_rec_state.load(std::memory_order_relaxed) == RecState::Recording)
+        g_recording_process.push_audio(stream_index, pcm, size);
+}
+
 
 // Active-game detection runs on a fixed 3 s cadence. Detection is DB-gated: a
 // process only counts as a game when its executable is in the locally-cached
@@ -484,7 +586,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
             }
         }
 
-        if (!g_video_enc.is_open() || local_bgra.empty())
+        if (!vpipe_video_active() || local_bgra.empty())
             continue;
 
         // ── Clock-locked CFR: emit frames until we've caught up to wall-clock.
@@ -505,9 +607,12 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
         if (g_pacer_frames_done < target) {
             LARGE_INTEGER push_start{}, push_end{};
             QueryPerformanceCounter(&push_start);
-            g_video_enc.push_bgra(local_bgra.data(), local_stride,
-                                  local_width, local_height,
-                                  g_pacer_frames_done);
+            size_t frame_size = 0;
+            const uint8_t* packed = compact_bgra(local_bgra.data(), local_stride,
+                                                 local_width, local_height, &frame_size);
+            // Emit one frame per CFR slot; duplicates fill gaps so playback speed
+            // tracks wall-clock. ffmpeg reads these at the configured -framerate.
+            vpipe_push_video(packed, frame_size);
             QueryPerformanceCounter(&push_end);
             g_perf_encoder_push_time_us_total.fetch_add(
                 qpc_elapsed_us(push_start, push_end), std::memory_order_relaxed);
@@ -623,20 +728,193 @@ static HMONITOR monitor_from_settings(const std::vector<MonitorEntry>& monitors,
     return MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
 }
 
+// ── Recording facade (external RecordingProcess) ────────────────────────────
+// Thin wrappers preserving the old ManualRecorder call surface (start/stop/
+// pause/resume/state/current_path) so existing call sites change minimally.
+// Pause = stop feeding ffmpeg (cuts wall-clock time); resume re-enables feeding.
+
+static std::wstring generate_recording_path(const std::wstring& dir,
+                                            const std::string& container)
+{
+    SYSTEMTIME st; GetLocalTime(&st);
+    const wchar_t* ext = (container == "mp4") ? L"mp4" : L"mkv";
+    wchar_t path[MAX_PATH];
+    swprintf_s(path, MAX_PATH, L"%s\\%04d%02d%02d_%02d%02d%02d_recording.%s",
+               dir.c_str(), st.wYear, st.wMonth, st.wDay,
+               st.wHour, st.wMinute, st.wSecond, ext);
+    return path;
+}
+
+// Resolves the concrete ffmpeg encoder name for the current settings against the
+// probed encoder list. Falls back to libx264 if the probe list is empty.
+static std::string resolve_active_encoder()
+{
+    std::vector<std::string> avail;
+    {
+        std::lock_guard lk(g_status_mutex);
+        avail = g_ffmpeg_available_encoders;
+    }
+    std::string r = encoding::ffmpeg_resolve_encoder(
+        g_settings.encoder_device, g_settings.encoder_codec, avail);
+    return r.empty() ? std::string("libx264") : r;
+}
+
+static std::vector<encoding::SegmentReplayConfig::AudioTrack> current_audio_track_plan()
+{
+    std::lock_guard lk(g_audio_track_plan_mutex);
+    return g_audio_track_plan;
+}
+
+// Starts the external replay segmenter with the current encoder/audio plan.
+static bool replay_engine_start()
+{
+    if (g_segment_replay.is_running()) return true;
+    if (g_ffmpeg_path.empty() || g_enc_w <= 0 || g_enc_h <= 0) return false;
+
+    encoding::SegmentReplayConfig cfg;
+    cfg.ffmpeg_path   = g_ffmpeg_path;
+    cfg.segment_dir   = replay_segment_dir();
+    cfg.output_dir    = g_settings.clips_directory;
+    cfg.save_container = g_settings.replay_clip_container;
+    cfg.width         = g_enc_w;
+    cfg.height        = g_enc_h;
+    cfg.fps           = g_settings.video_fps;
+    cfg.bitrate_kbps  = g_settings.video_bitrate_kbps;
+    cfg.video_encoder = resolve_active_encoder();
+    cfg.audio_tracks  = current_audio_track_plan();
+    cfg.duration_sec  = g_settings.replay_duration_seconds;
+
+    bool ok = g_segment_replay.start(cfg,
+        [](const std::string& l) { log_msg("replay-ffmpeg", l.c_str()); });
+    if (ok) {
+        std::lock_guard lk(g_status_mutex);
+        g_active_video_encoder = cfg.video_encoder;
+        g_runtime_status.active_encoder = cfg.video_encoder;
+        g_runtime_status.encode_width   = g_enc_w;
+        g_runtime_status.encode_height  = g_enc_h;
+    }
+    return ok;
+}
+
+static void replay_engine_stop()
+{
+    if (g_segment_replay.is_running()) g_segment_replay.stop();
+}
+
+// Recording facade state helpers.
+static RecState rec_state() { return g_rec_state.load(std::memory_order_relaxed); }
+
+static std::wstring rec_current_path()
+{
+    std::lock_guard lk(g_rec_path_mutex);
+    return g_rec_path;
+}
+
+// Starts the external recording process with the current encode size + plan.
+// Requires g_enc_w/h to be known (pipeline live). Returns false if not ready.
+static bool recording_engine_start()
+{
+    if (g_recording_process.is_running()) return true;
+    if (g_ffmpeg_path.empty() || g_enc_w <= 0 || g_enc_h <= 0) return false;
+
+    std::wstring path = rec_current_path();
+    if (path.empty()) return false;
+
+    encoding::RecordingProcessConfig cfg;
+    cfg.ffmpeg_path   = g_ffmpeg_path;
+    cfg.output_path   = path;
+    cfg.container     = (g_recording_container == "mp4") ? "mp4" : "mkv";
+    cfg.width         = g_enc_w;
+    cfg.height        = g_enc_h;
+    cfg.fps           = g_settings.video_fps;
+    cfg.bitrate_kbps  = g_settings.video_bitrate_kbps;
+    cfg.video_encoder = resolve_active_encoder();
+    for (const auto& t : current_audio_track_plan()) {
+        encoding::RecordingProcessConfig::AudioTrack rt;
+        rt.stream_index = t.stream_index;
+        rt.sample_rate  = t.sample_rate;
+        rt.channels     = t.channels;
+        cfg.audio_tracks.push_back(rt);
+    }
+
+    return g_recording_process.start(cfg,
+        [](const std::string& l) { log_msg("recording-ffmpeg", l.c_str()); });
+}
+
+// Arms a recording: assigns the output path and sets state. The actual ffmpeg
+// process is launched by recording_engine_start() once the pipeline is live and
+// g_enc_w/h are known (the capture callback drives this on the first frame). If
+// the pipeline is already live, launches immediately.
+static bool rec_start(const std::wstring& dir, const std::string& container)
+{
+    if (rec_state() != RecState::Idle) return false;
+    if (g_ffmpeg_path.empty()) return false;
+
+    std::wstring path = generate_recording_path(dir, container);
+    {
+        std::lock_guard lk(g_rec_path_mutex);
+        g_rec_path = path;
+    }
+    g_recording_container = (container == "mp4") ? "mp4" : "mkv";
+    g_rec_state.store(RecState::Recording, std::memory_order_relaxed);
+
+    // If the pipeline is already running (replay was live), start the recording
+    // process now; otherwise the first captured frame will start it.
+    if (g_enc_w > 0 && g_enc_h > 0)
+        recording_engine_start();
+    return true;
+}
+
+// Stops recording; returns the output path (empty on failure).
+static bool rec_stop(std::wstring* out_path)
+{
+    if (rec_state() == RecState::Idle) return false;
+    std::wstring path;
+    if (g_recording_process.is_running())
+        path = g_recording_process.stop();
+    else
+        path = rec_current_path(); // armed but never fed a frame
+    g_rec_state.store(RecState::Idle, std::memory_order_relaxed);
+    if (out_path) *out_path = path;
+    {
+        std::lock_guard lk(g_rec_path_mutex);
+        g_rec_path.clear();
+    }
+    return true;
+}
+
+static bool rec_pause()
+{
+    if (rec_state() != RecState::Recording) return false;
+    g_rec_state.store(RecState::Paused, std::memory_order_relaxed);
+    return true;
+}
+
+static bool rec_resume()
+{
+    if (rec_state() != RecState::Paused) return false;
+    g_rec_state.store(RecState::Recording, std::memory_order_relaxed);
+    return true;
+}
+
+static const char* rec_state_name(RecState s)
+{
+    switch (s) {
+    case RecState::Idle:      return "idle";
+    case RecState::Recording: return "recording";
+    case RecState::Paused:    return "paused";
+    }
+    return "unknown";
+}
+
 static void apply_runtime_settings()
 {
     ensure_directory(g_settings.clips_directory);
     ensure_directory(g_settings.recordings_directory);
     ensure_directory(g_settings.temp_directory);
 
-    replay_buffer::ReplayBuffer::Config rbcfg;
-    rbcfg.duration_sec  = g_settings.replay_duration_seconds;
-    // Memory budget is fixed internally (no longer user-configurable).
-    rbcfg.memory_cap_mb = kReplayMemoryBudgetMb;
-    rbcfg.output_dir    = g_settings.clips_directory;
-    rbcfg.container     = g_settings.replay_clip_container;
-    g_replay.configure(rbcfg);
-
+    // Replay engine (segmenter) is configured at start from these settings; no
+    // in-process ring to configure here anymore.
     g_recordings_dir = g_settings.recordings_directory;
     g_recording_container = g_settings.recording_container;
     g_replay_enabled.store(g_settings.replay_buffer_enabled, std::memory_order_relaxed);
@@ -858,19 +1136,46 @@ static std::string exe_key_of(const std::wstring& process_name)
     return s;
 }
 
+// ── Replay/recording mutual exclusion ───────────────────────────────────────
+// Unless the user opted into concurrent capture, a manual/auto recording
+// temporarily suspends the replay buffer so only one encoder runs. Suspending
+// clears the ring (its retained history is meaningless while paused) and the
+// gate stops feeding it; restoring re-arms the gate for future frames.
+
+static void suspend_replay_for_recording()
+{
+    if (g_settings.allow_concurrent_capture) return;
+    if (g_replay_suspended_for_recording.exchange(true)) return;
+    replay_engine_stop();
+    log_msg("replay", "replay buffer suspended while recording (concurrent capture off)");
+}
+
+static void restore_replay_after_recording()
+{
+    if (!g_replay_suspended_for_recording.exchange(false)) return;
+    if (g_replay_enabled.load(std::memory_order_relaxed)) {
+        // Re-arm the lazy engine-start in the capture callback so the replay
+        // segmenter comes back up on the next frame.
+        g_video_enc_open_attempted.store(false, std::memory_order_release);
+        g_video_enc_retry_after_ms.store(0, std::memory_order_release);
+        log_msg("replay", "replay buffer resumed after recording");
+    }
+}
+
 // Starts the auto recording for the current effective target, if allowed. Returns
 // true when a recording was started.
 static bool auto_record_start(HWND hwnd)
 {
     if (!g_settings.capture_auto_record) return false;
     if (!g_recording_enabled.load(std::memory_order_relaxed)) return false;
-    if (g_recording.state() != recording::RecordingState::Idle) return false;
+    if (rec_state() != RecState::Idle) return false;
     if (!g_video.running()) media_start(hwnd);
-    if (!g_recording.start(g_recordings_dir, g_recording_container)) return false;
+    if (!rec_start(g_recordings_dir, g_recording_container)) return false;
+    suspend_replay_for_recording();
     g_auto_recording_active = true;
     g_auto_state            = AutoState::AutoRecording;
     g_recording_game_pid    = g_effective_game_pid;
-    log_path("recording", "auto recording started: ", g_recording.current_path());
+    log_path("recording", "auto recording started: ", rec_current_path());
     feedback::play(feedback::Sound::RecordStart);
     tray_set_recording(true);
     return true;
@@ -880,10 +1185,10 @@ static bool auto_record_start(HWND hwnd)
 static void auto_record_stop()
 {
     if (!g_auto_recording_active ||
-        g_recording.state() == recording::RecordingState::Idle)
+        rec_state() == RecState::Idle)
         return;
     std::wstring path;
-    if (g_recording.stop(&path)) {
+    if (rec_stop(&path)) {
         if (path.empty()) log_msg("recording", "auto recording stopped: no packets written");
         else {
             log_path("recording", "auto recording saved: ", path);
@@ -892,6 +1197,7 @@ static void auto_record_stop()
         feedback::play(feedback::Sound::RecordStop);
         tray_set_recording(false);
     }
+    restore_replay_after_recording();
     g_auto_recording_active = false;
     g_recording_game_pid    = 0;
 }
@@ -952,7 +1258,7 @@ static void evaluate_capture_mode(HWND hwnd)
         }
 
         if (g_auto_state != AutoState::WaitingForStartupFocus &&
-            g_recording.state() == recording::RecordingState::Idle) {
+            rec_state() == RecState::Idle) {
             auto_record_start(hwnd);
         }
         return;
@@ -962,7 +1268,7 @@ static void evaluate_capture_mode(HWND hwnd)
     // Stop an auto recording (never a user-started manual recording).
     if (g_auto_recording_active) {
         auto_record_stop();
-    } else if (g_recording.state() != recording::RecordingState::Idle) {
+    } else if (rec_state() != RecState::Idle) {
         return; // never stop a user-started manual recording
     }
     g_auto_state = AutoState::Idle;
@@ -987,7 +1293,6 @@ static void evaluate_capture_mode(HWND hwnd)
         (now - g_last_game_seen_ms) >= idle_ms) {
         log_msg("capture", "game_only: no game past idle timeout, stopping capture");
         media_stop();
-        g_replay.clear();
         g_capture_mode_stopped = true;
     }
 }
@@ -1092,7 +1397,7 @@ static void reload_settings_from_disk(HWND hwnd)
     if (!capture_or_encoder_changed && !audio_changed)
         return;
 
-    if (g_recording.state() != recording::RecordingState::Idle) {
+    if (rec_state() != RecState::Idle) {
         log_msg("settings", "capture/audio changes deferred: manual recording is active");
         return;
     }
@@ -1100,7 +1405,6 @@ static void reload_settings_from_disk(HWND hwnd)
     if (capture_or_encoder_changed) {
         log_msg("settings", "capture/encoder settings changed: restarting capture pipeline");
         media_stop();
-        g_replay.clear();
         media_start(hwnd);
         return;
     }
@@ -1108,7 +1412,6 @@ static void reload_settings_from_disk(HWND hwnd)
     if (audio_changed) {
         log_msg("settings", "audio routing changed: restarting audio pipeline");
         stop_audio_system();
-        g_replay.clear();
         start_audio_system();
         poll_active_game();
         publish_runtime_status();
@@ -1179,40 +1482,15 @@ static std::vector<int> valid_tracks(const std::vector<int>& tracks)
     return result;
 }
 
-static bool open_audio_track(int track)
-{
-    if (track < 1 || track > 6) return false;
-    encoding::AudioEncoder& encoder = g_audio_encoders[track - 1];
-    if (encoder.is_open()) return true;
-
-    encoding::AudioEncoder::Config acfg;
-    acfg.sample_rate = 48000;
-    acfg.channels = 2;
-    acfg.bitrate = 192'000;
-    acfg.stream_index = track;
-
-    bool ok = encoder.open(acfg, [](encoding::EncodedPacket pkt) {
-        if (g_replay_enabled.load(std::memory_order_relaxed)) {
-            auto replay_pkt = pkt;
-            g_replay.push(std::move(replay_pkt));
-        }
-        g_recording.push(std::move(pkt));
-    });
-
-    char msg[128];
-    snprintf(msg, sizeof(msg), ok ? "AAC encoder opened for audio track %d"
-                                  : "WARNING: AAC encoder failed for audio track %d",
-             track);
-    log_msg("encoding", msg);
-    return ok;
-}
-
-// Number of enabled sources planned for each track (index 1..6). Used to decide
-// whether a track can be pushed directly (single source) or needs a mixer
-// (multiple sources on the same logical track). Recomputed before audio start.
+// Number of enabled sources planned for each track (index 1..6). Recomputed
+// before audio start; used to size each track's mixer.
 static std::array<int, 7> g_track_plan_count{};
 
-// Ensure a mixer exists for `track`, wired to feed that track's encoder.
+// Ensure a mixer exists for `track`. Every track now routes through a mixer even
+// with a single source: the mixer converts each source's WASAPI PCM to the
+// canonical interleaved-float 48k/2 format the engine's named pipe expects and
+// sums multiple sources. The mixer sink forwards that PCM to the running
+// external engine(s) as this track's audio stream.
 static encoding::TrackMixer* ensure_track_mixer(int track)
 {
     if (track < 1 || track > 6) return nullptr;
@@ -1220,41 +1498,38 @@ static encoding::TrackMixer* ensure_track_mixer(int track)
 
     auto mixer = std::make_unique<encoding::TrackMixer>();
     bool ok = mixer->open(48000, 2,
-        [track](const uint8_t* data, int bytes, int sr, int ch, int bd, bool is_float) {
-            g_audio_encoders[track - 1].push_pcm(data, bytes, sr, ch, bd, is_float);
+        [track](const uint8_t* data, int bytes, int /*sr*/, int /*ch*/,
+                int /*bd*/, bool /*is_float*/) {
+            // Sink is always canonical f32le 48k/2 (TrackMixer output format),
+            // which matches the AudioTrack config we hand ffmpeg.
+            vpipe_push_audio(track, data, static_cast<size_t>(bytes));
         });
     if (!ok) return nullptr;
     g_track_mixers[track] = std::move(mixer);
     return g_track_mixers[track].get();
 }
 
-// Build output routes for a source given its requested tracks. A single source
-// on a track pushes directly to the encoder. Only tracks with multiple sources
-// pay the continuous mixer cost.
+// Build output routes for a source given its requested tracks. Each track routes
+// through its mixer (add a source slot carrying this source's gain).
 static std::vector<AudioRoute> make_routes(const std::vector<int>& requested,
                                            float gain = 1.0f)
 {
     if (gain < 0.0f) gain = 0.0f;
     std::vector<AudioRoute> routes;
     for (int track : valid_tracks(requested)) {
-        if (!open_audio_track(track)) continue;
+        encoding::TrackMixer* mixer = ensure_track_mixer(track);
+        if (!mixer) continue;
         AudioRoute r;
         r.track = track;
-        r.mixer_src = -1;
-        r.gain = gain;
-        if (g_track_plan_count[track] > 1) {
-            encoding::TrackMixer* mixer = ensure_track_mixer(track);
-            if (!mixer) continue;
-            // Mixed track: gain lives in the mixer source so summing is correct.
-            r.mixer_src = mixer->add_source(gain);
-            if (r.mixer_src < 0) continue;
-        }
+        r.gain  = gain;
+        r.mixer_src = mixer->add_source(gain);
+        if (r.mixer_src < 0) continue;
         routes.push_back(r);
     }
     return routes;
 }
 
-// Release the mixer slots a capture held; close encoders only for direct routes.
+// Release the mixer slots a capture held.
 static void release_routes(const std::vector<AudioRoute>& routes)
 {
     for (const auto& r : routes) {
@@ -1263,22 +1538,30 @@ static void release_routes(const std::vector<AudioRoute>& routes)
     }
 }
 
+// Publishes the planned audio tracks (one AudioTrack per mixer that exists) so
+// both engines add a matching output stream. All tracks use the canonical
+// 48k/stereo format.
 static void publish_audio_params()
 {
-    std::vector<encoding::AudioStreamParams> params;
-    for (auto& encoder : g_audio_encoders) {
-        if (encoder.is_open())
-            params.push_back(encoder.stream_params());
+    std::vector<encoding::SegmentReplayConfig::AudioTrack> plan;
+    for (int track = 1; track <= 6; ++track) {
+        if (!g_track_mixers[track]) continue;
+        encoding::SegmentReplayConfig::AudioTrack t;
+        t.stream_index = track;
+        t.sample_rate  = 48000;
+        t.channels     = 2;
+        plan.push_back(t);
     }
-    g_replay.set_audio_params(params);
-    g_recording.set_audio_params(params);
+    {
+        std::lock_guard lk(g_audio_track_plan_mutex);
+        g_audio_track_plan = plan;
+    }
 
-    // Diagnostics: which logical audio tracks end up as streams in the output.
     char buf[160];
-    int n = snprintf(buf, sizeof(buf), "published %zu audio track(s):", params.size());
-    for (const auto& p : params) {
+    int n = snprintf(buf, sizeof(buf), "planned %zu audio track(s):", plan.size());
+    for (const auto& t : plan) {
         if (n < 0 || n >= static_cast<int>(sizeof(buf))) break;
-        n += snprintf(buf + n, sizeof(buf) - n, " %d", p.stream_index);
+        n += snprintf(buf + n, sizeof(buf) - n, " %d", t.stream_index);
     }
     log_msg("audio", buf);
 }
@@ -1286,7 +1569,8 @@ static void publish_audio_params()
 // Applies a linear gain to a raw PCM buffer in place. Handles the two formats
 // WASAPI delivers: 32-bit IEEE float and 16-bit signed integer. Other bit depths
 // are left untouched (gain simply doesn't apply). Clamps to the format range.
-static void apply_gain_inplace(uint8_t* data, int bytes, int bit_depth,
+// Retained for potential direct-PCM paths; gain normally lives in the mixer.
+[[maybe_unused]] static void apply_gain_inplace(uint8_t* data, int bytes, int bit_depth,
                                bool is_float, float gain)
 {
     if (!data || bytes <= 0 || gain == 1.0f) return;
@@ -1326,30 +1610,13 @@ static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
 
     if (p.data_bytes == 0) return;
 
-    // Scratch buffer reused across direct-route gain application. thread_local so
-    // concurrent capture callbacks (each on its own capture thread) don't clash.
-    thread_local std::vector<uint8_t> gain_buf;
-
+    // Every track routes through its mixer, which carries the source's gain and
+    // converts to the canonical format before forwarding to the engine pipe.
     for (const auto& r : routes) {
         if (r.track < 1 || r.track > 6) continue;
         if (r.mixer_src >= 0 && g_track_mixers[r.track]) {
-            // Mixed track: the mixer source already carries the gain.
             g_track_mixers[r.track]->push(
                 r.mixer_src, p.data, static_cast<int>(p.data_bytes),
-                static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
-                static_cast<int>(p.bit_depth), p.is_float);
-        } else if (r.mixer_src < 0) {
-            const uint8_t* out_data = p.data;
-            int out_bytes = static_cast<int>(p.data_bytes);
-            // Direct track: apply per-source gain in place on a scratch copy.
-            if (r.gain != 1.0f && p.data) {
-                gain_buf.assign(p.data, p.data + p.data_bytes);
-                apply_gain_inplace(gain_buf.data(), out_bytes,
-                                   static_cast<int>(p.bit_depth), p.is_float, r.gain);
-                out_data = gain_buf.data();
-            }
-            g_audio_encoders[r.track - 1].push_pcm(
-                out_data, out_bytes,
                 static_cast<int>(p.sample_rate), static_cast<int>(p.channels),
                 static_cast<int>(p.bit_depth), p.is_float);
         }
@@ -1523,8 +1790,6 @@ static void stop_audio_system()
     g_audio_captures.clear();
     for (auto& mixer : g_track_mixers)
         mixer.reset();
-    for (auto& encoder : g_audio_encoders)
-        encoder.close();
     g_track_plan_count.fill(0);
     g_active_game_tracks.clear();
     g_active_game_gain          = 1.0f;
@@ -1558,8 +1823,9 @@ static void start_default_audio_system()
 
 static void start_custom_audio_system()
 {
-    // Plan first: count how many enabled sources route to each track so make_routes()
-    // knows which tracks need a mixer (>= 2 sources) vs a direct encoder feed.
+    // Plan first: count how many enabled sources route to each track. Every
+    // planned track gets a mixer (converts to the canonical pipe format + sums
+    // any multiple sources).
     g_track_plan_count.fill(0);
     for (const auto& source : g_settings.audio_sources) {
         if (!source.enabled) continue;
@@ -1567,15 +1833,10 @@ static void start_custom_audio_system()
             g_track_plan_count[track]++;
     }
 
-    // Pre-create encoders for configured tracks. Only tracks with multiple
-    // sources pre-create a mixer; single-source tracks use direct encoder input
-    // to avoid an unnecessary continuous mixer thread and silence generation.
+    // Pre-create a mixer for every configured track.
     for (int track = 1; track <= 6; ++track) {
-        if (g_track_plan_count[track] > 0) {
-            open_audio_track(track);
-            if (g_track_plan_count[track] > 1)
-                ensure_track_mixer(track);
-        }
+        if (g_track_plan_count[track] > 0)
+            ensure_track_mixer(track);
     }
 
     for (const auto& source : g_settings.audio_sources) {
@@ -2075,7 +2336,7 @@ static void media_start(HWND hwnd)
     // before monitor enumeration and encoder probing, which can be relatively
     // expensive and should not happen for replay-off idle startup.
     if (!g_settings.replay_buffer_enabled &&
-        g_recording.state() == recording::RecordingState::Idle) {
+        rec_state() == RecState::Idle) {
         log_msg("app", "media pipeline not started: replay disabled and recording idle");
         return;
     }
@@ -2107,15 +2368,25 @@ static void media_start(HWND hwnd)
     log_path("capture", "capture monitor: ",
              used_device.empty() ? L"(primary)" : used_device);
 
+    // Locate ffmpeg.exe and probe the encoders this build exposes (runs ffmpeg
+    // subprocesses, so do it outside the status lock).
+    g_ffmpeg_path = encoding::locate_ffmpeg(g_settings.ffmpeg_path);
+    std::vector<std::string> avail_encoders;
+    if (g_ffmpeg_path.empty()) {
+        log_msg("encoding", "WARNING: ffmpeg.exe not found (set an explicit path in Settings > Advanced)");
+    } else {
+        avail_encoders = encoding::ffmpeg_available_encoders(g_ffmpeg_path);
+        log_path("encoding", "ffmpeg: ", g_ffmpeg_path);
+    }
+
     {
         std::lock_guard<std::mutex> lk(g_status_mutex);
         g_runtime_status.monitors.clear();
         for (const auto& entry : monitors)
             g_runtime_status.monitors.push_back(entry.info);
         g_runtime_status.active_monitor_device = used_device;
-        // Probe with a representative size; availability does not depend on it.
-        g_runtime_status.available_encoders =
-            encoding::available_video_encoders(1920, 1080);
+        g_ffmpeg_available_encoders = avail_encoders;
+        g_runtime_status.available_encoders = avail_encoders;
     }
 
     g_video_enc_open_attempted.store(false, std::memory_order_release);
@@ -2152,118 +2423,78 @@ static void media_start(HWND hwnd)
     // ── WGC display capture ───────────────────────────────────────────────────
     if (capture::is_supported()) {
         bool ok = g_video.start(hmon, [](capture::FrameInfo const& f) {
-            // Log buffer stats every 300 frames (~5s at 60fps).
+            // Log capture/pacer stats every 300 frames (~5s at 60fps). Encoder-
+            // internal timings (sws/encode) are no longer available — ffmpeg
+            // encodes out-of-process — so we log the pipeline up to the pipe.
             if (f.seq % 300 == 0) {
-                auto stats = g_replay.stats();
                 size_t raw_capacity = 0;
                 {
                     std::lock_guard<std::mutex> lock(g_pacer_mutex);
                     raw_capacity = g_pacer_shared.bgra.capacity();
                 }
-                const double span_sec = stats.newest_dts_usec > stats.oldest_dts_usec
-                    ? static_cast<double>(stats.newest_dts_usec - stats.oldest_dts_usec) / 1000000.0
-                    : 0.0;
-                char buf[224];
+                char buf[192];
                 snprintf(buf, sizeof(buf),
-                    "seq=%-6u %ux%u replay=%zu pkt / %.1f MB keyframes=%d span=%.1fs saving=%s raw_cap=%.1f MB",
+                    "seq=%-6u %ux%u replay=%s recording=%s raw_cap=%.1f MB",
                     f.seq, f.width, f.height,
-                    stats.packet_count,
-                    static_cast<double>(stats.logical_bytes) / 1048576.0,
-                    stats.keyframes,
-                    span_sec,
-                    stats.saving ? "true" : "false",
+                    g_segment_replay.is_running() ? "on" : "off",
+                    g_recording_process.is_running() ? "on" : "off",
                     static_cast<double>(raw_capacity) / 1048576.0);
                 log_msg("capture", buf);
 
                 static capture::CaptureStats last_capture_stats{};
                 static uint64_t last_pacer_submitted = 0;
-                static uint64_t last_encoder_submitted = 0;
-                static uint64_t last_encoder_packets = 0;
-                static uint64_t last_encoder_push_us = 0;
                 static uint64_t last_memcpy_frames = 0;
                 static uint64_t last_memcpy_us = 0;
-                static encoding::VideoEncoderPerfStats last_video_stats{};
 
                 const capture::CaptureStats capture_stats = g_video.stats();
                 if (capture_stats.frames_arrived < last_capture_stats.frames_arrived)
                     last_capture_stats = {};
                 const uint64_t pacer_submitted = g_perf_pacer_frames_submitted.load(std::memory_order_relaxed);
-                const uint64_t encoder_submitted = g_perf_encoder_frames_submitted.load(std::memory_order_relaxed);
-                const uint64_t encoder_packets = g_perf_encoder_packets_output.load(std::memory_order_relaxed);
-                const uint64_t encoder_push_us = g_perf_encoder_push_time_us_total.load(std::memory_order_relaxed);
                 const uint64_t memcpy_frames = g_perf_bgra_memcpy_frames.load(std::memory_order_relaxed);
                 const uint64_t memcpy_us = g_perf_bgra_memcpy_time_us_total.load(std::memory_order_relaxed);
-                const encoding::VideoEncoderPerfStats video_stats = g_video_enc.perf_stats();
-                if (video_stats.frames_submitted < last_video_stats.frames_submitted)
-                    last_video_stats = {};
                 if (pacer_submitted < last_pacer_submitted) last_pacer_submitted = 0;
-                if (encoder_submitted < last_encoder_submitted) last_encoder_submitted = 0;
-                if (encoder_packets < last_encoder_packets) last_encoder_packets = 0;
-                if (encoder_push_us < last_encoder_push_us) last_encoder_push_us = 0;
                 if (memcpy_frames < last_memcpy_frames) last_memcpy_frames = 0;
                 if (memcpy_us < last_memcpy_us) last_memcpy_us = 0;
 
                 const uint64_t readback_delta = capture_stats.frames_readback - last_capture_stats.frames_readback;
                 const uint64_t readback_us_delta = capture_stats.readback_time_us_total - last_capture_stats.readback_time_us_total;
-                const uint64_t encoder_delta = encoder_submitted - last_encoder_submitted;
-                const uint64_t encoder_push_us_delta = encoder_push_us - last_encoder_push_us;
                 const double avg_readback_ms = readback_delta
                     ? static_cast<double>(readback_us_delta) / static_cast<double>(readback_delta) / 1000.0
-                    : 0.0;
-                const double avg_push_ms = encoder_delta
-                    ? static_cast<double>(encoder_push_us_delta) / static_cast<double>(encoder_delta) / 1000.0
                     : 0.0;
                 const uint64_t memcpy_delta = memcpy_frames - last_memcpy_frames;
                 const double avg_memcpy_ms = memcpy_delta
                     ? static_cast<double>(memcpy_us - last_memcpy_us) / static_cast<double>(memcpy_delta) / 1000.0
                     : 0.0;
-                const uint64_t video_frames_delta = video_stats.frames_submitted - last_video_stats.frames_submitted;
-                const double avg_sws_ms = video_frames_delta
-                    ? static_cast<double>(video_stats.sws_scale_time_us_total - last_video_stats.sws_scale_time_us_total) /
-                        static_cast<double>(video_frames_delta) / 1000.0
-                    : 0.0;
-                const double avg_encode_ms = video_frames_delta
-                    ? static_cast<double>(video_stats.encode_time_us_total - last_video_stats.encode_time_us_total) /
-                        static_cast<double>(video_frames_delta) / 1000.0
-                    : 0.0;
 
-                char perf[320];
+                char perf[256];
                 snprintf(perf, sizeof(perf),
-                    "wgc=%llu drop_pre_readback=%llu readback=%llu pacer=%llu enc_frames=%llu packets=%llu avg_readback_ms=%.2f avg_memcpy_ms=%.2f avg_push_ms=%.2f avg_sws_ms=%.2f avg_encode_ms=%.2f fps=%d",
+                    "wgc=%llu drop_pre_readback=%llu readback=%llu pacer=%llu avg_readback_ms=%.2f avg_memcpy_ms=%.2f fps=%d",
                     static_cast<unsigned long long>(capture_stats.frames_arrived - last_capture_stats.frames_arrived),
                     static_cast<unsigned long long>(capture_stats.frames_dropped_before_readback - last_capture_stats.frames_dropped_before_readback),
                     static_cast<unsigned long long>(readback_delta),
                     static_cast<unsigned long long>(pacer_submitted - last_pacer_submitted),
-                    static_cast<unsigned long long>(encoder_delta),
-                    static_cast<unsigned long long>(encoder_packets - last_encoder_packets),
                     avg_readback_ms,
                     avg_memcpy_ms,
-                    avg_push_ms,
-                    avg_sws_ms,
-                    avg_encode_ms,
                     g_settings.video_fps);
                 log_msg("perf-video", perf);
 
                 last_capture_stats = capture_stats;
                 last_pacer_submitted = pacer_submitted;
-                last_encoder_submitted = encoder_submitted;
-                last_encoder_packets = encoder_packets;
-                last_encoder_push_us = encoder_push_us;
                 last_memcpy_frames = memcpy_frames;
                 last_memcpy_us = memcpy_us;
-                last_video_stats = video_stats;
             }
-            // Push BGRA frame to pacer. Pacer thread drives encoder at fixed FPS.
+            // Push BGRA frame to pacer. Pacer thread drives the engines at fixed FPS.
             if (f.bgra_data == nullptr) return;
-            // Replay buffer disabled: encode only while a manual recording
-            // is running, so an idle tray app costs no encoder CPU.
-            if (!g_replay_enabled.load(std::memory_order_relaxed) &&
-                g_recording.state() == recording::RecordingState::Idle)
+            // Replay disabled: encode only while a manual recording is running, so
+            // an idle tray app costs no encoder CPU.
+            if (!replay_active() && rec_state() == RecState::Idle)
                 return;
-            if (!g_video_enc.is_open()) {
-                // Respect the post-failure backoff window so a transient open
-                // failure (e.g. GPU busy / driver reset) doesn't get re-probed on
-                // every single captured frame.
+
+            // First frame after (re)start: resolve the encode size, then launch
+            // whichever engine(s) the current state needs. The engines start lazily
+            // here so g_enc_w/h reflect the actually-captured (possibly downscaled)
+            // frame size — the single source of truth for both engines.
+            if (!vpipe_video_active()) {
                 if (GetTickCount64() <
                     g_video_enc_retry_after_ms.load(std::memory_order_acquire))
                     return;
@@ -2274,73 +2505,32 @@ static void media_start(HWND hwnd)
                     return;
                 }
 
-                // Resolves against the actually-captured frame size, which is
-                // already the GPU-downscaled size when CaptureOptions below
-                // configured one (this then just confirms it) — and is still
-                // native size in game_only mode (no upfront target there), so
-                // this remains the source of truth either way.
-                int g_enc_w_resolved = 0, g_enc_h_resolved = 0;
+                int rw = 0, rh = 0;
                 resolve_target_size(static_cast<int>(f.width), static_cast<int>(f.height),
-                                     g_settings.resolution_preset,
-                                     &g_enc_w_resolved, &g_enc_h_resolved);
-                g_enc_w = g_enc_w_resolved;
-                g_enc_h = g_enc_h_resolved;
+                                     g_settings.resolution_preset, &rw, &rh);
+                g_enc_w = rw;
+                g_enc_h = rh;
 
-                // Resolve the concrete FFmpeg encoder from the user's CPU/GPU +
-                // codec choice, given what this machine can actually open.
-                std::string resolved = encoding::resolve_video_encoder(
-                    g_settings.encoder_device, g_settings.encoder_codec,
-                    g_enc_w, g_enc_h);
+                bool want_replay    = replay_active();
+                bool want_recording = (rec_state() != RecState::Idle);
+                bool any_ok = false;
 
-                encoding::VideoEncoder::Config vcfg;
-                vcfg.width             = g_enc_w;
-                vcfg.height            = g_enc_h;
-                vcfg.fps               = g_settings.video_fps;
-                vcfg.quality           = 0; // 0 = CBR
-                vcfg.bitrate           = static_cast<int64_t>(g_settings.video_bitrate_kbps) * 1000;
-                vcfg.scaling_filter    = "bilinear"; // fixed; scaler choice removed from UI
-                vcfg.preferred_encoder = resolved; // "" → probe order fallback
-                vcfg.extra_options     = g_settings.extra_ffmpeg_options;
-
-                bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
-                    g_perf_encoder_packets_output.fetch_add(1, std::memory_order_relaxed);
-                    if (g_replay_enabled.load(std::memory_order_relaxed)) {
-                        auto replay_pkt = pkt;
-                        g_replay.push(std::move(replay_pkt));
-                    }
-                    g_recording.push(std::move(pkt));
-                });
-
-                if (enc_ok) {
-                    char enc_msg[256];
-                    snprintf(enc_msg, sizeof(enc_msg),
-                        "%s %dx%d @%dfps %dkbps CBR%s%s",
-                        g_video_enc.encoder_name().c_str(), g_enc_w, g_enc_h,
-                        g_settings.video_fps,
-                        g_settings.video_bitrate_kbps,
-                        g_settings.extra_ffmpeg_options.empty() ? "" :
-                            (g_video_enc.extra_options_rejected()
-                                ? "  extra_options=REJECTED (opened without them)"
-                                : "  extra_options="),
-                        (!g_settings.extra_ffmpeg_options.empty() &&
-                         !g_video_enc.extra_options_rejected())
-                            ? g_settings.extra_ffmpeg_options.c_str() : "");
-                    log_msg("encoding", enc_msg);
-                } else {
-                    log_msg("encoding", "WARNING: video encoder open failed - will retry");
+                if (want_replay) {
+                    if (replay_engine_start()) any_ok = true;
+                    else log_msg("encoding", "WARNING: replay engine failed to start");
+                }
+                if (want_recording) {
+                    if (recording_engine_start()) any_ok = true;
+                    else log_msg("encoding", "WARNING: recording engine failed to start");
                 }
 
-                if (enc_ok) {
-                    auto params = g_video_enc.stream_params();
-                    g_replay.set_video_params(params);
-                    g_recording.set_video_params(params);
-                    {
-                        std::lock_guard<std::mutex> lk(g_status_mutex);
-                        g_runtime_status.active_encoder = g_video_enc.encoder_name();
-                        g_runtime_status.video_encoder_error.clear();
-                        g_runtime_status.encode_width   = g_enc_w;
-                        g_runtime_status.encode_height  = g_enc_h;
-                    }
+                if (any_ok) {
+                    char enc_msg[256];
+                    snprintf(enc_msg, sizeof(enc_msg),
+                        "%s %dx%d @%dfps %dkbps CBR (external ffmpeg)",
+                        resolve_active_encoder().c_str(), g_enc_w, g_enc_h,
+                        g_settings.video_fps, g_settings.video_bitrate_kbps);
+                    log_msg("encoding", enc_msg);
                     publish_runtime_status();
                 } else {
                     {
@@ -2355,7 +2545,6 @@ static void media_start(HWND hwnd)
                         g_runtime_status.video_encoder_error = err;
                     }
                     publish_runtime_status();
-                    // Re-arm so a later frame can retry after the backoff window.
                     g_video_enc_retry_after_ms.store(
                         GetTickCount64() + kVideoEncRetryBackoffMs,
                         std::memory_order_release);
@@ -2428,15 +2617,16 @@ static void media_start(HWND hwnd)
 
 static void media_stop()
 {
-    pacer_stop();   // stop video thread before capture/encoder
+    pacer_stop();   // stop video thread before capture/engines
     g_video.stop();
     stop_audio_system();
-    g_video_enc.close(); // flushes + frees encoder
-    if (g_recording.state() != recording::RecordingState::Idle) {
+    // Stop the external engines (finalizes their output files).
+    if (rec_state() != RecState::Idle) {
         std::wstring path;
-        g_recording.stop(&path);
+        rec_stop(&path);
         if (!path.empty()) log_path("recording", "recording saved: ", path);
     }
+    replay_engine_stop();
     g_video_enc_open_attempted.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(g_status_mutex);
@@ -2592,14 +2782,16 @@ static std::string hotkey_or_default(const std::string& configured, const char* 
 static void tray_show_menu(HWND hwnd)
 {
     HMENU menu = CreatePopupMenu();
-    recording::RecordingState state = g_recording.state();
+    RecState state = rec_state();
     const bool replay_on    = g_replay_enabled.load(std::memory_order_relaxed);
     const bool recording_on = g_recording_enabled.load(std::memory_order_relaxed);
-    // Save Replay needs the component enabled and the encoder feeding the ring.
-    UINT save_flags  = (replay_on && g_video_enc.is_open()) ? MF_STRING : (MF_STRING | MF_GRAYED);
-    UINT start_flags = (recording_on && state == recording::RecordingState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
-    UINT stop_flags  = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
-    UINT pause_flags = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
+    // Save Replay needs replay enabled, not suspended for a recording, and the
+    // replay engine actually running.
+    UINT save_flags  = (replay_on && replay_active() && g_segment_replay.is_running())
+        ? MF_STRING : (MF_STRING | MF_GRAYED);
+    UINT start_flags = (recording_on && state == RecState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
+    UINT stop_flags  = (state == RecState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
+    UINT pause_flags = (state == RecState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
     std::wstring save_text = L"Save Replay\t" + utf8_to_wide(
         hotkey_or_default(g_settings.hotkey_save_replay, "Ctrl+Shift+F8"));
     std::wstring start_text = L"Start Recording\t" + utf8_to_wide(
@@ -2609,7 +2801,7 @@ static void tray_show_menu(HWND hwnd)
     std::wstring pause_hotkey = utf8_to_wide(
         hotkey_or_default(g_settings.hotkey_pause_resume, "Ctrl+Shift+F11"));
     std::wstring pause_text =
-        (state == recording::RecordingState::Paused)
+        (state == RecState::Paused)
             ? (L"Resume Recording\t" + pause_hotkey)
             : (L"Pause Recording\t" + pause_hotkey);
     AppendMenuW(menu, MF_STRING,             CMD_SETTINGS,        L"Show");
@@ -2917,27 +3109,32 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("replay", "save_replay ignored: replay buffer disabled in settings");
             break;
         }
+        if (g_replay_suspended_for_recording.load(std::memory_order_relaxed)) {
+            log_msg("replay", "save_replay ignored: replay suspended while recording "
+                              "(enable concurrent capture in Advanced to allow both)");
+            break;
+        }
         if (game_gate_blocks()) {
             log_msg("replay", "save_replay ignored: no supported game detected");
             break;
         }
-        char stats[256];
-        snprintf(stats, sizeof(stats),
-            "save_replay — buffer: %zu pkt / %.1f MB",
-            g_replay.packet_count(),
-            static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
-        log_msg("replay", stats);
+        if (!g_segment_replay.is_running()) {
+            log_msg("replay", "save_replay ignored: replay engine not running");
+            break;
+        }
         feedback::play(feedback::Sound::ClipSaved);
         const double clip_duration = g_settings.replay_duration_seconds;
-        g_replay.save_clip([clip_duration](std::wstring path) {
-            // Runs on the replay save thread (off the UI/tray loop).
+        // save_clip() (concat of recent segments) is synchronous; run it off the
+        // UI/tray loop so the message pump never blocks on ffmpeg.
+        std::thread([clip_duration]() {
+            std::wstring path = g_segment_replay.save_clip();
             if (path.empty()) {
-                log_msg("replay", "WARNING: clip save failed or encoder not ready");
+                log_msg("replay", "WARNING: clip save failed");
             } else {
                 log_path("replay", "clip saved: ", path);
                 catalog_clip(path, "replay", clip_duration);
             }
-        });
+        }).detach();
         break;
     }
     case CMD_RECORDING_START:
@@ -2949,23 +3146,24 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("recording", "recording_start ignored: no supported game detected");
             break;
         }
-        if (g_recording.start(g_recordings_dir, g_recording_container)) {
+        if (rec_start(g_recordings_dir, g_recording_container)) {
             g_auto_recording_active = false;
+            suspend_replay_for_recording();
             if (!g_video.running())
                 media_start(hwnd);
-            log_path("recording", "recording started: ", g_recording.current_path());
+            log_path("recording", "recording started: ", rec_current_path());
             feedback::play(feedback::Sound::RecordStart);
             tray_set_recording(true);
         } else {
             char msg[96];
             snprintf(msg, sizeof(msg), "recording_start rejected: state=%s",
-                     recording::state_name(g_recording.state()));
+                     rec_state_name(rec_state()));
             log_msg("recording", msg);
         }
         break;
     case CMD_RECORDING_STOP: {
         std::wstring path;
-        if (g_recording.stop(&path)) {
+        if (rec_stop(&path)) {
             if (path.empty()) log_msg("recording", "recording stopped: no packets written");
             else {
                 log_path("recording", "recording saved: ", path);
@@ -2974,6 +3172,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
             }
             feedback::play(feedback::Sound::RecordStop);
             tray_set_recording(false);
+            restore_replay_after_recording();
             if (!g_replay_enabled.load(std::memory_order_relaxed) && g_video.running())
                 media_stop();
         } else {
@@ -2982,14 +3181,14 @@ static void dispatch(Cmd cmd, HWND hwnd)
         break;
     }
     case CMD_PAUSE_RESUME:
-        if (g_recording.state() == recording::RecordingState::Paused) {
-            if (g_recording.resume()) log_msg("recording", "recording resumed");
-        } else if (g_recording.pause()) {
+        if (rec_state() == RecState::Paused) {
+            if (rec_resume()) log_msg("recording", "recording resumed");
+        } else if (rec_pause()) {
             log_msg("recording", "recording paused");
         } else {
             char msg[96];
             snprintf(msg, sizeof(msg), "pause_resume rejected: state=%s",
-                     recording::state_name(g_recording.state()));
+                     rec_state_name(rec_state()));
             log_msg("recording", msg);
         }
         break;
@@ -3018,10 +3217,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         hotkeys_register(hwnd);
         media_start(hwnd);
         ipc::start(hwnd, [&]() -> ipc::RecordingState {
-            auto st = g_recording.state();
+            RecState st = rec_state();
             return {
-                st == recording::RecordingState::Recording,
-                st == recording::RecordingState::Paused,
+                st == RecState::Recording,
+                st == RecState::Paused,
                 g_replay_enabled.load(std::memory_order_relaxed),
                 g_recording_enabled.load(std::memory_order_relaxed),
                 g_clip_generation.load(std::memory_order_relaxed),
@@ -3138,6 +3337,17 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     // the tray/UI loop never blocks on the network or DB.
     gamelist::set_log_sink([](const char* tag, const char* msg) { log_error(tag, msg); });
     gamelist::init(app_data_dir());
+    // FFmpeg is required for all encoding and is not bundled. Kick a background
+    // download on first run (no-op if already present next to the exe, in the
+    // download dir, or on PATH). The tray/UI loop never blocks on it; media_start
+    // re-resolves ffmpeg each time the pipeline (re)starts, so a clip/recording
+    // triggered before the download finishes simply retries once it's ready.
+    if (encoding::locate_ffmpeg(g_settings.ffmpeg_path).empty()) {
+        std::thread([]() {
+            encoding::ensure_ffmpeg_downloaded(
+                [](const std::string& s) { log_msg("ffmpeg-fetch", s.c_str()); });
+        }).detach();
+    }
     reconcile_catalogs(); // self-heal clip catalogs on a background thread
     updater::init(g_settings.update_auto_check);
     if (g_settings.update_auto_check)

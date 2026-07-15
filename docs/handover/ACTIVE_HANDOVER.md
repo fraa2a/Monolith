@@ -1,6 +1,93 @@
 # Active Handover
 
-Updated: 2026-07-12
+Updated: 2026-07-15
+
+## Session 2026-07-15 — external ffmpeg.exe refactor (in progress, branch)
+
+Driven by a comparison with the Record-able Minecraft mod (see `REPORT.md`).
+Native engine NOT built locally (vcpkg absent) — CI is the only compile check;
+runtime a/v behaviour needs a real-machine smoke test.
+
+**Landed on `main` (Windows CI green):**
+- Resolution UI simplified to mod-style presets (native/480p/720p/1080p/1440p),
+  scaling-filter selector removed, scaler fixed to bilinear engine-side.
+- Encoder section shows the resolved encoder ("Encoding with: <vendor> · <codec>")
+  via a new `encoderLabel()` helper instead of a bare codec / buried help text.
+- `libs/encoding/ffmpeg_process.{h,cpp}`: locate/launch ffmpeg.exe (no libav*),
+  `FfmpegProcess` (stdin frame pipe + drained stderr), `run_ffmpeg_capture`,
+  `ffmpeg_available_encoders`/`ffmpeg_resolve_encoder`. Setting `ffmpeg_path`.
+
+**On branch `refactor/ffmpeg-external` (PR #1 draft — do NOT merge until smoke-tested):**
+- `libs/encoding/segment_replay.{h,cpp}`: `SegmentReplay` — external ffmpeg writes
+  rotating mpegts segments; raw video on stdin + one named pipe per audio track
+  (multi-track preserved); `save_clip()` concats recent segments (stream copy).
+- `libs/encoding/recording_process.{h,cpp}`: `RecordingProcess` — same model,
+  one continuous output file.
+- `libs/encoding/ffmpeg_process.cpp`: `ffmpeg_available_encoders` /
+  `ffmpeg_resolve_encoder` (parse `ffmpeg -encoders`, CPU+H.265 falls back to HW
+  HEVC then H.264).
+- Replay/recording **mutual exclusion** (default): a recording suspends the replay
+  buffer; advanced setting `allow_concurrent_capture` (off) permits both with a UI
+  cost warning. `g_replay_suspended_for_recording` + `replay_active()` in main.cpp.
+- **main.cpp core rewire (done)**: in-process `g_video_enc`/`g_audio_encoders` +
+  `ReplayBuffer`/`ManualRecorder` packet tee replaced by the external engines.
+  Pacer feeds raw BGRA (stride-compacted via `compact_bgra`); every audio track
+  routes through a `TrackMixer` to the canonical f32le pipe format. `vpipe_*`
+  coordinator fans out to the running engine(s); paused recording is skipped.
+  Engine lifecycle is lazy on the first captured frame (so g_enc_w/h are known).
+  `RecState` + `rec_*` facade replaces `recording::RecordingState`. Encoder
+  resolved via ffmpeg probe; perf log trimmed to capture+pacer.
+- **P5 (done)**: `vcpkg.json` LGPL (drop gpl/x264/x265 + HW features);
+  `libs/replay-buffer` + `libs/recording` removed from the build and link line;
+  ADR-0017 documents the licensing/architecture decision.
+
+All commits compile on Windows CI (the P5 commit triggers a full LGPL FFmpeg
+rebuild). Runtime a/v behaviour is UNVERIFIED — needs the real-machine smoke test.
+
+**Smoke test checklist (before merging PR #1):**
+1. Bundle an `ffmpeg.exe` (+`ffprobe.exe`) next to `Monolith.exe` or on PATH
+   (Settings > Advanced > FFmpeg path also works).
+2. Enable replay buffer → confirm `replay-ffmpeg` logs, segments appear under
+   `%LocalAppData%\Monolith\replay-segments`, Save Replay produces a playable
+   clip with correct A/V sync and multiple audio tracks (game + mic).
+3. Manual record start/stop → playable file, multi-track audio, faststart mp4.
+4. Start a recording while replay is on → replay suspends (tray Save Replay
+   greys out), restores on stop. Toggle `allow_concurrent_capture` → both run.
+5. Pause/resume a recording → time is cut at the pause (expected), no desync.
+6. Settings > Advanced "Encoding with" shows the resolved vendor (NVENC/AMF/
+   QuickSync/x264) for CPU/GPU + H.264/H.265.
+
+**Deferred/known:**
+- Orphaned `VideoEncoder`/`AudioEncoder` in `encoding.cpp` are dead code (kept
+  beside `TrackMixer`); could be split out later.
+- `audio_changed` settings-reload restarts audio but not the replay segmenter;
+  a track-count change mid-session may need a full pipeline restart. Low-risk
+  edge; revisit if it bites.
+- ffmpeg.exe bundling/first-run download not wired into CI packaging yet.
+
+## Session 2026-07-15 — external ffmpeg.exe refactor (in progress, branch)
+- Licensing route: external ffmpeg.exe process (keeps GPL x264/x265 out of the ARR
+  binary). Replay stays efficient via segment muxer on disk (NOT the mod's
+  GB-scale raw-frame RAM buffer).
+- Replay keeps multi-track audio via N named pipes (not video-only like the mod).
+- Concurrent clip+record: off by default (mutex), opt-in advanced toggle.
+- Recording pause = **cut time** (stop feeding ffmpeg while paused); the current
+  pts-stitching pause is not replicable with an external encoder.
+
+**NOT yet done (next):**
+- The core rewire of `main.cpp`: replace the in-process `g_video_enc` +
+  `g_replay`/`g_recording` packet tee with pacer→`push_video` (stride-compacted)
+  and audio routes→`push_audio` (per-track named pipe, via TrackMixer to the
+  canonical f32le format). Wire `ffmpeg_resolve_encoder` (device/codec + vendor
+  display, Point 3). Update perf stats / `is_open()` / `media_start`/`media_stop`.
+- P5: vcpkg LGPL-ify for the remaining in-process users (thumbnail.cpp +
+  probe_duration decode are non-GPL and can stay), bundle ffmpeg.exe+ffprobe.exe,
+  license notices, `docs/DECISIONS.md`.
+- Points 6 (audio codecs) intentionally skipped; Point 7 (timing) checked — no fix.
+
+Open items: full runtime smoke on a real machine — save replay (a/v sync,
+multi-track), manual record start/stop, the replay↔recording suspend/restore, and
+the external ffmpeg segment rotation + concat. None verifiable from CI alone.
 
 ## Session 2026-07-12 (b) — border removal + shared-exe game resolution + titlebar crash fix
 
