@@ -34,8 +34,6 @@ add_subdirectory(libs/gamelist)
 add_subdirectory(libs/audio)
 add_subdirectory(libs/encoding)
 add_subdirectory(libs/storage)
-add_subdirectory(libs/replay-buffer)
-add_subdirectory(libs/recording)
 add_subdirectory(libs/ipc)
 add_subdirectory(app/recorder)
 # Tauri v2 / WebView2 UI (Home = clip grid, Settings = popup). npm/Vite bundles

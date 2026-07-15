@@ -217,7 +217,57 @@ File be architecture decision record index for Monolith.
   invoke bridge, not this TCP server. Server stays loopback-only
   (`127.0.0.1`) with no request-level auth.
 
-## Open Decisions
+## ADR-0017: External ffmpeg.exe Encoding (Supersedes The In-Process Encode In ADR-0004)
+
+- Status: accepted (implemented on branch `refactor/ffmpeg-external`, pending
+  real-machine smoke test before merge).
+- Context: Monolith wants an all-rights-reserved (proprietary) license, but the
+  in-process libav build linked GPL components (`x264`, `x265`, `gpl`).
+  Statically linking GPL into a distributed binary forces the whole work under
+  GPL — incompatible with ARR. Dynamic linking (a DLL) does not cure this; only
+  a separate process does.
+- Decision:
+  - Video/audio **encode + mux** move out of process to an external
+    `ffmpeg.exe` (a separate program the user obtains/we bundle), so the GPL
+    software encoders (x264/x265) never link into Monolith's binary.
+  - `libs/encoding/ffmpeg_process.{h,cpp}` locates and drives ffmpeg (no libav*
+    dependency): `locate_ffmpeg`/`locate_ffprobe`, `FfmpegProcess` (stdin frame
+    pipe + drained stderr), `run_ffmpeg_capture`, and encoder detection/
+    resolution via `ffmpeg -encoders` (`ffmpeg_available_encoders` /
+    `ffmpeg_resolve_encoder`).
+  - `SegmentReplay` (rotating mpegts segments via `-f segment`, concat on save)
+    backs the replay buffer — keeping RAM/disk flat instead of the mod's
+    GB-scale raw-frame buffer. `RecordingProcess` backs manual recording (one
+    continuous file). Both take raw BGRA on stdin + one raw-PCM **named pipe per
+    audio track**, preserving Monolith's multi-track audio layout.
+  - The pacer feeds raw BGRA (stride-compacted); each audio track routes through
+    a `TrackMixer` that converts WASAPI PCM to the canonical interleaved-float
+    the pipe expects. `TrackMixer` (swresample) and thumbnail/duration
+    **decode** (thumbnail.cpp) remain the only in-process libav users — both are
+    LGPL-safe (no GPL encoders).
+  - `vcpkg.json` drops `gpl`/`x264`/`x265` (and the HW-encoder features, now
+    provided by the external ffmpeg): the in-process build is LGPL
+    (`avcodec`/`avformat`/`swscale`/`swresample`, shared). `libs/replay-buffer`
+    and `libs/recording` (in-process muxers) are removed from the build; the
+    now-orphaned `VideoEncoder`/`AudioEncoder` in `encoding.cpp` are dead code
+    retained only alongside `TrackMixer` and are never invoked.
+- Consequences:
+  - Replay and manual recording are **mutually exclusive by default** (a
+    recording suspends the replay buffer), because two engines would encode each
+    frame twice — heavy on CPU encoders. Advanced setting
+    `allow_concurrent_capture` (off) permits both with a UI cost warning.
+  - Recording **pause = cut wall-clock time** (stop feeding ffmpeg); the old
+    pts-stitching pause is not replicable with an external encoder.
+  - CPU + H.265 uses `libx265` when the external ffmpeg exposes it; with no
+    software HEVC it falls back to hardware HEVC, then H.264.
+  - Encoder-internal perf timings (sws/encode) are no longer available; the perf
+    log covers capture + pacer only.
+  - Deployment: `ffmpeg.exe` (+`ffprobe.exe`) must be bundled next to
+    `Monolith.exe` or on PATH. First-run download (SHA-256 verified, mirroring
+    the Record-able mod's pattern) is a possible later addition; not required
+    for correctness.
+
+
 
 - Final MP4 remux/finalization policy for interrupted recordings.
 - GPU-resident encoder API shape and fallback contract.
