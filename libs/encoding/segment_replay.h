@@ -38,11 +38,16 @@ struct SegmentReplayConfig {
     // the caller from device/codec + probe.
     std::string video_encoder = "libx264";
 
-    // Audio input format (matches the TrackMixer canonical output). Set
-    // audio_enabled=false for a video-only replay.
-    bool audio_enabled     = true;
-    int  audio_sample_rate = 48000;
-    int  audio_channels    = 2;
+    // One entry per audio track. Each becomes its own named pipe, ffmpeg input,
+    // and a separate output audio stream (preserving Monolith's multi-track
+    // layout, e.g. game on track 1 + mic on track 2). Empty = video-only. All
+    // tracks share the canonical mixer format (interleaved float).
+    struct AudioTrack {
+        int stream_index = 1;      // 1..6, matches Monolith's logical track id
+        int sample_rate  = 48000;
+        int channels     = 2;
+    };
+    std::vector<AudioTrack> audio_tracks;
 
     int  duration_sec  = 30;       // how much history to keep
     int  segment_sec   = 2;        // length of each rotating segment
@@ -69,9 +74,10 @@ public:
     // Returns false if the pipe broke (ffmpeg exited).
     bool push_video(const uint8_t* bgra, size_t size);
 
-    // Feed raw interleaved-float audio matching cfg.audio_sample_rate/channels.
-    // No-op when audio is disabled. Returns false if the audio pipe broke.
-    bool push_audio(const uint8_t* pcm, size_t size);
+    // Feed raw interleaved-float audio for one track (matching that track's
+    // sample_rate/channels). `stream_index` selects the track (1..6). No-op for
+    // unknown tracks. Returns false if that track's pipe broke.
+    bool push_audio(int stream_index, const uint8_t* pcm, size_t size);
 
     // Concatenates the most recent complete segments covering ~duration_sec into
     // a clip in output_dir. Runs synchronously on the calling thread; intended to

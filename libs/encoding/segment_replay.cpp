@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -43,17 +44,29 @@ struct SegmentReplay::Impl {
     SegmentReplayConfig cfg;
     FfmpegProcess       ffmpeg;
 
-    // Audio named pipe (we are the server; ffmpeg opens it as an input file).
-    HANDLE       audio_pipe = INVALID_HANDLE_VALUE;
-    std::wstring audio_pipe_name;
-    std::atomic<bool> audio_connected{false};
-    std::thread  audio_connect_thread;
+    // One audio named pipe per track (we are the server; ffmpeg opens each as an
+    // input file). Parallel arrays keyed by position in cfg.audio_tracks.
+    struct AudioPipe {
+        int          stream_index = 0;
+        HANDLE       handle       = INVALID_HANDLE_VALUE;
+        std::wstring name;
+        std::atomic<bool> connected{false};
+        std::thread  connect_thread;
+    };
+    std::vector<std::unique_ptr<AudioPipe>> audio_pipes;
 
     std::atomic<bool> running{false};
 
     std::function<void(const std::string&)> log;
 
     void log_line(const std::string& s) { if (log) log(s); }
+
+    AudioPipe* pipe_for(int stream_index)
+    {
+        for (auto& p : audio_pipes)
+            if (p->stream_index == stream_index) return p.get();
+        return nullptr;
+    }
 };
 
 SegmentReplay::SegmentReplay()  : impl_(new Impl()) {}
@@ -61,13 +74,13 @@ SegmentReplay::~SegmentReplay() { stop(); delete impl_; }
 
 // ── ffmpeg command construction ──────────────────────────────────────────────
 
-// Builds: raw video on stdin (+ raw audio on the named pipe) → CBR encode →
-// rotating mpegts segments.
+// Builds: raw video on stdin (+ one raw-audio named pipe per track) → CBR
+// encode → rotating mpegts segments with one output audio stream per track.
 static std::vector<std::string> build_segment_args(
-    const SegmentReplayConfig& cfg,
-    const std::string&         audio_pipe_utf8,
-    const std::string&         segment_pattern_utf8,
-    int                        seg_wrap)
+    const SegmentReplayConfig&      cfg,
+    const std::vector<std::string>& audio_pipe_utf8, // parallel to cfg.audio_tracks
+    const std::string&              segment_pattern_utf8,
+    int                             seg_wrap)
 {
     std::vector<std::string> a;
     a.push_back("-hide_banner");
@@ -81,12 +94,20 @@ static std::vector<std::string> build_segment_args(
     a.push_back("-framerate");    a.push_back(std::to_string(cfg.fps));
     a.push_back("-i");            a.push_back("pipe:0");
 
-    // Input 1: raw interleaved-float audio from the named pipe (mixer is CFR).
-    if (cfg.audio_enabled) {
+    // Inputs 1..N: one raw interleaved-float audio pipe per track (mixer is CFR).
+    for (size_t i = 0; i < cfg.audio_tracks.size(); ++i) {
+        const auto& t = cfg.audio_tracks[i];
         a.push_back("-f");        a.push_back("f32le");
-        a.push_back("-ar");       a.push_back(std::to_string(cfg.audio_sample_rate));
-        a.push_back("-ac");       a.push_back(std::to_string(cfg.audio_channels));
-        a.push_back("-i");        a.push_back(audio_pipe_utf8);
+        a.push_back("-ar");       a.push_back(std::to_string(t.sample_rate));
+        a.push_back("-ac");       a.push_back(std::to_string(t.channels));
+        a.push_back("-i");        a.push_back(audio_pipe_utf8[i]);
+    }
+
+    // Explicit stream mapping: video first, then each audio input in order, so
+    // output track order matches Monolith's logical track order.
+    a.push_back("-map"); a.push_back("0:v:0");
+    for (size_t i = 0; i < cfg.audio_tracks.size(); ++i) {
+        a.push_back("-map"); a.push_back(std::to_string(i + 1) + ":a:0");
     }
 
     // Video encode — CBR, pin avg/max and a 1s buffer to honour the target.
@@ -108,11 +129,10 @@ static std::vector<std::string> build_segment_args(
         a.push_back("-rc");       a.push_back("cbr");
     }
 
-    if (cfg.audio_enabled) {
+    // One AAC output stream per audio track.
+    if (!cfg.audio_tracks.empty()) {
         a.push_back("-c:a");      a.push_back("aac");
         a.push_back("-b:a");      a.push_back("192k");
-        a.push_back("-ar");       a.push_back(std::to_string(cfg.audio_sample_rate));
-        a.push_back("-ac");       a.push_back(std::to_string(cfg.audio_channels));
     }
 
     // Rotating mpegts segments. -segment_wrap caps the count on disk; each ~=
@@ -144,24 +164,32 @@ bool SegmentReplay::start(const SegmentReplayConfig&              cfg,
     // enough complete coverage even mid-rotation.
     const int seg_wrap = ceil_div(cfg.duration_sec, std::max(1, cfg.segment_sec)) + 2;
 
-    std::string audio_pipe_utf8;
-    if (cfg.audio_enabled) {
-        // Unique-ish pipe name per process; ffmpeg opens it as a plain file path.
-        impl_->audio_pipe_name =
-            L"\\\\.\\pipe\\monolith_replay_audio_" + std::to_wstring(GetCurrentProcessId());
-        audio_pipe_utf8 = wide_to_utf8_local(impl_->audio_pipe_name);
-
-        impl_->audio_pipe = CreateNamedPipeW(
-            impl_->audio_pipe_name.c_str(),
+    // Create one outbound named pipe per audio track.
+    std::vector<std::string> audio_pipe_utf8;
+    audio_pipe_utf8.reserve(cfg.audio_tracks.size());
+    for (const auto& t : cfg.audio_tracks) {
+        auto ap = std::make_unique<Impl::AudioPipe>();
+        ap->stream_index = t.stream_index;
+        ap->name = L"\\\\.\\pipe\\monolith_replay_audio_" +
+                   std::to_wstring(GetCurrentProcessId()) + L"_" +
+                   std::to_wstring(t.stream_index);
+        ap->handle = CreateNamedPipeW(
+            ap->name.c_str(),
             PIPE_ACCESS_OUTBOUND,
             PIPE_TYPE_BYTE | PIPE_WAIT,
             1,                    // one instance
             1 << 20, 1 << 20,     // out/in buffer sizes
             0, nullptr);
-        if (impl_->audio_pipe == INVALID_HANDLE_VALUE) {
+        if (ap->handle == INVALID_HANDLE_VALUE) {
             impl_->log_line("segment_replay: failed to create audio named pipe");
+            // Tear down any pipes already created.
+            for (auto& p : impl_->audio_pipes)
+                if (p->handle != INVALID_HANDLE_VALUE) CloseHandle(p->handle);
+            impl_->audio_pipes.clear();
             return false;
         }
+        audio_pipe_utf8.push_back(wide_to_utf8_local(ap->name));
+        impl_->audio_pipes.push_back(std::move(ap));
     }
 
     const std::wstring seg_pattern = cfg.segment_dir + L"\\seg_%03d.ts";
@@ -170,27 +198,26 @@ bool SegmentReplay::start(const SegmentReplayConfig&              cfg,
     std::vector<std::string> args =
         build_segment_args(cfg, audio_pipe_utf8, seg_pattern_utf8, seg_wrap);
 
-    // Start ffmpeg first; it will try to open the named pipe as input 1.
+    // Start ffmpeg first; it will try to open each named pipe as an input.
     if (!impl_->ffmpeg.start(cfg.ffmpeg_path, args,
                              [this](const std::string& l) { impl_->log_line("ffmpeg: " + l); })) {
         impl_->log_line("segment_replay: ffmpeg failed to start");
-        if (impl_->audio_pipe != INVALID_HANDLE_VALUE) {
-            CloseHandle(impl_->audio_pipe);
-            impl_->audio_pipe = INVALID_HANDLE_VALUE;
-        }
+        for (auto& p : impl_->audio_pipes)
+            if (p->handle != INVALID_HANDLE_VALUE) CloseHandle(p->handle);
+        impl_->audio_pipes.clear();
         return false;
     }
 
-    // Wait (on a helper thread) for ffmpeg to connect to the audio pipe, so
-    // push_video can begin immediately without blocking on the audio side.
-    if (cfg.audio_enabled) {
-        HANDLE pipe = impl_->audio_pipe;
-        impl_->audio_connect_thread = std::thread([this, pipe]() {
-            BOOL ok = ConnectNamedPipe(pipe, nullptr);
+    // Wait (on a helper thread per pipe) for ffmpeg to connect, so push_video can
+    // begin immediately without blocking on the audio side.
+    for (auto& p : impl_->audio_pipes) {
+        Impl::AudioPipe* raw = p.get();
+        raw->connect_thread = std::thread([this, raw]() {
+            BOOL ok = ConnectNamedPipe(raw->handle, nullptr);
             if (ok || GetLastError() == ERROR_PIPE_CONNECTED) {
-                impl_->audio_connected.store(true);
+                raw->connected.store(true);
             } else {
-                impl_->log_line("segment_replay: ffmpeg never connected to audio pipe");
+                impl_->log_line("segment_replay: ffmpeg never connected to an audio pipe");
             }
         });
     }
@@ -212,18 +239,19 @@ bool SegmentReplay::push_video(const uint8_t* bgra, size_t size)
     return impl_->ffmpeg.write_stdin(bgra, size);
 }
 
-bool SegmentReplay::push_audio(const uint8_t* pcm, size_t size)
+bool SegmentReplay::push_audio(int stream_index, const uint8_t* pcm, size_t size)
 {
-    if (!impl_->cfg.audio_enabled) return true; // nothing to do
     if (!impl_->running.load() || !pcm) return false;
-    if (!impl_->audio_connected.load()) return true; // drop until ffmpeg attaches
-    if (impl_->audio_pipe == INVALID_HANDLE_VALUE) return false;
+    Impl::AudioPipe* ap = impl_->pipe_for(stream_index);
+    if (!ap) return true;                       // unknown track: nothing to do
+    if (!ap->connected.load()) return true;     // drop until ffmpeg attaches
+    if (ap->handle == INVALID_HANDLE_VALUE) return false;
 
     size_t off = 0;
     while (off < size) {
         DWORD written = 0;
         DWORD chunk = (DWORD)std::min<size_t>(size - off, 1u << 20);
-        if (!WriteFile(impl_->audio_pipe, pcm + off, chunk, &written, nullptr) ||
+        if (!WriteFile(ap->handle, pcm + off, chunk, &written, nullptr) ||
             written == 0)
             return false; // ffmpeg closed the pipe
         off += written;
@@ -332,16 +360,19 @@ void SegmentReplay::stop()
 
     impl_->ffmpeg.stop(8000);
 
-    impl_->audio_connected.store(false);
-    if (impl_->audio_pipe != INVALID_HANDLE_VALUE) {
-        // Unblock a pending ConnectNamedPipe by disconnecting/closing.
-        CancelIoEx(impl_->audio_pipe, nullptr);
-        DisconnectNamedPipe(impl_->audio_pipe);
-        CloseHandle(impl_->audio_pipe);
-        impl_->audio_pipe = INVALID_HANDLE_VALUE;
+    for (auto& p : impl_->audio_pipes) {
+        p->connected.store(false);
+        if (p->handle != INVALID_HANDLE_VALUE) {
+            // Unblock a pending ConnectNamedPipe by disconnecting/closing.
+            CancelIoEx(p->handle, nullptr);
+            DisconnectNamedPipe(p->handle);
+            CloseHandle(p->handle);
+            p->handle = INVALID_HANDLE_VALUE;
+        }
+        if (p->connect_thread.joinable())
+            p->connect_thread.join();
     }
-    if (impl_->audio_connect_thread.joinable())
-        impl_->audio_connect_thread.join();
+    impl_->audio_pipes.clear();
 }
 
 } // namespace encoding
