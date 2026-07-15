@@ -50,6 +50,22 @@ FfmpegRunResult run_ffmpeg_capture(const std::wstring&             exe,
                                    const std::vector<std::string>& args,
                                    int                             timeout_ms = 5000);
 
+// Queries `ffmpeg -encoders` and returns the subset of Monolith's candidate
+// video encoders this build actually exposes, in vendor-preference order
+// (h264_nvenc, h264_amf, h264_qsv, libx264, hevc_nvenc, hevc_amf, hevc_qsv,
+// libx265). Empty if ffmpeg can't be run. Used to populate the Settings UI.
+std::vector<std::string> ffmpeg_available_encoders(const std::wstring& ffmpeg_exe);
+
+// Resolves the user's device ("gpu"/"cpu") + codec ("h264"/"h265") to a concrete
+// ffmpeg encoder name present in `available` (from ffmpeg_available_encoders).
+// GPU tries the vendor HW encoders for the codec (NVENC -> AMF -> QSV) then falls
+// back to software; CPU prefers software (libx264/libx265) then HW. For CPU+H.265
+// with no libx265, falls back to hardware HEVC, then H.264. Returns "" if nothing
+// matches.
+std::string ffmpeg_resolve_encoder(const std::string&              device,
+                                   const std::string&              codec,
+                                   const std::vector<std::string>& available);
+
 // Long-running ffmpeg subprocess with a writable stdin (the raw-frame pipe) and
 // a drained stderr. Backs the streaming encode paths (replay segmenter and
 // manual recorder). Not thread-safe: drive stdin from a single writer thread.

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <initializer_list>
 #include <thread>
 
 namespace encoding {
@@ -224,6 +225,87 @@ FfmpegRunResult run_ffmpeg_capture(const std::wstring&             exe,
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return result;
+}
+
+// ── Encoder detection ────────────────────────────────────────────────────────
+
+// Monolith's candidate encoders in vendor-preference order.
+static const char* kMonolithEncoders[] = {
+    "h264_nvenc", "h264_amf", "h264_qsv", "libx264",
+    "hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265",
+};
+
+std::vector<std::string> ffmpeg_available_encoders(const std::wstring& ffmpeg_exe)
+{
+    std::vector<std::string> result;
+    if (ffmpeg_exe.empty()) return result;
+
+    FfmpegRunResult r = run_ffmpeg_capture(ffmpeg_exe, {"-hide_banner", "-encoders"}, 8000);
+    if (!r.ran) return result;
+
+    // `ffmpeg -encoders` lines look like:
+    //   " V....D h264_nvenc           NVIDIA NVENC H.264 encoder"
+    // The first whitespace-delimited token after the capability flags is the
+    // encoder name. Rather than rely on a fixed flag-field width (fragile), we
+    // scan each candidate name as a whole word in the output — robust against
+    // format drift across ffmpeg versions.
+    const std::string& out = r.output;
+    for (const char* name : kMonolithEncoders) {
+        std::string needle = name;
+        size_t pos = 0;
+        bool found = false;
+        while ((pos = out.find(needle, pos)) != std::string::npos) {
+            const bool left_ok  = (pos == 0) ||
+                (unsigned char)out[pos - 1] <= ' ';
+            const size_t end = pos + needle.size();
+            const bool right_ok = (end >= out.size()) ||
+                (unsigned char)out[end] <= ' ';
+            if (left_ok && right_ok) { found = true; break; }
+            pos = end;
+        }
+        if (found) result.push_back(name);
+    }
+    return result;
+}
+
+std::string ffmpeg_resolve_encoder(const std::string&              device,
+                                   const std::string&              codec,
+                                   const std::vector<std::string>& available)
+{
+    auto has = [&](const std::string& n) {
+        for (const auto& a : available) if (a == n) return true;
+        return false;
+    };
+    auto first = [&](std::initializer_list<const char*> names) -> std::string {
+        for (const char* n : names) if (has(n)) return n;
+        return {};
+    };
+
+    const bool h265 = (codec == "h265" || codec == "hevc");
+
+    if (device == "cpu") {
+        if (!h265) {
+            std::string r = first({"libx264"});
+            if (!r.empty()) return r;
+            return first({"h264_nvenc", "h264_amf", "h264_qsv"});
+        }
+        // CPU + H.265: prefer software x265, else fall back to HW HEVC, else H.264.
+        std::string r = first({"libx265"});
+        if (!r.empty()) return r;
+        r = first({"hevc_nvenc", "hevc_amf", "hevc_qsv"});
+        if (!r.empty()) return r;
+        return first({"libx264", "h264_nvenc", "h264_amf", "h264_qsv"});
+    }
+
+    // device == "gpu" (default): HW first, then software.
+    if (!h265) {
+        std::string r = first({"h264_nvenc", "h264_amf", "h264_qsv"});
+        if (!r.empty()) return r;
+        return first({"libx264"});
+    }
+    std::string r = first({"hevc_nvenc", "hevc_amf", "hevc_qsv"});
+    if (!r.empty()) return r;
+    return first({"libx265", "h264_nvenc", "h264_amf", "h264_qsv", "libx264"});
 }
 
 // ── FfmpegProcess ────────────────────────────────────────────────────────────────
