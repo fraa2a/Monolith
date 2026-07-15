@@ -13,6 +13,11 @@
 #ifndef MonolithVersion
   #define MonolithVersion "1.2.3"
 #endif
+; Full version string for display + output file name; may carry a pre-release
+; suffix (e.g. 1.6.0-rc1). Defaults to the numeric MonolithVersion.
+#ifndef MonolithFullVersion
+  #define MonolithFullVersion MonolithVersion
+#endif
 
 #define MonolithName "Monolith"
 #define MonolithExe "Monolith.exe"
@@ -24,8 +29,8 @@
 ; Stable AppId: future installers upgrade in place over this identity.
 AppId={{81c3dff1-5dbe-4c96-bab0-a945e3a22b63}
 AppName={#MonolithName}
-AppVersion={#MonolithVersion}
-AppVerName={#MonolithName} {#MonolithVersion}
+AppVersion={#MonolithFullVersion}
+AppVerName={#MonolithName} {#MonolithFullVersion}
 AppPublisher={#MonolithPublisher}
 AppPublisherURL={#MonolithRepoUrl}
 AppSupportURL={#MonolithRepoUrl}
@@ -35,7 +40,7 @@ DisableProgramGroupPage=yes
 DisableDirPage=auto
 PrivilegesRequired=lowest
 OutputDir=Output
-OutputBaseFilename=MonolithSetup-{#MonolithVersion}
+OutputBaseFilename=MonolithSetup-{#MonolithFullVersion}
 SetupIconFile=..\app\assets\icon.ico
 UninstallDisplayIcon={app}\{#MonolithExe}
 LicenseFile=..\LICENSE
