@@ -1,6 +1,55 @@
 # Active Handover
 
-Updated: 2026-07-12
+Updated: 2026-07-15
+
+## Session 2026-07-15 — external ffmpeg.exe refactor (in progress, branch)
+
+Driven by a comparison with the Record-able Minecraft mod (see `REPORT.md`).
+Native engine NOT built locally (vcpkg absent) — CI is the only compile check;
+runtime a/v behaviour needs a real-machine smoke test.
+
+**Landed on `main` (Windows CI green):**
+- Resolution UI simplified to mod-style presets (native/480p/720p/1080p/1440p),
+  scaling-filter selector removed, scaler fixed to bilinear engine-side.
+- Encoder section shows the resolved encoder ("Encoding with: <vendor> · <codec>")
+  via a new `encoderLabel()` helper instead of a bare codec / buried help text.
+- `libs/encoding/ffmpeg_process.{h,cpp}`: locate/launch ffmpeg.exe (no libav*),
+  `FfmpegProcess` (stdin frame pipe + drained stderr), `run_ffmpeg_capture`,
+  `ffmpeg_available_encoders`/`ffmpeg_resolve_encoder`. Setting `ffmpeg_path`.
+
+**On branch `refactor/ffmpeg-external` (PR #1 draft — do NOT merge until smoke-tested):**
+- `libs/encoding/segment_replay.{h,cpp}`: `SegmentReplay` — external ffmpeg writes
+  rotating mpegts segments; raw video on stdin + one named pipe per audio track
+  (multi-track preserved); `save_clip()` concats recent segments (stream copy).
+- `libs/encoding/recording_process.{h,cpp}`: `RecordingProcess` — same model,
+  one continuous output file.
+- Replay/recording **mutual exclusion** (default): a recording suspends the replay
+  buffer; advanced setting `allow_concurrent_capture` (off) permits both with a UI
+  cost warning. `g_replay_suspended_for_recording` + `replay_active()` in main.cpp.
+
+**Decisions taken this session:**
+- Licensing route: external ffmpeg.exe process (keeps GPL x264/x265 out of the ARR
+  binary). Replay stays efficient via segment muxer on disk (NOT the mod's
+  GB-scale raw-frame RAM buffer).
+- Replay keeps multi-track audio via N named pipes (not video-only like the mod).
+- Concurrent clip+record: off by default (mutex), opt-in advanced toggle.
+- Recording pause = **cut time** (stop feeding ffmpeg while paused); the current
+  pts-stitching pause is not replicable with an external encoder.
+
+**NOT yet done (next):**
+- The core rewire of `main.cpp`: replace the in-process `g_video_enc` +
+  `g_replay`/`g_recording` packet tee with pacer→`push_video` (stride-compacted)
+  and audio routes→`push_audio` (per-track named pipe, via TrackMixer to the
+  canonical f32le format). Wire `ffmpeg_resolve_encoder` (device/codec + vendor
+  display, Point 3). Update perf stats / `is_open()` / `media_start`/`media_stop`.
+- P5: vcpkg LGPL-ify for the remaining in-process users (thumbnail.cpp +
+  probe_duration decode are non-GPL and can stay), bundle ffmpeg.exe+ffprobe.exe,
+  license notices, `docs/DECISIONS.md`.
+- Points 6 (audio codecs) intentionally skipped; Point 7 (timing) checked — no fix.
+
+Open items: full runtime smoke on a real machine — save replay (a/v sync,
+multi-track), manual record start/stop, the replay↔recording suspend/restore, and
+the external ffmpeg segment rotation + concat. None verifiable from CI alone.
 
 ## Session 2026-07-12 (b) — border removal + shared-exe game resolution + titlebar crash fix
 
