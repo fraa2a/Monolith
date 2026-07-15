@@ -304,6 +304,19 @@ static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
 static std::atomic<bool> g_recording_enabled{ true };
 
+// Runtime mutex between the replay buffer and manual recording. Unless the user
+// opts into concurrent capture, a recording temporarily suspends the replay
+// buffer (two encoders would otherwise encode every frame twice). This flag is
+// AND-ed with the user's g_replay_enabled setting at every replay gate, so the
+// user's own on/off preference is never overwritten.
+static std::atomic<bool> g_replay_suspended_for_recording{ false };
+
+static inline bool replay_active()
+{
+    return g_replay_enabled.load(std::memory_order_relaxed) &&
+           !g_replay_suspended_for_recording.load(std::memory_order_relaxed);
+}
+
 // Snapshot of the two output folders, guarded so the IPC thread can resolve the
 // right clip DB for UI-driven mutations without racing settings reloads on the
 // UI thread. Updated in apply_runtime_settings().
@@ -867,6 +880,7 @@ static bool auto_record_start(HWND hwnd)
     if (g_recording.state() != recording::RecordingState::Idle) return false;
     if (!g_video.running()) media_start(hwnd);
     if (!g_recording.start(g_recordings_dir, g_recording_container)) return false;
+    suspend_replay_for_recording();
     g_auto_recording_active = true;
     g_auto_state            = AutoState::AutoRecording;
     g_recording_game_pid    = g_effective_game_pid;
@@ -892,8 +906,30 @@ static void auto_record_stop()
         feedback::play(feedback::Sound::RecordStop);
         tray_set_recording(false);
     }
+    restore_replay_after_recording();
     g_auto_recording_active = false;
     g_recording_game_pid    = 0;
+}
+
+// ── Replay/recording mutual exclusion ───────────────────────────────────────
+// Unless the user opted into concurrent capture, a manual/auto recording
+// temporarily suspends the replay buffer so only one encoder runs. Suspending
+// clears the ring (its retained history is meaningless while paused) and the
+// gate stops feeding it; restoring re-arms the gate for future frames.
+
+static void suspend_replay_for_recording()
+{
+    if (g_settings.allow_concurrent_capture) return;
+    if (g_replay_suspended_for_recording.exchange(true)) return;
+    g_replay.clear();
+    log_msg("replay", "replay buffer suspended while recording (concurrent capture off)");
+}
+
+static void restore_replay_after_recording()
+{
+    if (!g_replay_suspended_for_recording.exchange(false)) return;
+    if (g_replay_enabled.load(std::memory_order_relaxed))
+        log_msg("replay", "replay buffer resumed after recording");
 }
 
 // Runs the game_only capture pipeline + auto-record state machine from the shared
@@ -1192,7 +1228,7 @@ static bool open_audio_track(int track)
     acfg.stream_index = track;
 
     bool ok = encoder.open(acfg, [](encoding::EncodedPacket pkt) {
-        if (g_replay_enabled.load(std::memory_order_relaxed)) {
+        if (replay_active()) {
             auto replay_pkt = pkt;
             g_replay.push(std::move(replay_pkt));
         }
@@ -2304,7 +2340,7 @@ static void media_start(HWND hwnd)
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
                     g_perf_encoder_packets_output.fetch_add(1, std::memory_order_relaxed);
-                    if (g_replay_enabled.load(std::memory_order_relaxed)) {
+                    if (replay_active()) {
                         auto replay_pkt = pkt;
                         g_replay.push(std::move(replay_pkt));
                     }
@@ -2595,8 +2631,10 @@ static void tray_show_menu(HWND hwnd)
     recording::RecordingState state = g_recording.state();
     const bool replay_on    = g_replay_enabled.load(std::memory_order_relaxed);
     const bool recording_on = g_recording_enabled.load(std::memory_order_relaxed);
-    // Save Replay needs the component enabled and the encoder feeding the ring.
-    UINT save_flags  = (replay_on && g_video_enc.is_open()) ? MF_STRING : (MF_STRING | MF_GRAYED);
+    // Save Replay needs the component enabled, not suspended for a recording, and
+    // the encoder feeding the ring.
+    UINT save_flags  = (replay_on && replay_active() && g_video_enc.is_open())
+        ? MF_STRING : (MF_STRING | MF_GRAYED);
     UINT start_flags = (recording_on && state == recording::RecordingState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
     UINT stop_flags  = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
     UINT pause_flags = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
@@ -2917,6 +2955,11 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("replay", "save_replay ignored: replay buffer disabled in settings");
             break;
         }
+        if (g_replay_suspended_for_recording.load(std::memory_order_relaxed)) {
+            log_msg("replay", "save_replay ignored: replay suspended while recording "
+                              "(enable concurrent capture in Advanced to allow both)");
+            break;
+        }
         if (game_gate_blocks()) {
             log_msg("replay", "save_replay ignored: no supported game detected");
             break;
@@ -2951,6 +2994,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
         }
         if (g_recording.start(g_recordings_dir, g_recording_container)) {
             g_auto_recording_active = false;
+            suspend_replay_for_recording();
             if (!g_video.running())
                 media_start(hwnd);
             log_path("recording", "recording started: ", g_recording.current_path());
@@ -2974,6 +3018,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
             }
             feedback::play(feedback::Sound::RecordStop);
             tray_set_recording(false);
+            restore_replay_after_recording();
             if (!g_replay_enabled.load(std::memory_order_relaxed) && g_video.running())
                 media_stop();
         } else {

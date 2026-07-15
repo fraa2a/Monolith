@@ -550,6 +550,16 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
 
           <Section title="Extras">
             <Field
+              label="Clip and record at the same time"
+              help="Off by default: starting a recording pauses the replay buffer. Enabling both runs two encoders at once — higher CPU and RAM usage."
+              control={
+                <Toggle
+                  checked={!!val("advanced.allow_concurrent_capture")}
+                  onChange={(v) => update("advanced.allow_concurrent_capture", v)}
+                />
+              }
+            />
+            <Field
               label="FFmpeg path"
               help="Optional. Leave empty to auto-locate (bundled, then system PATH)."
               control={

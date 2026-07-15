@@ -48,6 +48,13 @@ struct Config {
     std::string recording_container = "mkv"; // "mkv" | "mp4"
     bool recording_enabled = true;
 
+    // Advanced: allow the replay buffer and a manual recording to run at the same
+    // time. With the external ffmpeg encoder this means two encoder processes
+    // (the frame is encoded twice), which is heavy on CPU encoders. Default off:
+    // starting a recording temporarily suspends the replay buffer, then restores
+    // it on stop.
+    bool allow_concurrent_capture = false;
+
     // Audio (restarted when no manual recording is active).
     std::string audio_mode = "default"; // "default" | "custom"
     std::wstring primary_microphone_device_id;
