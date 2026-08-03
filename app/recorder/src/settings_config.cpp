@@ -333,7 +333,6 @@ void write_runtime_fields(json& doc, const Config& config)
         doc["replay_buffer"].erase("memory_budget_mb");
     doc["recording"]["enabled"] = config.recording_enabled;
     doc["recording"]["container"] = config.recording_container;
-    doc["advanced"]["allow_concurrent_capture"] = config.allow_concurrent_capture;
     // Dead key removed from the schema; scrub it from older configs.
     if (doc.contains("recording") && doc["recording"].is_object())
         doc["recording"].erase("pause_behavior");
@@ -342,7 +341,6 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["video_encoder"]["bitrate_kbps"] = config.video_bitrate_kbps;
     doc["video_encoder"]["fps"] = config.video_fps;
     doc["video_encoder"]["extra_ffmpeg_options"] = config.extra_ffmpeg_options;
-    doc["video_encoder"]["ffmpeg_path"] = wide_to_utf8(config.ffmpeg_path);
     // Legacy encoder keys scrubbed from older configs.
     if (doc.contains("video_encoder") && doc["video_encoder"].is_object()) {
         doc["video_encoder"].erase("backend");
@@ -414,7 +412,6 @@ Config config_from_json(
     if (config.recording_container != "mkv" && config.recording_container != "mp4")
         config.recording_container = "mkv";
     config.recording_enabled = bool_at(doc, "recording", "enabled", true);
-    config.allow_concurrent_capture = bool_at(doc, "advanced", "allow_concurrent_capture", false);
 
     config.update_auto_check = bool_at(doc, "update", "auto_check", true);
     config.logging_enabled = bool_at(doc, "advanced", "logging_enabled", false);
@@ -464,7 +461,6 @@ Config config_from_json(
         config.video_fps = 60;
 
     config.extra_ffmpeg_options = utf8_at(doc, "video_encoder", "extra_ffmpeg_options", "");
-    config.ffmpeg_path = utf8_to_wide(utf8_at(doc, "video_encoder", "ffmpeg_path", ""));
 
     config.hotkey_save_replay = utf8_at(doc, "hotkeys", "save_replay", "Ctrl+Shift+F8");
     config.hotkey_recording_start = utf8_at(doc, "hotkeys", "recording_start", "Ctrl+Shift+F9");

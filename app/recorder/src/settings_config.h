@@ -48,13 +48,6 @@ struct Config {
     std::string recording_container = "mkv"; // "mkv" | "mp4"
     bool recording_enabled = true;
 
-    // Advanced: allow the replay buffer and a manual recording to run at the same
-    // time. With the external ffmpeg encoder this means two encoder processes
-    // (the frame is encoded twice), which is heavy on CPU encoders. Default off:
-    // starting a recording temporarily suspends the replay buffer, then restores
-    // it on stop.
-    bool allow_concurrent_capture = false;
-
     // Audio (restarted when no manual recording is active).
     std::string audio_mode = "default"; // "default" | "custom"
     std::wstring primary_microphone_device_id;
@@ -93,9 +86,6 @@ struct Config {
     int video_fps = 60;                   // presets 24/30/60/120/144
     std::string scaling_filter = "bilinear"; // fixed to bilinear (UI selector removed)
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions
-    // Optional explicit path to ffmpeg.exe. Empty = auto-locate (bundled next to
-    // the executable, then system PATH). Used by the external-encoder path.
-    std::wstring ffmpeg_path;
 
     // Auto-update (applied live via WinSparkle on settings reload).
     bool update_auto_check = true;
