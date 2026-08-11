@@ -1406,3 +1406,186 @@ body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ── Bookmarks & trim ────────────────────────────────────────────────────── */
+.detail-bookmarks { margin-top: 18px; }
+.detail-bookmarks-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.detail-bookmarks-head .k {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+}
+.bm-empty { margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+.bm-list { list-style: none; margin: 0; padding: 0; }
+.bm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 2px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.bm-row .act-btn { width: 24px; height: 24px; }
+.bm-swatch { flex: none; width: 10px; height: 10px; border-radius: 3px; border: 1px solid var(--line); }
+.bm-label {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px;
+}
+.bm-time { flex: none; color: var(--text-dim); font-family: var(--mono); font-size: 11px; }
+.bm-palette { display: flex; align-items: center; gap: 5px; }
+.bm-swatch-btn { width: 16px; height: 16px; padding: 0; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+.bm-swatch-btn:hover { border-color: var(--text-dim); }
+.bm-swatch-btn.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bm-label-input { flex: 1; min-width: 0; padding: 6px 9px; font-size: 13px; }
+
+/* Timeline wrapper: bookmark ticks sit on the scrubber line. */
+.timeline-wrap { position: relative; }
+.bm-marker {
+  position: absolute;
+  top: 50%; transform: translate(-50%, -50%);
+  width: 10px; height: 10px;
+  padding: 0;
+  border: 2px solid var(--dark);
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 2;
+}
+.bm-marker:hover { border-color: var(--light-hi); }
+
+/* Trim track: thin line with a start/end handle pair + selection overlay. */
+.trim-track {
+  position: relative;
+  height: 28px;
+  cursor: ew-resize;
+}
+.trim-track::before {
+  content: "";
+  position: absolute; left: 0; right: 0; top: 50%;
+  height: 4px; transform: translateY(-50%);
+  background: var(--line);
+  border-radius: 2px;
+}
+.trim-overlay {
+  position: absolute; top: 50%; height: 4px;
+  transform: translateY(-50%);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+.trim-playhead {
+  position: absolute; top: 50%; height: 14px; width: 2px;
+  transform: translateY(-50%);
+  background: var(--text);
+  opacity: .75;
+  pointer-events: none;
+  z-index: 2;
+}
+.trim-handle {
+  position: absolute; top: 50%; transform: translate(-50%, -50%);
+  width: 14px; height: 14px;
+  padding: 0;
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  color: var(--accent-ink);
+  cursor: ew-resize;
+  z-index: 3;
+}
+.trim-handle:hover { background: var(--accent-hi); }
+.trim-handle:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+.trim-readout { display: flex; align-items: center; gap: 8px; }
+.trim-range { color: var(--text-dim); font-family: var(--mono); font-size: 12px; }
+.act-trim.active { color: var(--accent); }
+.act-btn:disabled { opacity: .35; cursor: default; }
+
+/* ── Collections ─────────────────────────────────────────────────────────── */
+.collections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 18px;
+}
+.collection-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 16px;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .14s, transform .14s, box-shadow .14s;
+}
+.collection-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+.collection-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.collection-name {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.collection-count { color: var(--text-dim); font-family: var(--mono); font-size: 12px; }
+.collection-cover {
+  display: grid;
+  place-items: center;
+  height: 110px;
+  background: var(--field);
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+}
+.collection-cover svg { opacity: .65; }
+.card-act {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color .12s, background .12s;
+}
+.card-act:hover { color: var(--text); background: var(--light-hi); }
+.card-act.danger:hover { color: var(--danger); }
+.card-act svg { display: block; }
+.color-swatch {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.color-swatch.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.color-swatch svg { color: var(--dark); }
+.collection-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.collection-picker { padding: 4px 0; }
+.collection-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.collection-picker-row:hover { background: var(--light); }
+.collection-empty { color: var(--text-dim); padding: 92px 40px; text-align: center; }

@@ -44,6 +44,7 @@ struct Config {
     std::wstring temp_directory;      // managed internally; not user-configurable
     int replay_duration_seconds = 30; // presets 15/30/60/120, or custom 5–600
     std::string replay_clip_container = "mkv"; // "mkv" | "mp4"
+    std::string replay_buffer_storage = "ram"; // "ram" (memory) | "disk" (segments on disk)
     bool replay_buffer_enabled = true;
     std::string recording_container = "mkv"; // "mkv" | "mp4"
     bool recording_enabled = true;
@@ -81,7 +82,7 @@ struct Config {
     // concrete FFmpeg encoder from what the machine actually supports. Rate
     // control is always CBR with the configured bitrate.
     std::string encoder_device = "gpu";   // "gpu" | "cpu"
-    std::string encoder_codec  = "h264";  // "h264" | "h265"
+    std::string encoder_codec  = "h264";  // "h264" | "h265" | "av1"
     int video_bitrate_kbps = 20000;       // CBR target, clamped 1000–200000
     int video_fps = 60;                   // presets 24/30/60/120/144
     std::string scaling_filter = "bilinear"; // fixed to bilinear (UI selector removed)
@@ -97,6 +98,7 @@ struct Config {
     std::string hotkey_recording_start = "Ctrl+Shift+F9";
     std::string hotkey_recording_stop = "Ctrl+Shift+F10";
     std::string hotkey_pause_resume = "Ctrl+Shift+F11";
+    std::string hotkey_add_bookmark = "Ctrl+Shift+F12";
 
     std::string merged_json;
 };

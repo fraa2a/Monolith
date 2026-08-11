@@ -6,3 +6,6 @@ node_modules/
 
 # Rust / Tauri build output.
 src-tauri/target/
+
+# Runtime data dir (Linux dev fallback when no OS data dir is available).
+src-tauri/Monolith/

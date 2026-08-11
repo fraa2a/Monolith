@@ -20,6 +20,7 @@ target_include_directories(replay_buffer PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(replay_buffer
     PRIVATE
         encoding
+        disk_segments
         ${FFMPEG_LIBRARIES}
 )
 

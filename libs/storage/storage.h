@@ -97,6 +97,40 @@ public:
 
     bool set_favorite(int64_t id, bool favorite, std::string* error);
 
+    // Overwrites the stored clip duration (seconds). Used after a lossless trim
+    // rewrites the video file in place. Fails when the clip row is missing.
+    bool set_duration(int64_t id, double seconds, std::string* error);
+
+    // Basename of the clip's video file ("" when the row is missing). Used by
+    // the engine to locate the file for clip_trim.
+    std::wstring video_file_for(int64_t id) const;
+
+    // ── Bookmarks (manual recordings only) ────────────────────────────────────
+    // Model borrowed from Vice: one bookmark per clip, identified by a 1-based
+    // `seq`, with a wall-clock offset into the file, an editable label and an
+    // optional #rrggbb color. Written by the engine at recording stop, edited
+    // by the UI afterwards.
+    struct BookmarkRow {
+        int         seq = 0;
+        double      time_seconds = 0.0;
+        std::string label;
+        std::string color;
+    };
+
+    bool add_bookmark(int64_t id, int seq, double time_seconds,
+                      const std::string& label, const std::string& color,
+                      std::string* error);
+    bool update_bookmark(int64_t id, int seq,
+                         const std::string& label, const std::string& color,
+                         std::string* error);
+    // Moves a bookmark to a new wall-clock offset (used by clip_trim to keep
+    // bookmarks in sync with the retimed file).
+    bool set_bookmark_time(int64_t id, int seq, double time_seconds,
+                           std::string* error);
+    bool remove_bookmark(int64_t id, int seq, std::string* error);
+    bool list_bookmarks(int64_t id, std::vector<BookmarkRow>& out,
+                        std::string* error) const;
+
     // Updates the clip's display title only. Does NOT touch the video file on
     // disk — title is independent of the filename. Empty title becomes "Untitled".
     bool set_title(int64_t id, const std::string& title, std::string* error);

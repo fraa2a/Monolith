@@ -144,8 +144,12 @@ Clip mutations:
 - `clip_set_title`
 - `clip_regen_thumb`
 - `clip_delete`
+- `clip_trim` (`start`, `end` seconds; lossless remux, in-place replace)
+- `recording_add_bookmark` (adds a bookmark at the current recording
+  clock; handled on the IPC thread for timestamp accuracy)
 
-`get_status` return recording state + `clip_generation`, monotonic counter
+`get_status` return recording state (incl. `recording_elapsed_seconds`,
+pause-excluded) + `clip_generation`, monotonic counter
 used by UI host to refresh clip grid.
 
 ## Working Rules

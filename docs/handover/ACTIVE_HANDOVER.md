@@ -1,6 +1,43 @@
 # Active Handover
 
-Updated: 2026-07-12
+Updated: 2026-08-11
+
+## Session 2026-08-11 — Vice feature fusion: quick trim, bookmarks, replay storage RAM|Disk, AV1, collections
+
+Executed the full plan at `local://monolith-vice-fusion-plan.md` (engine + IPC + storage + Rust + Preact UI). UI `npm install` + `npx tsc --noEmit` + `npx vite build` all GREEN on this machine. Native side is static-verified only — **no C++ build (MSVC/vcpkg absent) and no cargo on this host; Windows CI + real-machine build is the first step before release**.
+
+Phase 1 — Engine foundation (native, static-verified):
+
+- IPC (`libs/ipc`): `ClipMutation{start,end}`, `AddBookmarkFn` + `start()` 5th param, `"recording_add_bookmark"` handled on the IPC thread (bookmark timestamp accuracy), `"clip_trim"` whitelisted.
+- Storage (`libs/storage`): `set_duration`, `video_file_for(id)`, `set_bookmark_time`, bookmark CRUD (INSERT OR REPLACE, `clip_exists` guard, `PRIMARY KEY(clip_id,seq)`), `remove_clip` cascade.
+- Engine (`app/recorder/src/main.cpp`): recording-clock globals + `recording_elapsed_seconds()` (+ pause/resume), `PendingBookmark{time,label,color}` queue flushed on catalog with `catalog_clip(path, source, dur, on_cataloged)`; `CMD_ADD_BOOKMARK = 1008` with hotkey (default `Ctrl+Shift+F12`) + tray entry + wnd_proc dispatch; `add_bookmark_now` errors on "not recording"/"recording is paused". Fixed: auto-record stop path lacked the flush closure — now builds `folder = parent_path(path)` and passes `[folder](int64_t id){ flush_pending_bookmarks(id, folder); }` (same as the manual-stop path).
+
+Phase 2 — Settings (`settings_config.{h,cpp}`, default-config.json): `hotkey_add_bookmark` (`Ctrl+Shift+F12`), `replay_buffer_storage` (`"ram"|"disk"`), codec accepts `"av1"`. 5-entry hotkey collision table in C++ and Rust (frontend auto-picks from its hotkey field list). Note: `settings.db` stores whole top-level sections as JSON blobs — all new sub-keys round-trip with zero Rust changes.
+
+Phase 3 — Trim lib (`libs/encoding/trim.{h,cpp}`): ffmpeg `-c copy` remux window with keyframe-backward seek (playback-safe pre-roll), per-stream pts/dts re-anchor + `offset_sec` shift, trailer finalize, `concat_clip_segments` for multi-segment; lossless→reencode fallback. `main.cpp::trim_clip` validates, writes `.trimming<ext>` temp, `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`, `set_duration`, bookmark re-time (`set_bookmark_time(t-start)`/`remove_bookmark`), thumbnail regen + `g_clip_generation` bump. Fixed latent: output pb leak on error paths (`OutFmt` dtor `avio_closep` + `free_fmt` lambda in reencode path). CMakeLists already included `trim.cpp`.
+
+Phase 4 — Replay-buffer disk backend: new `libs/disk-segments/{disk_segments.h,cpp,CMakeLists.txt}`; `replay_buffer` `Impl::disk` unique_ptr, `configure()` routes ram↔disk (forwards vsp/audio params), `push/clear/save_clip/stats` route; `main.cpp` `apply_runtime_settings` sets `rbcfg.storage` + `rbcfg.segment_dir = temp_directory`.
+
+Phase 5 — AV1 (`libs/encoding`): `VideoCodec::AV1`, `resolve_video_encoder("h264"|"h265"|"av1")`, candidates `av1_nvenc/av1_amf/av1_qsv/libaom-av1`; libaom options `cpu-used=8` + `rc-end-usage=cbr` only (never preset/tune — unknown option fails `avcodec_open2`); `mux_common.cpp` AV1→`AV_CODEC_ID_AV1`; `vcpkg.json` ffmpeg features += libaom.
+
+Phase 6 — Rust backend (`src-tauri/src`): `clip_catalog.rs` bookmark CRUD + `BOOKMARK_DDL` + `clip_by_id` + `clip_select_sql`/`map_clip_row` refactor; new `collections.rs` (single global `%LocalAppData%\Monolith\collections.db`, mixes replay+manual, prune-on-read, ISO-8601 `created_at_utc`); `commands.rs` registered 13 new commands (`clip_trim`, `recording_add_bookmark`, bookmark CRUD, collection CRUD + membership); `main.rs` invoke_handler verified — all 37 entries exist.
+
+Phase 7 — UI (`app/desktop-ui/ui`): `lib/api.ts` `clipApi.{trim,listBookmarks,addBookmark,updateBookmark,deleteBookmark,recordingAddBookmark}` + `collectionsApi.{list,create,rename,remove,clips,addClip,removeClip}` + `BookmarkRow`/`CollectionSummary` (color swatch, no cover thumb); `icons.tsx` += `scissors/bookmark/album/plus-circle/flag`. Settings popup: 5th hotkey field, Replay Storage segmented (Ram|Disk), AV1 codec option + encoder label. Detail view: trim mode with draggable/keyboard handles (min span 0.5s, Esc cancels, Apply → `clip_trim`), bookmark markers on the scrubber, bookmark list with edit/delete + 8-swatch palette, add-bookmark button gated to `clip.source === "manual"`. Collections: sidebar 3rd nav (album icon), `collections-view` (grid + create/rename/delete), `collection-detail` (self-contained: its own DetailView/Fullscreen/ctx-menu — collections have no cover image, cards use color swatch + album icon), `collection-picker` (from clip context menu "Add to collection…" + detail-view album button), titlebar `Collections · <name>`.
+
+Verification on this machine (all done this session):
+
+- **cargo build (Linux) green — MUST use `--features custom-protocol`**: `cargo build --release --features custom-protocol` in `src-tauri` → `target/release/monolith_ui` (24 MB, ELF x86-64, stripped) and the UI **loads** (verified live). Without the feature the release binary falls back to `devUrl` (`http://localhost:1420`) — WebView shows a white screen with "Could not connect to localhost: Connection refused" (that error is the dev server, NOT the engine's 45991). The plain `cargo build --release` in this file's older sessions and the Open-items command below had this latent trap; on Windows too, production builds must pass `--features custom-protocol` (or use `npm run tauri build`, which enables it via the CLI). Two more cross-platform fixes: `src-tauri/icons/icon.png` was missing (tauri-build requires it on Linux; Windows uses the ico) — copied from `app/assets/icon.png`; `exe_icon.rs` (SHDefExtractIconW) is Windows-only but was compiled unconditionally — `mod exe_icon`, the `commands::exe_icon` import/fn and its invoke_handler entry are now `#[cfg(target_os = "windows")]` (leaves 2 dead-code warnings in `game_catalog.rs` on Linux only — reachable on Windows, intentional).
+- `npm install` (91 packages), `npx tsc --noEmit` → 0 errors, `npx vite build` → OK (37 modules, 109 kB JS / 35 kB CSS).
+- Fixed one pre-existing UI type bug found by tsc: `saveCapturedThumb` went through `ok()` which discarded the `thumbnail_file` return value while `clip-card.tsx` reads `res.thumbnail_file` — now returns the invoke payload on the envelope.
+- Cross-stack parity greps: `clip_trim`/`recording_add_bookmark` present in ipc_server.h/.cpp + main.cpp + commands.rs + api.ts; `catalog_clip` def + 3 callsites (auto-stop/replay/manual-stop); 5 hotkey registrations; bookmark DDL C++/Rust aligned; `replay_buffer_storage`/`hotkey_add_bookmark` wired in settings C++ + engine; all 13 commands in `commands.rs` and invoke_handler.
+
+Open items — Windows-only, cannot run here:
+
+1. Build: `cmake --build build --config Release` (vcpkg add `libaom` via ffmpeg features) + `cargo build --release --features custom-protocol --manifest-path src-tauri\Cargo.toml` (the feature is required — without it the webview falls back to devUrl and shows a white screen).
+2. Runtime smoke: trim a manual clip (verify keyframe pre-roll quality + duration/timebase), add bookmark mid-recording via `Ctrl+Shift+F12` and via tray, replay-buffer storage=Disk (segment files under temp dir), AV1 encoding path (`libaom-av1` or hw AV1), collections create/rename/delete/add-remove clip (replay AND manual), bookmark re-time after trim.
+3. Confirm `%LocalAppData%\Monolith\collections.db` schema on first collections use.
+
+Previous session entry below (2026-07-12) unchanged.
 
 ## Session 2026-07-12 (b) — border removal + shared-exe game resolution + titlebar crash fix
 

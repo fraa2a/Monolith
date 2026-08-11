@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import {
+  collectionsApi,
   type Clip,
   clipApi,
+  type CollectionSummary,
   fetchClips,
   fetchGames,
   fetchHashtags,
@@ -9,6 +11,9 @@ import {
   subscribeClips,
 } from "./lib/api.ts";
 import { ClipCard } from "./home/clip-card.tsx";
+import { CollectionDetail } from "./home/collection-detail.tsx";
+import { CollectionPicker } from "./home/collection-picker.tsx";
+import { CollectionsView } from "./home/collections-view.tsx";
 import { ContextMenu, type MenuAction } from "./home/context-menu.tsx";
 import { ConfirmDialog } from "./home/confirm-dialog.tsx";
 import { HashtagDialog } from "./home/hashtag-dialog.tsx";
@@ -38,19 +43,24 @@ export function App() {
   const [fullscreen, setFullscreen] = useState<{ clip: Clip; initialTime: number } | null>(null);
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [collectionView, setCollectionView] = useState<{ kind: "list" } | { kind: "detail"; id: number } | null>(null);
+  const [collections, setCollections] = useState<CollectionSummary[]>([]);
+  const [collectionPicker, setCollectionPicker] = useState<Clip | null>(null);
 
   const reload = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
-    const [c, g, h] = await Promise.all([
+    const [c, g, h, cols] = await Promise.all([
       fetchClips(filter),
       fetchGames(),
       fetchHashtags(),
+      collectionView ? collectionsApi.list() : Promise.resolve(null as CollectionSummary[] | null),
     ]);
     setClips(c);
     setGames(g);
     setHashtags(h);
+    if (cols) setCollections(cols);
     setLoading(false);
-  }, [filter]);
+  }, [filter, collectionView]);
 
   const updateClip = useCallback((next: Clip) => {
     setClips((items) => items.map((item) => (
@@ -96,6 +106,10 @@ export function App() {
         setMenu(null);
         setTagDialog(clip);
         break;
+      case "add-to-collection":
+        setMenu(null);
+        setCollectionPicker(clip);
+        break;
       case "fullscreen":
         setFullscreen({ clip, initialTime: 0 });
         break;
@@ -116,14 +130,56 @@ export function App() {
 
   return (
     <div class="win">
-      <Titlebar view={filter.favorite ? "Favorites" : "Library"} />
+      <Titlebar
+        view={
+          collectionView?.kind === "detail"
+            ? `Collections · ${collections.find((c) => c.id === collectionView.id)?.name ?? "Collections"}`
+            : collectionView
+            ? "Collections"
+            : filter.favorite
+            ? "Favorites"
+            : "Library"
+        }
+      />
       <div class="shell">
         <Sidebar
           filter={filter}
           onChange={setFilter}
           onOpenSettings={() => setShowSettings(true)}
+          collectionsActive={collectionView != null}
+          onOpenCollections={() => setCollectionView({ kind: "list" })}
         />
         <main class="content">
+          {collectionView ? (
+            collectionView.kind === "list" ? (
+              <CollectionsView
+                collections={collections}
+                onOpen={(id) => setCollectionView({ kind: "detail", id })}
+                onChanged={() => reload(true)}
+              />
+            ) : (
+              (() => {
+                const c = collections.find((item) => item.id === collectionView.id);
+                return c
+                  ? (
+                    <CollectionDetail
+                      collection={c}
+                      allHashtags={hashtags}
+                      onBack={() => setCollectionView({ kind: "list" })}
+                      onChanged={() => reload(true)}
+                    />
+                  )
+                  : (
+                    <CollectionsView
+                      collections={collections}
+                      onOpen={(id) => setCollectionView({ kind: "detail", id })}
+                      onChanged={() => reload(true)}
+                    />
+                  );
+              })()
+            )
+          ) : (
+            <>
           <Filters
             games={games}
             hashtags={hashtags}
@@ -172,6 +228,8 @@ export function App() {
             </div>
             </>
           )}
+            </>
+          )}
         </main>
       </div>
 
@@ -205,6 +263,14 @@ export function App() {
         />
       )}
 
+      {collectionPicker && (
+        <CollectionPicker
+          clip={collectionPicker}
+          onClose={() => setCollectionPicker(null)}
+          onChanged={() => reload(true)}
+        />
+      )}
+
       {fullscreen && (
         <Fullscreen
           clip={fullscreen.clip}
@@ -223,6 +289,7 @@ export function App() {
           onChanged={() => reload(true)}
           onClipUpdate={updateClip}
           onDelete={setConfirmDel}
+          onAddToCollection={(clip) => setCollectionPicker(clip)}
         />
       )}
 

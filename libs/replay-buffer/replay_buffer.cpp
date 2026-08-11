@@ -1,5 +1,6 @@
 #include "replay_buffer.h"
 
+#include <disk-segments/disk_segments.h>
 #include <encoding/mux_common.h>
 
 extern "C" {
@@ -45,6 +46,11 @@ struct ReplayBuffer::Impl {
     encoding::VideoStreamParams     vsp;
     std::vector<encoding::AudioStreamParams> audio_params;
     bool                            vsp_set = false;
+
+    // Disk storage mode ("disk" in Config::storage): all packet traffic is
+    // forwarded to this; the ring above stays empty. Created/destroyed on
+    // configure() so switching storage mid-run drops the old state.
+    std::unique_ptr<disk_segments::DiskSegmentBuffer> disk;
 
     std::atomic<bool>               saving{false};
     std::thread                     save_thread;
@@ -102,11 +108,33 @@ void ReplayBuffer::configure(Config const& cfg)
 {
     std::lock_guard lk(impl_->mutex);
     impl_->cfg = cfg;
+    const bool want_disk = (cfg.storage == "disk");
+    if (want_disk && !impl_->disk) {
+        // Switching ram → disk: drop the ring, spin up the segment buffer.
+        impl_->ring.clear();
+        impl_->total_bytes = 0;
+        impl_->cur_time    = 0;
+        impl_->keyframes   = 0;
+        impl_->disk = std::make_unique<disk_segments::DiskSegmentBuffer>();
+        impl_->disk->configure(disk_segments::DiskSegmentBuffer::Config{
+            cfg.duration_sec, cfg.segment_dir, cfg.container });
+        // Forward already-known stream params (settings reload path).
+        if (impl_->vsp_set) impl_->disk->set_video_params(impl_->vsp);
+        if (!impl_->audio_params.empty()) impl_->disk->set_audio_params(impl_->audio_params);
+    } else if (!want_disk && impl_->disk) {
+        // Switching disk → ram: the segment files are already finalized;
+        // discard the buffer (and its segments on disk).
+        impl_->disk.reset();
+    } else if (want_disk && impl_->disk) {
+        impl_->disk->configure(disk_segments::DiskSegmentBuffer::Config{
+            cfg.duration_sec, cfg.segment_dir, cfg.container });
+    }
 }
 
 void ReplayBuffer::clear()
 {
     std::lock_guard lk(impl_->mutex);
+    if (impl_->disk) { impl_->disk->clear(); return; }
     impl_->ring.clear();
     impl_->total_bytes = 0;
     impl_->cur_time    = 0;
@@ -118,6 +146,7 @@ void ReplayBuffer::set_video_params(encoding::VideoStreamParams const& p)
     std::lock_guard lk(impl_->mutex);
     impl_->vsp     = p;
     impl_->vsp_set = true;
+    if (impl_->disk) impl_->disk->set_video_params(p);
 }
 
 void ReplayBuffer::set_audio_params(encoding::AudioStreamParams const& p)
@@ -134,6 +163,7 @@ void ReplayBuffer::set_audio_params(std::vector<encoding::AudioStreamParams> con
         if (stream.tb_den == 0 || stream.sample_rate <= 0 || stream.channels <= 0) continue;
         impl_->audio_params.push_back(stream);
     }
+    if (impl_->disk) impl_->disk->set_audio_params(impl_->audio_params);
 }
 
 // ── OBS-style purge: before push, maintain memory + time caps with ≥2 KF ─────
@@ -141,6 +171,10 @@ void ReplayBuffer::set_audio_params(std::vector<encoding::AudioStreamParams> con
 void ReplayBuffer::push(encoding::EncodedPacket pkt)
 {
     std::lock_guard lk(impl_->mutex);
+    if (impl_->disk) {
+        impl_->disk->push(std::move(pkt));
+        return;
+    }
 
     const size_t max_bytes = static_cast<size_t>(impl_->cfg.memory_cap_mb) * 1024 * 1024;
     const int64_t max_time = static_cast<int64_t>(impl_->cfg.duration_sec) * 1000000;
@@ -163,12 +197,14 @@ void ReplayBuffer::push(encoding::EncodedPacket pkt)
 size_t ReplayBuffer::packet_count() const
 {
     std::lock_guard lk(impl_->mutex);
+    if (impl_->disk) return impl_->disk->stats().segment_count;
     return impl_->ring.size();
 }
 
 size_t ReplayBuffer::memory_bytes() const
 {
     std::lock_guard lk(impl_->mutex);
+    if (impl_->disk) return static_cast<size_t>(impl_->disk->stats().disk_bytes);
     return impl_->total_bytes;
 }
 
@@ -176,6 +212,14 @@ ReplayBufferStats ReplayBuffer::stats() const
 {
     std::lock_guard lk(impl_->mutex);
     ReplayBufferStats s;
+    if (impl_->disk) {
+        const auto ds = impl_->disk->stats();
+        s.packet_count  = ds.segment_count;
+        s.logical_bytes = static_cast<size_t>(ds.disk_bytes);
+        s.keyframes     = static_cast<int>(ds.segment_count);
+        s.saving        = ds.saving;
+        return s;
+    }
     s.packet_count = impl_->ring.size();
     s.logical_bytes = impl_->total_bytes;
     s.keyframes = impl_->keyframes;
@@ -315,6 +359,18 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
     bool expected = false;
     if (!impl_->saving.compare_exchange_strong(expected, true))
         return;
+
+    // Disk mode: hand off to the segment buffer (it owns its own save
+    // thread); the facade's saving flag mirrors it so stats() stays honest.
+    if (impl_->disk) {
+        const std::wstring out_dir = impl_->cfg.output_dir;
+        impl_->disk->save_clip(out_dir,
+            [this, cb = std::move(cb)](std::wstring path) mutable {
+                impl_->saving.store(false);
+                if (cb) cb(std::move(path));
+            });
+        return;
+    }
 
     // Snapshot the ring buffer and stream params under the lock.
     std::vector<encoding::EncodedPacket> snapshot;

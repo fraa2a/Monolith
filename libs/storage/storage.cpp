@@ -136,7 +136,15 @@ const char* kCreateSchema =
     "  tag TEXT NOT NULL,"
     "  PRIMARY KEY (clip_id, tag)"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_clip_hashtags_tag ON clip_hashtags(tag);";
+    "CREATE INDEX IF NOT EXISTS idx_clip_hashtags_tag ON clip_hashtags(tag);"
+    "CREATE TABLE IF NOT EXISTS clip_bookmarks ("
+    "  clip_id INTEGER NOT NULL,"
+    "  seq INTEGER NOT NULL,"
+    "  time_seconds REAL NOT NULL,"
+    "  label TEXT NOT NULL,"
+    "  color TEXT NOT NULL DEFAULT '',"
+    "  PRIMARY KEY (clip_id, seq)"
+    ");";
 
 } // namespace
 
@@ -430,6 +438,13 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string* error)
             sqlite3_finalize(st);
         }
         st = nullptr;
+        if (sqlite3_prepare_v2(impl_->db, "DELETE FROM clip_bookmarks WHERE clip_id=?",
+                               -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(st, 1, id);
+            sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+        st = nullptr;
         if (sqlite3_prepare_v2(impl_->db, "DELETE FROM clips WHERE id=?",
                                -1, &st, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(st, 1, id);
@@ -476,6 +491,164 @@ bool ClipDb::set_favorite(int64_t id, bool favorite, std::string* error)
         return false;
     }
     return ok;
+}
+
+bool ClipDb::set_duration(int64_t id, double seconds, std::string* error)
+{
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, "UPDATE clips SET duration_seconds=? WHERE id=?",
+                           -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        return false;
+    }
+    sqlite3_bind_double(st, 1, seconds);
+    sqlite3_bind_int64(st, 2, id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    const int changed = sqlite3_changes(impl_->db);
+    sqlite3_finalize(st);
+    if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    if (ok && changed == 0) {
+        if (error) *error = "clip not found";
+        return false;
+    }
+    return ok;
+}
+
+std::wstring ClipDb::video_file_for(int64_t id) const
+{
+    std::wstring result;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, "SELECT video_file FROM clips WHERE id=?",
+                           -1, &st, nullptr) != SQLITE_OK)
+        return result;
+    sqlite3_bind_int64(st, 1, id);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        if (const unsigned char* v = sqlite3_column_text(st, 0))
+            result = utf8_to_wide(reinterpret_cast<const char*>(v));
+    }
+    sqlite3_finalize(st);
+    return result;
+}
+
+bool ClipDb::add_bookmark(int64_t id, int seq, double time_seconds,
+                          const std::string& label, const std::string& color,
+                          std::string* error)
+{
+    if (!clip_exists(impl_->db, id)) {
+        if (error) *error = "clip not found";
+        return false;
+    }
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "INSERT OR REPLACE INTO clip_bookmarks (clip_id, seq, time_seconds, label, color) "
+            "VALUES (?,?,?,?,?)",
+            -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, id);
+    sqlite3_bind_int(st, 2, seq);
+    sqlite3_bind_double(st, 3, time_seconds);
+    sqlite3_bind_text(st, 4, label.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 5, color.c_str(), -1, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    return ok;
+}
+
+bool ClipDb::update_bookmark(int64_t id, int seq,
+                             const std::string& label, const std::string& color,
+                             std::string* error)
+{
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "UPDATE clip_bookmarks SET label=?, color=? WHERE clip_id=? AND seq=?",
+            -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        return false;
+    }
+    sqlite3_bind_text(st, 1, label.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, color.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, id);
+    sqlite3_bind_int(st, 4, seq);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    const int changed = sqlite3_changes(impl_->db);
+    sqlite3_finalize(st);
+    if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    if (ok && changed == 0) {
+        if (error) *error = "bookmark not found";
+        return false;
+    }
+    return ok;
+}
+
+bool ClipDb::remove_bookmark(int64_t id, int seq, std::string* error)
+{
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "DELETE FROM clip_bookmarks WHERE clip_id=? AND seq=?",
+            -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, id);
+    sqlite3_bind_int(st, 2, seq);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    return ok;
+}
+
+bool ClipDb::set_bookmark_time(int64_t id, int seq, double time_seconds,
+                               std::string* error)
+{
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "UPDATE clip_bookmarks SET time_seconds=? WHERE clip_id=? AND seq=?",
+            -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        return false;
+    }
+    sqlite3_bind_double(st, 1, time_seconds);
+    sqlite3_bind_int64(st, 2, id);
+    sqlite3_bind_int(st, 3, seq);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    const int changed = sqlite3_changes(impl_->db);
+    sqlite3_finalize(st);
+    if (!ok && error) *error = sqlite3_errmsg(impl_->db);
+    if (ok && changed == 0) {
+        if (error) *error = "bookmark not found";
+        return false;
+    }
+    return ok;
+}
+
+bool ClipDb::list_bookmarks(int64_t id, std::vector<BookmarkRow>& out,
+                            std::string* error) const
+{
+    out.clear();
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "SELECT seq, time_seconds, label, color FROM clip_bookmarks "
+            "WHERE clip_id=? ORDER BY seq",
+            -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        BookmarkRow row;
+        row.seq = sqlite3_column_int(st, 0);
+        row.time_seconds = sqlite3_column_double(st, 1);
+        if (const unsigned char* v = sqlite3_column_text(st, 2))
+            row.label = reinterpret_cast<const char*>(v);
+        if (const unsigned char* c = sqlite3_column_text(st, 3))
+            row.color = reinterpret_cast<const char*>(c);
+        out.push_back(std::move(row));
+    }
+    sqlite3_finalize(st);
+    return true;
 }
 
 bool ClipDb::set_title(int64_t id, const std::string& title, std::string* error)

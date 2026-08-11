@@ -121,76 +121,104 @@ fn tags_for(tags: &[(i64, String)], clip_id: i64) -> Vec<String> {
         .collect()
 }
 
+fn clip_select_sql(conn: &Connection) -> String {
+    let discord_expr = if has_column(conn, "clips", "discord_app_id") {
+        "discord_app_id"
+    } else {
+        "NULL"
+    };
+    let exe_path_expr = if has_column(conn, "clips", "game_executable_path") {
+        "game_executable_path"
+    } else {
+        "NULL"
+    };
+    format!(
+        "SELECT id, video_file, thumbnail_file, created_at_utc, duration_seconds,
+                game_process_name, game_display_name, favorite,
+                COALESCE(NULLIF(title, ''), 'Untitled'), {discord_expr}, {exe_path_expr}
+         FROM clips",
+    )
+}
+
+fn map_clip_row(
+    row: &rusqlite::Row<'_>,
+    source: ClipSource,
+    folder: &Path,
+    tags: &[(i64, String)],
+) -> rusqlite::Result<Clip> {
+    let id = row.get::<_, i64>(0)?;
+    let video_file = row.get::<_, String>(1)?;
+    let thumbnail_file = row.get::<_, Option<String>>(2)?;
+    let game_process_name = row.get::<_, Option<String>>(5)?;
+    let game_display_name = row.get::<_, Option<String>>(6)?;
+    let discord_app_id = row.get::<_, Option<String>>(9)?;
+    let game_executable_path = row.get::<_, Option<String>>(10)?;
+    // Cache-only read: the clip grid must never make a synchronous network
+    // call. Artwork not yet cached shows up once the scheduled refresh
+    // (see game_catalog::refresh_stale) has run.
+    let artwork = game_catalog::resolve_artwork_cached(discord_app_id.as_deref(), game_process_name.as_deref());
+    let video_path = folder.join(&video_file);
+    let thumbnail_path = thumbnail_file
+        .as_ref()
+        .map(|file| folder.join(".thumbs").join(file).to_string_lossy().to_string());
+
+    Ok(Clip {
+        id,
+        source: source.as_str().to_string(),
+        video_file,
+        title: row.get::<_, String>(8).unwrap_or_else(|_| "Untitled".to_string()),
+        thumbnail_file,
+        created_at_utc: row.get(3)?,
+        duration_seconds: row.get(4)?,
+        game_process_name,
+        game_display_name: game_display_name.or_else(|| if artwork.display_name.is_empty() { None } else { Some(artwork.display_name.clone()) }),
+        game_executable_path,
+        discord_app_id: discord_app_id.or(artwork.discord_app_id.clone()),
+        game_icon_url: artwork.icon_url,
+        game_cover_url: artwork.cover_url,
+        favorite: row.get::<_, i64>(7).unwrap_or(0) != 0,
+        hashtags: tags_for(tags, id),
+        size_bytes: file_size(&video_path),
+        video_path: video_path.to_string_lossy().to_string(),
+        thumbnail_path,
+    })
+}
+
 fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
     let Some(conn) = open(source, true) else {
         return Vec::new();
     };
     let folder = media_folder(source);
     let tags = clip_hashtags(&conn);
-    let discord_expr = if has_column(&conn, "clips", "discord_app_id") {
-        "discord_app_id"
-    } else {
-        "NULL"
-    };
-    let exe_path_expr = if has_column(&conn, "clips", "game_executable_path") {
-        "game_executable_path"
-    } else {
-        "NULL"
-    };
-
-    let sql = format!(
-        "SELECT id, video_file, thumbnail_file, created_at_utc, duration_seconds,
-                game_process_name, game_display_name, favorite,
-                COALESCE(NULLIF(title, ''), 'Untitled'), {discord_expr}, {exe_path_expr}
-         FROM clips ORDER BY datetime(created_at_utc) DESC",
-    );
+    let sql = format!("{} ORDER BY datetime(created_at_utc) DESC", clip_select_sql(&conn));
 
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
 
-    let Ok(rows) = stmt.query_map([], |row| {
-        let id = row.get::<_, i64>(0)?;
-        let video_file = row.get::<_, String>(1)?;
-        let thumbnail_file = row.get::<_, Option<String>>(2)?;
-        let game_process_name = row.get::<_, Option<String>>(5)?;
-        let game_display_name = row.get::<_, Option<String>>(6)?;
-        let discord_app_id = row.get::<_, Option<String>>(9)?;
-        let game_executable_path = row.get::<_, Option<String>>(10)?;
-        // Cache-only read: the clip grid must never make a synchronous network
-        // call. Artwork not yet cached shows up once the scheduled refresh
-        // (see game_catalog::refresh_stale) has run.
-        let artwork = game_catalog::resolve_artwork_cached(discord_app_id.as_deref(), game_process_name.as_deref());
-        let video_path = folder.join(&video_file);
-        let thumbnail_path = thumbnail_file
-            .as_ref()
-            .map(|file| folder.join(".thumbs").join(file).to_string_lossy().to_string());
-
-        Ok(Clip {
-            id,
-            source: source.as_str().to_string(),
-            video_file,
-            title: row.get::<_, String>(8).unwrap_or_else(|_| "Untitled".to_string()),
-            thumbnail_file,
-            created_at_utc: row.get(3)?,
-            duration_seconds: row.get(4)?,
-            game_process_name,
-            game_display_name: game_display_name.or_else(|| if artwork.display_name.is_empty() { None } else { Some(artwork.display_name.clone()) }),
-            game_executable_path,
-            discord_app_id: discord_app_id.or(artwork.discord_app_id.clone()),
-            game_icon_url: artwork.icon_url,
-            game_cover_url: artwork.cover_url,
-            favorite: row.get::<_, i64>(7).unwrap_or(0) != 0,
-            hashtags: tags_for(&tags, id),
-            size_bytes: file_size(&video_path),
-            video_path: video_path.to_string_lossy().to_string(),
-            thumbnail_path,
-        })
-    }) else {
+    let Ok(rows) = stmt.query_map([], |row| map_clip_row(row, source, &folder, &tags)) else {
         return Vec::new();
     };
 
     rows.flatten().filter(|clip| matches_filter(clip, filter)).collect()
+}
+
+// Single-clip lookup (used by collections: prune + materialize the clips a
+// collection references). Returns None when the catalog is missing, the row
+// is gone, or the file no longer exists.
+pub fn clip_by_id(source: ClipSource, id: i64) -> Option<Clip> {
+    let conn = open(source, true)?;
+    let folder = media_folder(source);
+    let tags = clip_hashtags(&conn);
+    let sql = format!("{} WHERE id = ?1", clip_select_sql(&conn));
+    let clip = conn
+        .query_row(&sql, params![id], |row| map_clip_row(row, source, &folder, &tags))
+        .ok()?;
+    if !clip.video_path.is_empty() && std::path::Path::new(&clip.video_path).is_file() {
+        Some(clip)
+    } else {
+        None
+    }
 }
 
 fn matches_filter(clip: &Clip, filter: &ClipFilter) -> bool {
@@ -329,6 +357,121 @@ pub fn remove_hashtag(source: ClipSource, id: i64, tag: &str) -> Result<(), Stri
         params![id, tag],
     )
     .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+// ── Bookmarks ─────────────────────────────────────────────────────────────
+// The engine inserts bookmarks at recording-save time (timestamped live from
+// its own clock); the UI reads/edits them here. Table DDL mirrors
+// engine's storage.cpp so either side can create it (IF NOT EXISTS).
+
+const BOOKMARK_DDL: &str = "CREATE TABLE IF NOT EXISTS clip_bookmarks (
+    clip_id INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    time_seconds REAL NOT NULL,
+    label TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (clip_id, seq))";
+
+#[derive(Serialize)]
+pub struct BookmarkRow {
+    pub seq: i64,
+    pub time_seconds: f64,
+    pub label: String,
+    pub color: String,
+}
+
+pub fn list_bookmarks(source: ClipSource, id: i64) -> Result<Vec<BookmarkRow>, String> {
+    let Some(conn) = open(source, true) else {
+        return Err("catalog unavailable".to_string());
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT seq, time_seconds, label, color FROM clip_bookmarks
+         WHERE clip_id = ?1 ORDER BY seq",
+    ) else {
+        // Table missing = no bookmarks yet (older DB written before this
+        // feature shipped); treat as empty rather than an error.
+        return Ok(Vec::new());
+    };
+    let rows = stmt
+        .query_map(params![id], |row| {
+            Ok(BookmarkRow {
+                seq: row.get(0)?,
+                time_seconds: row.get(1)?,
+                label: row.get(2)?,
+                color: row.get(3)?,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())
+}
+
+pub fn add_bookmark(
+    source: ClipSource,
+    id: i64,
+    time_seconds: f64,
+    label: &str,
+    color: &str,
+) -> Result<(), String> {
+    if !time_seconds.is_finite() || time_seconds < 0.0 {
+        return Err("invalid bookmark time".to_string());
+    }
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    if !clip_exists(&conn, id) {
+        return Err("clip not found".to_string());
+    }
+    conn.execute(BOOKMARK_DDL, []).map_err(|err| err.to_string())?;
+    let next_seq: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM clip_bookmarks WHERE clip_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "INSERT INTO clip_bookmarks (clip_id, seq, time_seconds, label, color)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, next_seq, time_seconds, label, color],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+pub fn update_bookmark(
+    source: ClipSource,
+    id: i64,
+    seq: i64,
+    label: &str,
+    color: &str,
+) -> Result<(), String> {
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    conn.execute(
+        "UPDATE clip_bookmarks SET label = ?1, color = ?2 WHERE clip_id = ?3 AND seq = ?4",
+        params![label, color, id, seq],
+    )
+    .map_err(|err| err.to_string())?;
+    if conn.changes() == 0 {
+        return Err("bookmark not found".to_string());
+    }
+    Ok(())
+}
+
+pub fn remove_bookmark(source: ClipSource, id: i64, seq: i64) -> Result<(), String> {
+    let Some(conn) = open(source, false) else {
+        return Err("catalog unavailable".to_string());
+    };
+    conn.execute(
+        "DELETE FROM clip_bookmarks WHERE clip_id = ?1 AND seq = ?2",
+        params![id, seq],
+    )
+    .map_err(|err| err.to_string())?;
+    if conn.changes() == 0 {
+        return Err("bookmark not found".to_string());
+    }
     Ok(())
 }
 

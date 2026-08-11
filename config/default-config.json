@@ -8,6 +8,7 @@
   "replay_buffer": {
     "duration_seconds": 30,
     "save_container": "mkv",
+    "storage": "ram",
     "enabled": true
   },
   "recording": {
@@ -44,7 +45,8 @@
     "save_replay": "Ctrl+Shift+F8",
     "recording_start": "Ctrl+Shift+F9",
     "recording_stop": "Ctrl+Shift+F10",
-    "pause_resume": "Ctrl+Shift+F11"
+    "pause_resume": "Ctrl+Shift+F11",
+    "add_bookmark": "Ctrl+Shift+F12"
   },
   "update": {
     "auto_check": true

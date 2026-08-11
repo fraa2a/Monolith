@@ -6,7 +6,7 @@
     "winsparkle",
     {
       "name": "ffmpeg",
-      "features": ["avcodec", "avformat", "swscale", "swresample", "amf", "nvcodec", "qsv", "x264", "x265", "gpl"]
+      "features": ["avcodec", "avformat", "swscale", "swresample", "amf", "nvcodec", "qsv", "x264", "x265", "libaom", "gpl"]
     }
   ]
 }

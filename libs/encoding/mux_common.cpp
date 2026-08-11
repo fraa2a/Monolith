@@ -45,7 +45,11 @@ const wchar_t* file_extension(const std::string& container)
 
 int video_codec_id(VideoCodec codec)
 {
-    return codec == VideoCodec::H265 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+    switch (codec) {
+        case VideoCodec::H265: return AV_CODEC_ID_HEVC;
+        case VideoCodec::AV1:  return AV_CODEC_ID_AV1;
+        default:               return AV_CODEC_ID_H264;
+    }
 }
 
 static bool copy_extradata(AVCodecParameters* codecpar, const std::vector<uint8_t>& data)

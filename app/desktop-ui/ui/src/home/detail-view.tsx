@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { type Clip, clipApi, mediaUrl } from "../lib/api.ts";
+import { type BookmarkRow, type Clip, clipApi, mediaUrl } from "../lib/api.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { useMultiTrackAudio } from "../lib/multitrack.ts";
@@ -15,6 +15,9 @@ interface Props {
   onChanged: () => void;
   onClipUpdate: (clip: Clip) => void;
   onDelete: (clip: Clip) => void;
+  /** Opens the collection picker for this clip (grid path wires it; collection
+   *  detail leaves it unset — clips there are already in a collection). */
+  onAddToCollection?: (clip: Clip) => void;
 }
 
 function normalizeTag(value: string): string {
@@ -120,8 +123,83 @@ function TagEditor(
   );
 }
 
+// Bookmark palette (matches the engine defaults / Vice's highlight colors).
+const BOOKMARK_COLORS = ["#f59e0b", "#e5544b", "#b48ead", "#7aa2f7", "#9ece6a", "#e0af68", "#0db9d7", "#bb9af7"];
+
+// Small colored ticks laid over the timeline / trim track. Clicking one seeks.
+function BookmarkMarkers(
+  { bookmarks, duration, onSeek }: {
+    bookmarks: BookmarkRow[];
+    duration: number;
+    onSeek: (t: number) => void;
+  },
+) {
+  if (!duration) return null;
+  return (
+    <>
+      {bookmarks.map((bm) => {
+        const pct = Math.min(100, Math.max(0, (bm.time_seconds / duration) * 100));
+        return (
+          <button
+            class="bm-marker"
+            key={bm.seq}
+            title={`${bm.label} — ${formatDuration(bm.time_seconds)}`}
+            style={{ left: `${pct}%`, background: bm.color }}
+            onClick={() => onSeek(bm.time_seconds)}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+// Inline editor replacing a bookmark row (label + color palette, Save/Cancel).
+function BookmarkEditor(
+  { bm, busy, onSave, onCancel }: {
+    bm: BookmarkRow;
+    busy: boolean;
+    onSave: (label: string, color: string) => void;
+    onCancel: () => void;
+  },
+) {
+  const [label, setLabel] = useState(bm.label);
+  const [color, setColor] = useState(bm.color);
+  return (
+    <li class="bm-row bm-editing">
+      <input
+        class="input bm-label-input"
+        autoFocus
+        value={label}
+        onInput={(e) => setLabel((e.target as HTMLInputElement).value)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") onSave(label.trim() || bm.label, color);
+          if (e.key === "Escape") onCancel();
+        }}
+      />
+      <span class="bm-palette">
+        {BOOKMARK_COLORS.map((c) => (
+          <button
+            key={c}
+            class={`bm-swatch-btn ${color === c ? "active" : ""}`}
+            style={{ background: c }}
+            title={c}
+            onClick={() => setColor(c)}
+          />
+        ))}
+      </span>
+      <button class="btn btn-primary" disabled={busy} onClick={() => onSave(label.trim() || bm.label, color)}>
+        Save
+      </button>
+      <button class="btn" disabled={busy} onClick={onCancel}>
+        Cancel
+      </button>
+    </li>
+  );
+}
+
 export function DetailView(
-  { clips, index, allHashtags, onIndex, onClose, onChanged, onClipUpdate, onDelete }: Props,
+  { clips, index, allHashtags, onIndex, onClose, onChanged, onClipUpdate, onDelete, onAddToCollection }: Props,
 ) {
   const clip = clips[index];
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -137,6 +215,17 @@ export function DetailView(
   const [actionError, setActionError] = useState<string | null>(null);
   const [fsMode, setFsMode] = useState(false);
 
+  const [bookmarks, setBookmarks] = useState<BookmarkRow[]>([]);
+  const [editingSeq, setEditingSeq] = useState<number | null>(null);
+  const [trimming, setTrimming] = useState(false);
+  const [trim, setTrim] = useState({ start: 0, end: 0 });
+  const [trimBusy, setTrimBusy] = useState(false);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const trimStart = trim.start;
+  const trimEnd = trim.end;
+  // Real video duration when metadata has loaded, else the catalog value.
+  const dur = duration || clip?.duration_seconds || 0;
+
   const multitrack = useMultiTrackAudio(videoEl, clip ? mediaUrl(clip) : null);
 
   const hasPrev = index > 0;
@@ -146,7 +235,13 @@ export function DetailView(
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (editing || fsMode) return;
+      if (editing || fsMode || editingSeq !== null) return;
+      if (trimming) {
+        // While trimming, Esc cancels trim mode; arrow keys belong to the
+        // focused trim handle, so don't navigate clips with them.
+        if (e.key === "Escape") setTrimming(false);
+        return;
+      }
       if (e.key === "Escape") onClose();
       if (e.key === "ArrowRight") next();
       if (e.key === "ArrowLeft") prev();
@@ -161,6 +256,8 @@ export function DetailView(
     setDuration(0);
     setActionError(null);
     setFsMode(false);
+    setTrimming(false);
+    setTrim({ start: 0, end: 0 });
     const v = videoRef.current;
     if (v && clip) {
       v.pause();
@@ -168,6 +265,20 @@ export function DetailView(
       v.load();
       v.play().catch(() => {});
     }
+  }, [clip?.id, clip?.source]);
+
+  // Bookmarks live in the catalog next to the clip; refresh whenever the clip
+  // changes (replay clips simply have none).
+  useEffect(() => {
+    let cancelled = false;
+    setBookmarks([]);
+    setEditingSeq(null);
+    if (clip) {
+      clipApi.listBookmarks(clip)
+        .then((rows) => { if (!cancelled) setBookmarks(rows); })
+        .catch(() => {});
+    }
+    return () => { cancelled = true; };
   }, [clip?.id, clip?.source]);
 
   // Fullscreen reuses this same <video> element in place (see render below) —
@@ -231,6 +342,148 @@ export function DetailView(
     multitrack.setVolume(val);
   }
 
+  function seekTo(t: number) {
+    const v = videoRef.current;
+    if (v) v.currentTime = t;
+    setCurrent(t);
+  }
+
+  const refreshBookmarks = async () => {
+    try {
+      setBookmarks(await clipApi.listBookmarks(clip));
+    } catch {
+      // Mutations surface their own errors; keep the list as-is here.
+    }
+  };
+
+  async function addBookmark() {
+    if (busy) return;
+    setBusy(true);
+    const res = await clipApi.addBookmark(
+      clip,
+      current,
+      `Bookmark ${bookmarks.length + 1}`,
+      "#f59e0b",
+    );
+    setBusy(false);
+    if (res.ok) {
+      setActionError(null);
+      await refreshBookmarks();
+      onChanged();
+    } else {
+      setActionError(res.error ?? "Couldn't add bookmark");
+    }
+  }
+
+  async function saveBookmark(bm: BookmarkRow, label: string, color: string) {
+    if (busy) return;
+    setBusy(true);
+    const res = await clipApi.updateBookmark(clip, bm.seq, label, color);
+    setBusy(false);
+    if (res.ok) {
+      setActionError(null);
+      setEditingSeq(null);
+      await refreshBookmarks();
+      onChanged();
+    } else {
+      setActionError(res.error ?? "Couldn't update bookmark");
+    }
+  }
+
+  async function deleteBookmark(bm: BookmarkRow) {
+    if (busy) return;
+    setBusy(true);
+    const res = await clipApi.deleteBookmark(clip, bm.seq);
+    setBusy(false);
+    if (res.ok) {
+      setActionError(null);
+      setEditingSeq(null);
+      await refreshBookmarks();
+      onChanged();
+    } else {
+      setActionError(res.error ?? "Couldn't delete bookmark");
+    }
+  }
+
+  function toggleTrim() {
+    if (trimming) {
+      setTrimming(false);
+      return;
+    }
+    setTrim({ start: 0, end: dur });
+    setTrimming(true);
+  }
+
+  function startTrimDrag(e: PointerEvent, which: "start" | "end") {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => {
+      const track = trackRef.current;
+      if (!track) return;
+      const rect = track.getBoundingClientRect();
+      const t = Math.min(Math.max((ev.clientX - rect.left) / rect.width, 0), 1) * dur;
+      // Keep the selected span at least 0.5s (engine minimum).
+      if (which === "start") {
+        setTrim((prev) => ({ ...prev, start: Math.min(t, prev.end - 0.5) }));
+      } else {
+        setTrim((prev) => ({ ...prev, end: Math.max(t, prev.start + 0.5) }));
+      }
+    };
+    const up = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+      document.removeEventListener("pointercancel", up);
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+    document.addEventListener("pointercancel", up);
+  }
+
+  function onTrimKey(e: KeyboardEvent, which: "start" | "end") {
+    const delta = e.key === "ArrowLeft" ? -0.1 : e.key === "ArrowRight" ? 0.1 : 0;
+    if (!delta) return;
+    e.preventDefault();
+    if (which === "start") {
+      setTrim((prev) => ({
+        ...prev,
+        start: Math.min(Math.max(prev.start + delta, 0), prev.end - 0.5),
+      }));
+    } else {
+      setTrim((prev) => ({
+        ...prev,
+        end: Math.max(Math.min(prev.end + delta, dur), prev.start + 0.5),
+      }));
+    }
+  }
+
+  async function applyTrim() {
+    if (trimBusy) return;
+    setTrimBusy(true);
+    const res = await clipApi.trim(clip, trimStart, trimEnd);
+    setTrimBusy(false);
+    if (res.ok) {
+      setActionError(null);
+      const newDuration = trimEnd - trimStart;
+      onClipUpdate({ ...clip, duration_seconds: newDuration });
+      setDuration(newDuration);
+      setCurrent(0);
+      setTrimming(false);
+      // The file on disk was replaced in place, so force the player to
+      // re-fetch it (the custom protocol may serve the stale file otherwise).
+      const v = videoRef.current;
+      if (v) {
+        v.pause();
+        v.removeAttribute("src");
+        v.load();
+        v.src = mediaUrl(clip);
+        v.load();
+      }
+      await refreshBookmarks(); // engine retranslates bookmark times
+      onChanged();
+    } else {
+      setActionError(res.error ?? "Couldn't trim clip");
+    }
+  }
+
   return (
     <div class={`detail-backdrop ${fsMode ? "fs-active" : ""}`} onMouseDown={onClose}>
       <button
@@ -257,7 +510,15 @@ export function DetailView(
               setDuration(v.duration || 0);
               v.volume = volume;
             }}
-            onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
+            onTimeUpdate={(e) => {
+              const v = e.currentTarget;
+              const t = v.currentTime;
+              setCurrent(t);
+              // Trim preview loop: rewind to the selection start while playing.
+              if (trimming && !fsMode && t >= trimEnd - 0.02) {
+                v.currentTime = trimStart;
+              }
+            }}
             onClick={(e) => {
               const v = e.currentTarget;
               v.paused ? v.play() : v.pause();
@@ -273,19 +534,81 @@ export function DetailView(
             )
             : (
               <div class="detail-controls">
-                <input
-                  class="timeline"
-                  type="range"
-                  min={0}
-                  max={duration || 0}
-                  step={0.05}
-                  value={current}
-                  onInput={onSeek}
-                />
+                {trimming
+                  ? (
+                    <div class="trim-track" ref={trackRef}>
+                      <BookmarkMarkers bookmarks={bookmarks} duration={dur} onSeek={seekTo} />
+                      <div
+                        class="trim-playhead"
+                        style={{ left: `${(current / dur) * 100}%` }}
+                      />
+                      <div
+                        class="trim-overlay"
+                        style={{
+                          left: `${(trimStart / dur) * 100}%`,
+                          width: `${((trimEnd - trimStart) / dur) * 100}%`,
+                        }}
+                      />
+                      <div
+                        class="trim-handle trim-start"
+                        role="slider"
+                        aria-label="Trim start"
+                        aria-valuemin={0}
+                        aria-valuemax={dur}
+                        aria-valuenow={trimStart}
+                        tabIndex={0}
+                        style={{ left: `${(trimStart / dur) * 100}%` }}
+                        onPointerDown={(e) => startTrimDrag(e, "start")}
+                        onKeyDown={(e) => onTrimKey(e, "start")}
+                      />
+                      <div
+                        class="trim-handle trim-end"
+                        role="slider"
+                        aria-label="Trim end"
+                        aria-valuemin={0}
+                        aria-valuemax={dur}
+                        aria-valuenow={trimEnd}
+                        tabIndex={0}
+                        style={{ left: `${(trimEnd / dur) * 100}%` }}
+                        onPointerDown={(e) => startTrimDrag(e, "end")}
+                        onKeyDown={(e) => onTrimKey(e, "end")}
+                      />
+                    </div>
+                  )
+                  : (
+                    <div class="timeline-wrap">
+                      <input
+                        class="timeline"
+                        type="range"
+                        min={0}
+                        max={duration || 0}
+                        step={0.05}
+                        value={current}
+                        onInput={onSeek}
+                      />
+                      <BookmarkMarkers bookmarks={bookmarks} duration={duration} onSeek={seekTo} />
+                    </div>
+                  )}
                 <div class="detail-controls-row">
-                  <span class="time">
-                    {formatDuration(current)} / {formatDuration(duration)}
-                  </span>
+                  {trimming
+                    ? (
+                      <span class="trim-readout">
+                        <span class="trim-range">
+                          {formatDuration(trimStart)} – {formatDuration(trimEnd)}
+                        </span>
+                        <button class="btn btn-primary" disabled={trimBusy} onClick={applyTrim}>
+                          Apply
+                        </button>
+                        <button class="btn" disabled={trimBusy} onClick={() => setTrimming(false)}>
+                          Cancel
+                        </button>
+                      </span>
+                    )
+                    : (
+                      <span class="time">
+                        {formatDuration(current)} / {formatDuration(duration)}
+                      </span>
+                    )}
                   <div class="vol">
                     <Icon name="volume-2" size={16} />
                     <input
@@ -304,6 +627,15 @@ export function DetailView(
                     >
                       <Icon name="maximize" size={16} />
                     </button>
+                    {clip.source === "manual" && (
+                      <button
+                        class="act-btn"
+                        title="Add bookmark at current time"
+                        onClick={addBookmark}
+                      >
+                        <Icon name="bookmark" size={16} />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -351,6 +683,23 @@ export function DetailView(
                     >
                       <Icon name="star" size={16} filled={clip.favorite} />
                     </button>
+                    {onAddToCollection && (
+                      <button
+                        class="act-btn"
+                        title="Add to collection"
+                        onClick={() => onAddToCollection(clip)}
+                      >
+                        <Icon name="album" size={16} />
+                      </button>
+                    )}
+                    <button
+                      class={`act-btn act-trim ${trimming ? "active" : ""}`}
+                      title="Trim"
+                      disabled={!dur}
+                      onClick={toggleTrim}
+                    >
+                      <Icon name="scissors" size={16} />
+                    </button>
                   </div>
                 </div>
               )}
@@ -387,6 +736,45 @@ export function DetailView(
               onClipUpdate={onClipUpdate}
               onChanged={onChanged}
             />
+          </div>
+
+          <div class="detail-bookmarks">
+            <div class="detail-bookmarks-head"><span class="k">Bookmarks</span></div>
+            {bookmarks.length === 0
+              ? (
+                <p class="bm-empty">
+                  No bookmarks — press Ctrl+Shift+F12 while recording to add one.
+                </p>
+              )
+              : (
+                <ul class="bm-list">
+                  {bookmarks.map((bm) =>
+                    editingSeq === bm.seq
+                      ? (
+                        <BookmarkEditor
+                          key={bm.seq}
+                          bm={bm}
+                          busy={busy}
+                          onSave={(label, color) => saveBookmark(bm, label, color)}
+                          onCancel={() => setEditingSeq(null)}
+                        />
+                      )
+                      : (
+                        <li class="bm-row" key={bm.seq}>
+                          <span class="bm-swatch" style={{ background: bm.color }} />
+                          <span class="bm-label" title={bm.label}>{bm.label}</span>
+                          <span class="bm-time">{formatDuration(bm.time_seconds)}</span>
+                          <button class="act-btn" title="Edit bookmark" onClick={() => setEditingSeq(bm.seq)}>
+                            <Icon name="pencil" size={14} />
+                          </button>
+                          <button class="act-btn" title="Delete bookmark" onClick={() => deleteBookmark(bm)}>
+                            <Icon name="x" size={14} />
+                          </button>
+                        </li>
+                      ),
+                  )}
+                </ul>
+              )}
           </div>
 
           <button class="delete-clip-btn" onClick={() => onDelete(clip)}>

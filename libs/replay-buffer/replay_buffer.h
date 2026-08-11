@@ -32,6 +32,11 @@ public:
         int64_t      memory_cap_mb = 128;
         std::wstring output_dir;
         std::string  container     = "mkv"; // "mkv" | "mp4"
+        // Where the rolling buffer lives: "ram" (in-memory ring, default) or
+        // "disk" (keyframe-aligned segments written to segment_dir). In disk
+        // mode memory_cap_mb is ignored; retention is age-based.
+        std::string  storage       = "ram"; // "ram" | "disk"
+        std::wstring segment_dir;           // disk mode: segment file location
     };
 
     void configure(Config const& cfg);

@@ -100,6 +100,10 @@ function encoderLabel(
     libx264: { vendor: "Software (x264)", codec: "H.264", kind: "sw" },
     libx265: { vendor: "Software (x265)", codec: "H.265", kind: "sw" },
     libopenh264: { vendor: "Software (OpenH264)", codec: "H.264", kind: "sw" },
+    av1_nvenc: { vendor: "NVIDIA NVENC", codec: "AV1", kind: "hw" },
+    av1_amf: { vendor: "AMD AMF", codec: "AV1", kind: "hw" },
+    av1_qsv: { vendor: "Intel QuickSync", codec: "AV1", kind: "hw" },
+    "libaom-av1": { vendor: "Software (libaom)", codec: "AV1", kind: "sw" },
   };
   return map[raw] ?? { vendor: raw, codec: "", kind: "sw" };
 }
@@ -369,6 +373,22 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
             value={Number(val("replay_buffer.duration_seconds") ?? 30)}
             onChange={(v) => update("replay_buffer.duration_seconds", v)}
           />
+          <Section
+            title="Replay Storage"
+            description="Where the rolling replay buffer keeps recent footage."
+          >
+            <Field
+              label="Storage"
+              help="RAM keeps the buffer in memory; Disk writes short segments so the buffer survives restarts but uses disk space."
+              control={
+                <Segmented
+                  value={String(val("replay_buffer.storage") ?? "ram")}
+                  options={[{ value: "ram", label: "RAM" }, { value: "disk", label: "Disk" }]}
+                  onChange={(v) => update("replay_buffer.storage", v)}
+                />
+              }
+            />
+          </Section>
           <Section title="Clips Output" description="Where clips are saved and how they're encoded.">
             <Field
               label="Clips folder"
@@ -448,6 +468,7 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
         { key: "hotkeys.recording_start", label: "Start recording" },
         { key: "hotkeys.recording_stop", label: "Stop recording" },
         { key: "hotkeys.pause_resume", label: "Pause / resume" },
+        { key: "hotkeys.add_bookmark", label: "Add bookmark" },
       ];
       const conflicts = findHotkeyConflicts(hotkeyFields.map((f) => ({
         label: f.label,
@@ -488,6 +509,7 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
       const codecOpts = [
         { value: "h264", label: "H.264 (AVC)" },
         { value: "h265", label: "H.265 (HEVC)" },
+        { value: "av1", label: "AV1" },
       ];
       const bitrateOpts = BITRATE_PRESETS.map((mbps) => ({
         value: String(mbps * 1000),

@@ -20,6 +20,7 @@
 #include <audio/audio.h>
 #include <gamelist/gamelist.h>
 #include <encoding/encoding.h>
+#include <encoding/trim.h>
 #include <storage/storage.h>
 #include <replay-buffer/replay_buffer.h>
 #include <recording/recording.h>
@@ -67,6 +68,7 @@ enum Cmd : UINT {
     CMD_SETTINGS        = 1005,
     CMD_EXIT            = 1006,
     CMD_CHECK_UPDATE    = 1007,
+    CMD_ADD_BOOKMARK    = 1008,
 };
 
 // ── Logging ───────────────────────────────────────────────────────────────────
@@ -315,6 +317,66 @@ static settings::Config g_settings;
 // Bumped each time a clip is cataloged (replay save or manual stop). Read by the
 // IPC get_status handler so the UI host can push a live clip-list refresh.
 static std::atomic<uint64_t>     g_clip_generation{0};
+
+// ── Recording elapsed-time clock (QPC-based, pause-aware) ────────────────────
+// Used to timestamp bookmarks at the moment they are added. Written on the
+// UI/tray thread (start/pause/resume/stop), read on the IPC thread — all fields
+// are atomics, and a torn read only shifts a bookmark timestamp by a frame or
+// two. Pause spans are accumulated in QPC units and subtracted at read time.
+static std::atomic<int64_t> g_rec_clock_freq{0};
+static std::atomic<int64_t> g_rec_clock_start_qpc{0};
+static std::atomic<int64_t> g_rec_paused_qpc_total{0};
+static std::atomic<int64_t> g_rec_pause_anchor_qpc{-1};
+
+static double recording_elapsed_seconds()
+{
+    const int64_t freq  = g_rec_clock_freq.load(std::memory_order_relaxed);
+    const int64_t start = g_rec_clock_start_qpc.load(std::memory_order_relaxed);
+    if (freq <= 0 || start == 0) return 0.0;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    const int64_t anchor = g_rec_pause_anchor_qpc.load(std::memory_order_relaxed);
+    const int64_t paused = g_rec_paused_qpc_total.load(std::memory_order_relaxed);
+    int64_t elapsed_qpc = now.QuadPart - start;
+    if (anchor > 0) elapsed_qpc -= now.QuadPart - anchor; // currently paused
+    elapsed_qpc -= paused;
+    return std::max(0.0, static_cast<double>(elapsed_qpc) * 1000000.0
+                        / static_cast<double>(freq) / 1000000.0);
+}
+
+static void rec_clock_start()
+{
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    g_rec_clock_freq.store(freq.QuadPart, std::memory_order_relaxed);
+    g_rec_clock_start_qpc.store(now.QuadPart, std::memory_order_relaxed);
+    g_rec_paused_qpc_total.store(0, std::memory_order_relaxed);
+    g_rec_pause_anchor_qpc.store(-1, std::memory_order_relaxed);
+}
+
+static void rec_clock_stop()
+{
+    g_rec_clock_start_qpc.store(0, std::memory_order_relaxed);
+    g_rec_pause_anchor_qpc.store(-1, std::memory_order_relaxed);
+}
+
+static void rec_clock_pause()
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    g_rec_pause_anchor_qpc.store(now.QuadPart, std::memory_order_relaxed);
+}
+
+static void rec_clock_resume()
+{
+    const int64_t anchor = g_rec_pause_anchor_qpc.exchange(-1, std::memory_order_relaxed);
+    if (anchor > 0) {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        g_rec_paused_qpc_total.fetch_add(now.QuadPart - anchor, std::memory_order_relaxed);
+    }
+}
 
 // Active-game audio source: re-evaluated every poll_interval_ms by a UI-thread timer
 // and also on foreground-window changes (fast scan, rate-limited).
@@ -635,6 +697,10 @@ static void apply_runtime_settings()
     rbcfg.memory_cap_mb = kReplayMemoryBudgetMb;
     rbcfg.output_dir    = g_settings.clips_directory;
     rbcfg.container     = g_settings.replay_clip_container;
+    // "ram" keeps the rolling buffer in memory; "disk" spills it into
+    // keyframe-aligned segments under the temp dir (see disk-segments lib).
+    rbcfg.storage       = g_settings.replay_buffer_storage;
+    rbcfg.segment_dir   = g_settings.temp_directory;
     g_replay.configure(rbcfg);
 
     g_recordings_dir = g_settings.recordings_directory;
@@ -688,17 +754,21 @@ static void load_app_settings()
 // Generates the first-frame thumbnail and inserts a row into the co-located
 // clip DB for a freshly written clip. Runs off the UI/tray thread (blocking
 // decode + DB I/O). `video_path` is the full path returned by the writer;
-// `source` is "replay" or "manual". Failures are logged, never fatal — a clip
-// with no DB row/thumb still plays and gets picked up by reconcile later.
-static void catalog_clip(std::wstring video_path, std::string source,
-                         double duration_seconds)
+// `source` is "replay" or "manual". Returns the new row id (> 0) or -1 on
+// failure; on success `on_cataloged` is invoked with the row id (the manual-
+// stop path uses it to flush pending bookmarks). Failures are logged, never
+// fatal — a clip with no DB row/thumb still plays and gets picked up by
+// reconcile later.
+static int64_t catalog_clip(std::wstring video_path, std::string source,
+                            double duration_seconds,
+                            std::function<void(int64_t)> on_cataloged = {})
 {
-    if (video_path.empty()) return;
+    if (video_path.empty()) return -1;
     std::error_code ec;
     std::filesystem::path vp(video_path);
     const std::wstring folder = vp.parent_path().wstring();
     const std::wstring base   = vp.filename().wstring();
-    if (folder.empty() || base.empty()) return;
+    if (folder.empty() || base.empty()) return -1;
 
     const std::wstring thumb_base = vp.stem().wstring() + L".png";
     const std::wstring thumb_path = folder + L"\\.thumbs\\" + thumb_base;
@@ -715,7 +785,7 @@ static void catalog_clip(std::wstring video_path, std::string source,
     auto dbh = storage::ClipDb::open(folder, source, &error);
     if (!dbh) {
         log_msg("storage", ("clip DB open failed: " + error).c_str());
-        return;
+        return -1;
     }
 
     const double probed_duration = encoding::probe_duration_seconds(video_path);
@@ -738,12 +808,15 @@ static void catalog_clip(std::wstring video_path, std::string source,
         row.game_source = "gamelist";
     }
 
-    if (dbh->insert_clip(row, &error) <= 0)
+    const int64_t row_id = dbh->insert_clip(row, &error);
+    if (row_id <= 0) {
         log_msg("storage", ("clip DB insert failed: " + error).c_str());
-    else {
-        g_clip_generation.fetch_add(1, std::memory_order_relaxed);
-        log_path("storage", "clip cataloged: ", base);
+        return -1;
     }
+    g_clip_generation.fetch_add(1, std::memory_order_relaxed);
+    log_path("storage", "clip cataloged: ", base);
+    if (on_cataloged) on_cataloged(row_id);
+    return row_id;
 }
 
 // Self-heal both catalogs on startup: drop rows whose video vanished, rebuild
@@ -775,6 +848,149 @@ static void reconcile_catalogs()
     }).detach();
 }
 
+// ── Pending bookmarks ─────────────────────────────────────────────────────────
+// Bookmarks are timestamped live (hotkey or IPC) while a manual recording runs
+// and flushed into recs.db when the recording stops and its clip row exists.
+// They are written by the engine (single writer) — the UI only reads/edits
+// them afterwards.
+struct PendingBookmark {
+    double      time_seconds;
+    std::string label;
+    std::string color;
+};
+static std::mutex                 g_pending_bookmarks_mutex;
+static std::vector<PendingBookmark> g_pending_bookmarks;
+
+static void clear_pending_bookmarks()
+{
+    std::lock_guard<std::mutex> lk(g_pending_bookmarks_mutex);
+    g_pending_bookmarks.clear();
+}
+
+// Runs on the manual-stop catalog thread (off the UI/tray loop).
+static void flush_pending_bookmarks(int64_t clip_id, const std::wstring& folder)
+{
+    std::vector<PendingBookmark> pending;
+    {
+        std::lock_guard<std::mutex> lk(g_pending_bookmarks_mutex);
+        pending.swap(g_pending_bookmarks);
+    }
+    if (clip_id <= 0) {
+        log_msg("storage", "bookmark flush skipped: clip row missing");
+        return;
+    }
+    if (pending.empty()) return;
+    std::string error;
+    auto db = storage::ClipDb::open(folder, "manual", &error);
+    if (!db) {
+        log_msg("storage", ("bookmark flush failed: clip DB open failed: " + error).c_str());
+        return;
+    }
+    int seq = 1;
+    for (const auto& bm : pending) {
+        if (!db->add_bookmark(clip_id, seq++, bm.time_seconds, bm.label, bm.color, &error))
+            log_msg("storage", ("bookmark insert failed: " + error).c_str());
+    }
+    log_msg("storage", ("flushed " + std::to_string(pending.size()) + " bookmark(s)").c_str());
+}
+
+// Timestamps and queues one bookmark for the running manual recording. Shared
+// by the IPC handler (IPC thread) and the tray/hotkey path (UI thread) — all
+// state touched is atomic or mutex-guarded. Returns "" on success.
+static std::string add_bookmark_now()
+{
+    const recording::RecordingState st = g_recording.state();
+    if (st != recording::RecordingState::Recording)
+        return st == recording::RecordingState::Paused ? "recording is paused"
+                                                        : "not recording";
+    const double t = recording_elapsed_seconds();
+    {
+        std::lock_guard<std::mutex> lk(g_pending_bookmarks_mutex);
+        g_pending_bookmarks.push_back({
+            t,
+            "Bookmark " + std::to_string(g_pending_bookmarks.size() + 1),
+            "#f59e0b",
+        });
+    }
+    feedback::play(feedback::Sound::ClipSaved);
+    return {};
+}
+
+// Trims a clip's video file in place: writes a temp file (lossless remux-copy,
+// falling back to a re-encode when the container can't mux the codec), then
+// atomically replaces the original, updates the catalog duration, retimes
+// bookmarks into the new timeline (dropping ones outside the window) and
+// regenerates the thumbnail. Returns "" on success or an error message.
+static std::string trim_clip(storage::ClipDb* db,
+                             const std::wstring& folder,
+                             int64_t id, double start, double end)
+{
+    if (!std::isfinite(start) || !std::isfinite(end) || start < 0.0 || end <= start)
+        return "end must be after start";
+
+    std::string err;
+    const std::wstring video_file = db->video_file_for(id);
+    if (video_file.empty()) return "clip not found";
+    const std::wstring video_path = folder + L"\\" + video_file;
+    const std::filesystem::path p(video_path);
+    const std::wstring ext = p.extension().wstring(); // ".mkv" | ".mp4"
+    const double duration = encoding::probe_duration_seconds(video_path);
+    if (duration <= 0.0) return "could not read clip duration";
+    if (start >= duration) return "start is past the end of the clip";
+    const double eff_end = std::min(end, duration);
+
+    // Write to a sibling temp so a crash/power loss never destroys the clip.
+    std::wstring stem = p.stem().wstring();
+    if (stem.empty()) stem = L"clip";
+    const std::wstring tmp_path = folder + L"\\" + stem + L".trimming" + ext;
+
+    bool ok = encoding::trim_clip_lossless(video_path, start, eff_end, tmp_path, &err);
+    if (!ok)
+        ok = encoding::trim_clip_reencode(video_path, start, eff_end, tmp_path, &err);
+    if (!ok) {
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        return "trim failed: " + err;
+    }
+
+    // Replace the original (MOVEFILE_REPLACE_EXISTING is atomic on the same
+    // volume — same folder here).
+    if (!MoveFileExW(tmp_path.c_str(), video_path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        return "trim failed: could not replace clip file";
+    }
+
+    const double new_duration = eff_end - start;
+    if (!db->set_duration(id, new_duration, &err))
+        return "trim succeeded but duration update failed: " + err;
+
+    // Retime bookmarks into the trimmed timeline; drop bookmarks outside it.
+    std::vector<storage::BookmarkRow> bookmarks;
+    if (db->list_bookmarks(id, bookmarks, &err)) {
+        for (const auto& bm : bookmarks) {
+            if (bm.time_seconds >= start && bm.time_seconds <= eff_end) {
+                db->set_bookmark_time(id, bm.seq, bm.time_seconds - start, &err);
+            } else {
+                db->remove_bookmark(id, bm.seq, &err);
+            }
+        }
+    }
+
+    // Thumbnail now shows the wrong frame; regenerate it (best effort) and
+    // bump the generation so the UI clip-watch reloads the row.
+    if (db->regenerate_thumbnail(id, &err)) {
+        g_clip_generation.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        // Keep the old thumbnail: the clip still plays; reconcile/UI can
+        // regenerate on demand.
+        log_error("storage", ("clip_trim thumbnail regen failed: " + err).c_str());
+        g_clip_generation.fetch_add(1, std::memory_order_relaxed);
+    }
+    return {};
+}
+
 // Performs a UI-driven clip mutation (favorite/hashtag/delete) on the IPC
 // thread. The recorder is the single writer, so the UI process routes these
 // here instead of writing the DB itself. Returns "" on success or an error message.
@@ -790,6 +1006,10 @@ static std::string handle_clip_mutation(const ipc::ClipMutation& m)
     std::string err;
     auto db = storage::ClipDb::open(folder, m.source, &err);
     if (!db) return "clip DB open failed: " + err;
+
+    if (m.method == "clip_trim") {
+        return trim_clip(db.get(), folder, m.id, m.start, m.end);
+    }
 
     bool ok = false;
     if (m.method == "clip_set_favorite")       ok = db->set_favorite(m.id, m.favorite, &err);
@@ -870,6 +1090,8 @@ static bool auto_record_start(HWND hwnd)
     g_auto_recording_active = true;
     g_auto_state            = AutoState::AutoRecording;
     g_recording_game_pid    = g_effective_game_pid;
+    clear_pending_bookmarks();
+    rec_clock_start();
     log_path("recording", "auto recording started: ", g_recording.current_path());
     feedback::play(feedback::Sound::RecordStart);
     tray_set_recording(true);
@@ -884,10 +1106,17 @@ static void auto_record_stop()
         return;
     std::wstring path;
     if (g_recording.stop(&path)) {
+        rec_clock_stop();
         if (path.empty()) log_msg("recording", "auto recording stopped: no packets written");
         else {
             log_path("recording", "auto recording saved: ", path);
-            std::thread(catalog_clip, path, std::string("manual"), 0.0).detach();
+            // Same closure as manual stop: pending bookmarks flush into the
+            // clip's DB row once it exists.
+            const std::wstring folder =
+                std::filesystem::path(path).parent_path().wstring();
+            std::thread(catalog_clip, path, std::string("manual"), 0.0,
+                        [folder](int64_t id) { flush_pending_bookmarks(id, folder); })
+                .detach();
         }
         feedback::play(feedback::Sound::RecordStop);
         tray_set_recording(false);
@@ -1069,7 +1298,8 @@ static void reload_settings_from_disk(HWND hwnd)
     if (previous.hotkey_save_replay      != g_settings.hotkey_save_replay ||
         previous.hotkey_recording_start  != g_settings.hotkey_recording_start ||
         previous.hotkey_recording_stop   != g_settings.hotkey_recording_stop ||
-        previous.hotkey_pause_resume     != g_settings.hotkey_pause_resume) {
+        previous.hotkey_pause_resume     != g_settings.hotkey_pause_resume ||
+        previous.hotkey_add_bookmark     != g_settings.hotkey_add_bookmark) {
         hotkeys_unregister(hwnd);
         hotkeys_register(hwnd);
         log_msg("hotkey", "hotkeys reloaded from settings");
@@ -2437,6 +2667,11 @@ static void media_stop()
         g_recording.stop(&path);
         if (!path.empty()) log_path("recording", "recording saved: ", path);
     }
+    // A recording killed here never reaches CMD_RECORDING_STOP, so stop the
+    // bookmark clock and drop any pending bookmarks (no clip row will exist
+    // to flush them into — otherwise they'd leak into the next recording).
+    rec_clock_stop();
+    clear_pending_bookmarks();
     g_video_enc_open_attempted.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(g_status_mutex);
@@ -2619,6 +2854,12 @@ static void tray_show_menu(HWND hwnd)
     AppendMenuW(menu, start_flags,            CMD_RECORDING_START, start_text.c_str());
     AppendMenuW(menu, stop_flags,             CMD_RECORDING_STOP,  stop_text.c_str());
     AppendMenuW(menu, pause_flags,            CMD_PAUSE_RESUME,    pause_text.c_str());
+    // Bookmarking needs a live manual recording; mirror start/stop enable logic.
+    UINT bookmark_flags = (state == recording::RecordingState::Recording)
+        ? MF_STRING : (MF_STRING | MF_GRAYED);
+    std::wstring bookmark_text = L"Add Bookmark\t" + utf8_to_wide(
+        hotkey_or_default(g_settings.hotkey_add_bookmark, "Ctrl+Shift+F12"));
+    AppendMenuW(menu, bookmark_flags,         CMD_ADD_BOOKMARK,    bookmark_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_CHECK_UPDATE,    L"Check for Updates\x2026");
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
@@ -2869,6 +3110,8 @@ static void hotkeys_register(HWND hwnd)
         g_settings.hotkey_recording_stop, "Ctrl+Shift+F10");
     register_one_hotkey(hwnd, CMD_PAUSE_RESUME, "pause_resume",
         g_settings.hotkey_pause_resume, "Ctrl+Shift+F11");
+    register_one_hotkey(hwnd, CMD_ADD_BOOKMARK, "add_bookmark",
+        g_settings.hotkey_add_bookmark, "Ctrl+Shift+F12");
 
     std::sort(g_hotkey_bindings.begin(), g_hotkey_bindings.end(),
         [](const HotkeyBinding& a, const HotkeyBinding& b) {
@@ -2953,6 +3196,8 @@ static void dispatch(Cmd cmd, HWND hwnd)
             g_auto_recording_active = false;
             if (!g_video.running())
                 media_start(hwnd);
+            clear_pending_bookmarks();
+            rec_clock_start();
             log_path("recording", "recording started: ", g_recording.current_path());
             feedback::play(feedback::Sound::RecordStart);
             tray_set_recording(true);
@@ -2966,11 +3211,18 @@ static void dispatch(Cmd cmd, HWND hwnd)
     case CMD_RECORDING_STOP: {
         std::wstring path;
         if (g_recording.stop(&path)) {
+            rec_clock_stop();
             if (path.empty()) log_msg("recording", "recording stopped: no packets written");
             else {
                 log_path("recording", "recording saved: ", path);
                 // Catalog off the UI thread — decode + DB I/O must not block it.
-                std::thread(catalog_clip, path, std::string("manual"), 0.0).detach();
+                // The closure captures the recording folder so pending bookmarks
+                // flush into the right recs.db once the clip row exists.
+                const std::wstring folder =
+                    std::filesystem::path(path).parent_path().wstring();
+                std::thread(catalog_clip, path, std::string("manual"), 0.0,
+                            [folder](int64_t id) { flush_pending_bookmarks(id, folder); })
+                    .detach();
             }
             feedback::play(feedback::Sound::RecordStop);
             tray_set_recording(false);
@@ -2983,8 +3235,12 @@ static void dispatch(Cmd cmd, HWND hwnd)
     }
     case CMD_PAUSE_RESUME:
         if (g_recording.state() == recording::RecordingState::Paused) {
-            if (g_recording.resume()) log_msg("recording", "recording resumed");
+            if (g_recording.resume()) {
+                rec_clock_resume();
+                log_msg("recording", "recording resumed");
+            }
         } else if (g_recording.pause()) {
+            rec_clock_pause();
             log_msg("recording", "recording paused");
         } else {
             char msg[96];
@@ -2993,6 +3249,12 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("recording", msg);
         }
         break;
+    case CMD_ADD_BOOKMARK: {
+        const std::string err = add_bookmark_now();
+        if (!err.empty())
+            log_msg("recording", ("add_bookmark rejected: " + err).c_str());
+        break;
+    }
     case CMD_SETTINGS:
         log_msg("tray", "settings opened");
         show_settings(hwnd);
@@ -3035,7 +3297,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_selected_game_exe = exe; // already lowercased; "" = auto
             }
             PostMessageW(g_main_hwnd, WM_FAST_SCAN, 0, 0);
-        });
+        },
+        add_bookmark_now);
         publish_runtime_status();
         log_msg("app", "app shell ready");
         return 0;

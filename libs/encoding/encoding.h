@@ -56,6 +56,7 @@ using PacketSink = std::function<void(EncodedPacket)>;
 enum class VideoCodec {
     H264,
     H265,
+    AV1,
 };
 
 // Codec metadata needed by muxers to write stream headers.
@@ -83,12 +84,12 @@ std::string probe_video_encoder(int width, int height);
 // in probe order.  Used to populate the Settings UI encoder list.
 std::vector<std::string> available_video_encoders(int width, int height);
 
-// Resolves the user-facing choice (device: "gpu"/"cpu", codec: "h264"/"h265")
+// Resolves the user-facing choice (device: "gpu"/"cpu", codec: "h264"/"h265"/"av1")
 // to a concrete FFmpeg encoder name the current machine can actually open at
 // the given dimensions. GPU tries the vendor HW encoders (NVENC → AMF → QSV)
-// for the codec; CPU uses libx264/libx265. If the preferred device yields no
-// working encoder, falls back to the other device for the same codec. Returns
-// "" if nothing opens.
+// for the codec; CPU uses libx264/libx265/libaom-av1. If the preferred device
+// yields no working encoder, falls back to the other device for the same
+// codec. Returns "" if nothing opens.
 std::string resolve_video_encoder(const std::string& device,
                                    const std::string& codec,
                                    int width, int height);

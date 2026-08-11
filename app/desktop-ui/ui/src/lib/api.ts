@@ -67,6 +67,21 @@ async function ok(promise: Promise<unknown>): Promise<{ ok: boolean; error?: str
   }
 }
 
+export interface BookmarkRow {
+  seq: number;
+  time_seconds: number;
+  label: string;
+  color: string;
+}
+
+export interface CollectionSummary {
+  id: number;
+  name: string;
+  color: string;
+  created_at_utc: string;
+  clip_count: number;
+}
+
 export const clipApi = {
   setFavorite: (c: Clip, favorite: boolean) =>
     ok(invoke("clip_set_favorite", { source: c.source, id: c.id, favorite })),
@@ -85,9 +100,48 @@ export const clipApi = {
   delete: (c: Clip) => ok(invoke("clip_delete", { source: c.source, id: c.id })),
   setDuration: (c: Clip, duration: number) =>
     ok(invoke("clip_set_duration", { source: c.source, id: c.id, duration })),
-  saveCapturedThumb: (c: Clip, dataUrl: string) =>
-    ok(invoke("thumb_capture", { source: c.source, id: c.id, dataUrl })),
+  // thumb_capture returns the thumbnail filename; keep it on the envelope so
+  // clip-card can update the grid row without a refetch.
+  saveCapturedThumb: async (c: Clip, dataUrl: string): Promise<{
+    ok: boolean;
+    thumbnail_file?: string;
+    error?: string;
+  }> => {
+    try {
+      const thumbnail_file = await invoke<string>("thumb_capture", {
+        source: c.source,
+        id: c.id,
+        dataUrl,
+      });
+      return { ok: true, thumbnail_file };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  },
   revealInExplorer: (c: Clip) => ok(invoke("reveal_in_explorer", { path: c.video_path })),
+  trim: (c: Clip, start: number, end: number) =>
+    ok(invoke("clip_trim", { source: c.source, id: c.id, start, end })),
+  listBookmarks: (c: Clip) =>
+    invoke<BookmarkRow[]>("clip_list_bookmarks", { source: c.source, id: c.id }),
+  addBookmark: (c: Clip, timeSeconds: number, label: string, color: string) =>
+    ok(invoke("clip_add_bookmark", { source: c.source, id: c.id, timeSeconds, label, color })),
+  updateBookmark: (c: Clip, seq: number, label: string, color: string) =>
+    ok(invoke("clip_update_bookmark", { source: c.source, id: c.id, seq, label, color })),
+  deleteBookmark: (c: Clip, seq: number) =>
+    ok(invoke("clip_delete_bookmark", { source: c.source, id: c.id, seq })),
+  recordingAddBookmark: () => ok(invoke("recording_add_bookmark")),
+};
+
+export const collectionsApi = {
+  list: () => invoke<CollectionSummary[]>("list_collections"),
+  create: (name: string, color: string) => invoke<number>("create_collection", { name, color }),
+  rename: (id: number, name: string) => ok(invoke("rename_collection", { id, name })),
+  remove: (id: number) => ok(invoke("delete_collection", { id })),
+  clips: (id: number) => invoke<Clip[]>("collection_clips", { collectionId: id }),
+  addClip: (id: number, c: Clip) =>
+    ok(invoke("add_clip_to_collection", { collectionId: id, source: c.source, clipId: c.id })),
+  removeClip: (id: number, c: Clip) =>
+    ok(invoke("remove_clip_from_collection", { collectionId: id, source: c.source, clipId: c.id })),
 };
 
 // Subscribes to live clip-list changes via a native Tauri event. Calls

@@ -43,6 +43,7 @@ HWND                            g_hwnd          = nullptr;
 std::function<RecordingState()> g_status_fn;
 ClipMutationFn                  g_mutation_fn;
 SelectGameFn                    g_select_fn;
+AddBookmarkFn                   g_add_bookmark_fn;
 std::thread                     g_accept_thread;
 
 std::mutex               g_clients_mutex;
@@ -136,6 +137,19 @@ void handle_client(SOCKET client)
                 } else if (method == "reload_settings") {
                     PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
                     response = make_result(req_id, {{"status", "accepted"}});
+                } else if (method == "recording_add_bookmark") {
+                    // Handled directly on the IPC thread: bookmark timestamp
+                    // accuracy matters, so it must not round-trip through the
+                    // message loop.
+                    if (!g_add_bookmark_fn) {
+                        response = make_error(req_id, -32601, "Bookmark handler unavailable");
+                    } else {
+                        const std::string err = g_add_bookmark_fn();
+                        if (err.empty())
+                            response = make_result(req_id, {{"status", "ok"}});
+                        else
+                            response = make_error(req_id, -32000, err.c_str());
+                    }
                 } else if (method == "set_selected_game") {
                     if (!g_select_fn) {
                         response = make_error(req_id, -32601, "Selection unavailable");
@@ -158,7 +172,8 @@ void handle_client(SOCKET client)
                            method == "clip_rename" ||
                            method == "clip_set_title" ||
                            method == "clip_regen_thumb" ||
-                           method == "clip_delete") {
+                           method == "clip_delete" ||
+                           method == "clip_trim") {
                     if (!g_mutation_fn) {
                         response = make_error(req_id, -32601, "Mutations unavailable");
                     } else {
@@ -178,6 +193,8 @@ void handle_client(SOCKET client)
                         m.favorite = get_or("favorite", false);
                         m.new_name = get_or("new_name", std::string());
                         m.title    = get_or("title", std::string());
+                        m.start    = get_or("start", 0.0);
+                        m.end      = get_or("end", 0.0);
                         // handle_client runs on its own thread per connection; the
                         // mutation callback (handle_clip_mutation in main.cpp)
                         // opens its own DB handle per call and only touches
@@ -230,12 +247,14 @@ void accept_loop()
 void start(HWND hwnd,
            std::function<RecordingState()> status_fn,
            ClipMutationFn mutation_fn,
-           SelectGameFn select_fn)
+           SelectGameFn select_fn,
+           AddBookmarkFn add_bookmark_fn)
 {
-    g_hwnd        = hwnd;
-    g_status_fn   = std::move(status_fn);
-    g_mutation_fn = std::move(mutation_fn);
-    g_select_fn   = std::move(select_fn);
+    g_hwnd            = hwnd;
+    g_status_fn       = std::move(status_fn);
+    g_mutation_fn     = std::move(mutation_fn);
+    g_select_fn       = std::move(select_fn);
+    g_add_bookmark_fn = std::move(add_bookmark_fn);
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;

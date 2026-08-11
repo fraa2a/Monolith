@@ -2,7 +2,7 @@ import { useEffect, useRef } from "preact/hooks";
 import type { Clip } from "../lib/api.ts";
 import { Icon } from "../shell/icons.tsx";
 
-export type MenuAction = "favorite" | "hashtag" | "fullscreen" | "delete";
+export type MenuAction = "favorite" | "add-to-collection" | "hashtag" | "fullscreen" | "delete";
 
 interface Props {
   x: number;
@@ -45,6 +45,9 @@ export function ContextMenu({ x, y, clip, onAction, onClose }: Props) {
       <button class={`ctx-item ctx-favorite ${clip.favorite ? "active" : ""}`} onClick={act("favorite")}>
         <span class="ctx-ico"><Icon name="star" size={15} filled={clip.favorite} /></span>
         {clip.favorite ? "Remove favorite" : "Add to favorites"}
+      </button>
+      <button class="ctx-item" onClick={act("add-to-collection")}>
+        <span class="ctx-ico"><Icon name="album" size={15} /></span>Add to collection…
       </button>
       <button class="ctx-item" onClick={act("hashtag")}>
         <span class="ctx-ico"><Icon name="hash" size={15} /></span>Hashtags...

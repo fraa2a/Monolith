@@ -9,8 +9,10 @@
 
 mod asset_scope;
 mod clip_catalog;
+mod collections;
 mod commands;
 mod engine_rpc;
+#[cfg(target_os = "windows")]
 mod exe_icon;
 mod game_catalog;
 mod paths;
@@ -72,11 +74,25 @@ fn main() {
             commands::clip_rename,
             commands::clip_delete,
             commands::clip_regen_thumb,
+            commands::clip_trim,
+            commands::recording_add_bookmark,
+            commands::clip_list_bookmarks,
+            commands::clip_add_bookmark,
+            commands::clip_update_bookmark,
+            commands::clip_delete_bookmark,
+            commands::list_collections,
+            commands::create_collection,
+            commands::rename_collection,
+            commands::delete_collection,
+            commands::add_clip_to_collection,
+            commands::remove_clip_from_collection,
+            commands::collection_clips,
             commands::reveal_in_explorer,
             commands::get_settings,
             commands::save_settings,
             commands::runtime_status,
             commands::pick_folder,
+            #[cfg(target_os = "windows")]
             commands::exe_icon,
             commands::game_catalog_map,
             commands::game_icon,

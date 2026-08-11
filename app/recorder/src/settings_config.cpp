@@ -188,8 +188,9 @@ std::string normalize_hotkey(const std::string& chord)
     return out;
 }
 
-// Returns an error message naming the two colliding actions if any of the four
-// hotkeys are assigned the same chord, or an empty string if there is no collision.
+// Returns an error message naming the two colliding actions if any of the
+// hotkeys are assigned the same chord, or an empty string if there is no
+// collision.
 std::string find_hotkey_collision(const Config& config)
 {
     const std::pair<const char*, std::string> entries[] = {
@@ -197,6 +198,7 @@ std::string find_hotkey_collision(const Config& config)
         {"Start Recording",  config.hotkey_recording_start},
         {"Stop Recording",   config.hotkey_recording_stop},
         {"Pause/Resume",     config.hotkey_pause_resume},
+        {"Add Bookmark",     config.hotkey_add_bookmark},
     };
     for (size_t i = 0; i < std::size(entries); ++i) {
         const std::string norm_i = normalize_hotkey(entries[i].second);
@@ -328,6 +330,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["replay_buffer"]["enabled"] = config.replay_buffer_enabled;
     doc["replay_buffer"]["duration_seconds"] = config.replay_duration_seconds;
     doc["replay_buffer"]["save_container"] = config.replay_clip_container;
+    doc["replay_buffer"]["storage"] = config.replay_buffer_storage;
     // memory_budget_mb is fixed internally (512 MB); scrub any stale key.
     if (doc.contains("replay_buffer") && doc["replay_buffer"].is_object())
         doc["replay_buffer"].erase("memory_budget_mb");
@@ -365,6 +368,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["hotkeys"]["recording_start"] = config.hotkey_recording_start;
     doc["hotkeys"]["recording_stop"] = config.hotkey_recording_stop;
     doc["hotkeys"]["pause_resume"] = config.hotkey_pause_resume;
+    doc["hotkeys"]["add_bookmark"] = config.hotkey_add_bookmark;
     doc["update"]["auto_check"] = config.update_auto_check;
     doc["advanced"]["logging_enabled"] = config.logging_enabled;
     doc["capture_mode"]["mode"] = config.capture_mode;
@@ -408,6 +412,13 @@ Config config_from_json(
         config.replay_clip_container = "mkv";
     config.replay_buffer_enabled = bool_at(doc, "replay_buffer", "enabled", true);
 
+    // Where the rolling replay buffer lives: "ram" (in-memory, current
+    // behavior) or "disk" (keyframe-aligned segments on disk — survives
+    // longer durations with bounded memory). Anything else falls back to ram.
+    config.replay_buffer_storage = utf8_at(doc, "replay_buffer", "storage", "ram");
+    if (config.replay_buffer_storage != "ram" && config.replay_buffer_storage != "disk")
+        config.replay_buffer_storage = "ram";
+
     config.recording_container = utf8_at(doc, "recording", "container", "mkv");
     if (config.recording_container != "mkv" && config.recording_container != "mp4")
         config.recording_container = "mkv";
@@ -446,7 +457,8 @@ Config config_from_json(
     if (config.encoder_device != "gpu" && config.encoder_device != "cpu")
         config.encoder_device = "gpu";
     config.encoder_codec = utf8_at(doc, "video_encoder", "codec", "h264");
-    if (config.encoder_codec != "h264" && config.encoder_codec != "h265")
+    if (config.encoder_codec != "h264" && config.encoder_codec != "h265" &&
+        config.encoder_codec != "av1")
         config.encoder_codec = "h264";
 
     config.video_bitrate_kbps = int_at(doc, "video_encoder", "bitrate_kbps", 20000);
@@ -466,6 +478,7 @@ Config config_from_json(
     config.hotkey_recording_start = utf8_at(doc, "hotkeys", "recording_start", "Ctrl+Shift+F9");
     config.hotkey_recording_stop = utf8_at(doc, "hotkeys", "recording_stop", "Ctrl+Shift+F10");
     config.hotkey_pause_resume = utf8_at(doc, "hotkeys", "pause_resume", "Ctrl+Shift+F11");
+    config.hotkey_add_bookmark = utf8_at(doc, "hotkeys", "add_bookmark", "Ctrl+Shift+F12");
 
     // ── active_game detection settings ───────────────────────────────────────────
     // Detection is a pure local heuristic over running processes (no network

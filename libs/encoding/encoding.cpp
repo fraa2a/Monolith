@@ -47,6 +47,7 @@ static EncodedBytesRef make_encoded_bytes(const uint8_t* data, int size)
 static const char* kEncoderCandidates[] = {
     "h264_nvenc", "h264_amf", "h264_qsv", "libx264",
     "hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265",
+    "av1_nvenc", "av1_amf", "av1_qsv", "libaom-av1",
     nullptr
 };
 
@@ -67,6 +68,8 @@ static bool try_open_probe(const char* name, int width, int height)
     ctx->gop_size   = 60;
 
     AVDictionary* opts = nullptr;
+    // libx264/libx265 accept "ultrafast"; libaom-av1 does not (it has
+    // cpu-used instead), so leave it unset there.
     if (strcmp(name, "libx264") == 0 || strcmp(name, "libx265") == 0)
         av_dict_set(&opts, "preset", "ultrafast", 0);
 
@@ -114,11 +117,14 @@ std::string resolve_video_encoder(const std::string& device,
                                   int width, int height)
 {
     const bool h265 = (codec == "h265" || codec == "hevc");
+    const bool av1  = (codec == "av1");
     // HW candidates for the codec, in vendor-preference order.
     const std::vector<std::string> hw = h265
         ? std::vector<std::string>{"hevc_nvenc", "hevc_amf", "hevc_qsv"}
-        : std::vector<std::string>{"h264_nvenc", "h264_amf", "h264_qsv"};
-    const std::string sw = h265 ? "libx265" : "libx264";
+        : (av1
+            ? std::vector<std::string>{"av1_nvenc", "av1_amf", "av1_qsv"}
+            : std::vector<std::string>{"h264_nvenc", "h264_amf", "h264_qsv"});
+    const std::string sw = h265 ? "libx265" : (av1 ? "libaom-av1" : "libx264");
 
     auto first_openable = [&](const std::vector<std::string>& names) -> std::string {
         const int saved_level = av_log_get_level();
@@ -263,7 +269,8 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         bool is_hw = (name.find("nvenc") != std::string::npos ||
                       name.find("amf")   != std::string::npos ||
                       name.find("qsv")   != std::string::npos);
-        bool is_sw = (name == "libx264" || name == "libx265");
+        bool is_sw = (name == "libx264" || name == "libx265" ||
+                      name == "libaom-av1");
 
         if (cfg.quality > 0 && (is_hw || is_sw)) {
             // Legacy path (probe/back-compat only): CQP for HW, CRF for SW.
@@ -302,6 +309,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
                 }
             } else if (is_sw) {
                 // libx264/libx265: nal-hrd=cbr forces constant-rate output.
+                // libaom-av1: rc-end-usage=cbr pins the rate-control mode.
                 av_dict_set(&opts, "nal-hrd", "cbr", 0);
                 if (name == "libx265") {
                     char x265[128];
@@ -310,13 +318,21 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
                         static_cast<long long>(br / 1000),
                         static_cast<long long>(br / 1000));
                     av_dict_set(&opts, "x265-params", x265, 0);
+                } else if (name == "libaom-av1") {
+                    av_dict_set(&opts, "rc-end-usage", "cbr", 0);
                 }
             }
         }
 
         if (is_sw) {
-            av_dict_set(&opts, "preset", "fast", 0);
-            av_dict_set(&opts, "tune",   "zerolatency", 0);
+            // libx264/libx265 use "preset"/"tune"; libaom-av1 has neither
+            // (its speed knob is cpu-used), so only the x26x pair gets them.
+            if (name == "libx264" || name == "libx265") {
+                av_dict_set(&opts, "preset", "fast", 0);
+                av_dict_set(&opts, "tune",   "zerolatency", 0);
+            } else if (name == "libaom-av1") {
+                av_dict_set(&opts, "cpu-used", "8", 0);
+            }
         } else if (name.find("nvenc") != std::string::npos) {
             av_dict_set(&opts, "preset", "p4", 0);
         }
@@ -365,7 +381,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     // Store stream params for replay buffer.
     impl_->vsp.codec   = (ctx->codec_id == AV_CODEC_ID_HEVC)
         ? VideoCodec::H265
-        : VideoCodec::H264;
+        : (ctx->codec_id == AV_CODEC_ID_AV1 ? VideoCodec::AV1 : VideoCodec::H264);
     impl_->vsp.width   = cfg.width;
     impl_->vsp.height  = cfg.height;
     impl_->vsp.fps_num = cfg.fps;

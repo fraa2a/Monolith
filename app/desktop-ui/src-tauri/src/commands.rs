@@ -16,7 +16,9 @@
 // `async_runtime::spawn`, and the blocking bodies below run on
 // `spawn_blocking` so the UI thread never waits on disk/network I/O.
 
-use crate::{clip_catalog, engine_rpc, exe_icon, game_catalog, settings_store};
+use crate::{clip_catalog, engine_rpc, game_catalog, settings_store};
+#[cfg(target_os = "windows")]
+use crate::exe_icon;
 use base64::{engine::general_purpose, Engine as _};
 use clip_catalog::{Clip, ClipFilter, ClipSource};
 use game_catalog::CatalogEntry;
@@ -212,6 +214,134 @@ pub async fn clip_regen_thumb(source: String, id: i64) -> Result<(), String> {
     }
 }
 
+// Lossless trim of a clip's video file, performed by the engine (single
+// writer): the engine rewrites the file in place, retimes bookmarks and bumps
+// the clip generation. `start`/`end` are seconds into the original file.
+#[tauri::command]
+pub async fn clip_trim(source: String, id: i64, start: f64, end: f64) -> Result<(), String> {
+    let src = parse_source(&source)?;
+    let result = blocking(move || {
+        let params = serde_json::json!({
+            "source": src.as_str(), "id": id, "start": start, "end": end,
+        });
+        engine_rpc::mutate_clip("clip_trim", params)
+    })
+    .await;
+    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        Ok(())
+    } else {
+        let err = result
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("engine error")
+            .to_string();
+        eprintln!("[clip_trim] {source} clip {id} failed: {err}");
+        Err(err)
+    }
+}
+
+// Adds a bookmark at the current position of the running manual recording.
+// Handled by the engine's IPC thread (timestamp accuracy matters). Fails with
+// an engine error string when nothing is recording (or it is paused).
+#[tauri::command]
+pub async fn recording_add_bookmark() -> Result<(), String> {
+    let result = blocking(|| engine_rpc::mutate_clip("recording_add_bookmark", serde_json::json!({}))).await;
+    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        Ok(())
+    } else {
+        Err(result
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("engine error")
+            .to_string())
+    }
+}
+
+// ── Bookmarks (direct SQLite writes; engine is the writer at save time) ───
+
+#[tauri::command]
+pub async fn clip_list_bookmarks(source: String, id: i64) -> Result<Vec<clip_catalog::BookmarkRow>, String> {
+    let src = parse_source(&source)?;
+    blocking_result(move || clip_catalog::list_bookmarks(src, id)).await
+}
+
+#[tauri::command]
+pub async fn clip_add_bookmark(
+    source: String,
+    id: i64,
+    time_seconds: f64,
+    label: String,
+    color: String,
+) -> Result<(), String> {
+    let src = parse_source(&source)?;
+    blocking_result(move || clip_catalog::add_bookmark(src, id, time_seconds, &label, &color)).await
+}
+
+#[tauri::command]
+pub async fn clip_update_bookmark(
+    source: String,
+    id: i64,
+    seq: i64,
+    label: String,
+    color: String,
+) -> Result<(), String> {
+    let src = parse_source(&source)?;
+    blocking_result(move || clip_catalog::update_bookmark(src, id, seq, &label, &color)).await
+}
+
+#[tauri::command]
+pub async fn clip_delete_bookmark(source: String, id: i64, seq: i64) -> Result<(), String> {
+    let src = parse_source(&source)?;
+    blocking_result(move || clip_catalog::remove_bookmark(src, id, seq)).await
+}
+
+// ── Collections (global collections.db; see collections.rs) ──────────────
+
+#[tauri::command]
+pub async fn list_collections() -> Result<Vec<crate::collections::CollectionSummary>, String> {
+    blocking_result(crate::collections::list_collections).await
+}
+
+#[tauri::command]
+pub async fn create_collection(name: String, color: String) -> Result<i64, String> {
+    blocking_result(move || crate::collections::create_collection(&name, &color)).await
+}
+
+#[tauri::command]
+pub async fn rename_collection(id: i64, name: String) -> Result<(), String> {
+    blocking_result(move || crate::collections::rename_collection(id, &name)).await
+}
+
+#[tauri::command]
+pub async fn delete_collection(id: i64) -> Result<(), String> {
+    blocking_result(move || crate::collections::delete_collection(id)).await
+}
+
+#[tauri::command]
+pub async fn add_clip_to_collection(
+    collection_id: i64,
+    source: String,
+    clip_id: i64,
+) -> Result<(), String> {
+    let src = parse_source(&source)?;
+    blocking_result(move || crate::collections::add_clip_to_collection(collection_id, src, clip_id)).await
+}
+
+#[tauri::command]
+pub async fn remove_clip_from_collection(
+    collection_id: i64,
+    source: String,
+    clip_id: i64,
+) -> Result<(), String> {
+    let src = parse_source(&source)?;
+    blocking_result(move || crate::collections::remove_clip_from_collection(collection_id, src, clip_id)).await
+}
+
+#[tauri::command]
+pub async fn collection_clips(collection_id: i64) -> Result<Vec<Clip>, String> {
+    blocking_result(move || crate::collections::collection_clips(collection_id)).await
+}
+
 // ── Settings ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -225,11 +355,12 @@ pub async fn get_settings() -> Value {
 // the write even happens. "NONE" (hotkey disabled) never collides with itself.
 fn find_hotkey_collision(config: &Value) -> Option<String> {
     let hotkeys = config.get("hotkeys")?.as_object()?;
-    let entries: [(&str, &str); 4] = [
+    let entries: [(&str, &str); 5] = [
         ("Save Replay", "save_replay"),
         ("Start Recording", "recording_start"),
         ("Stop Recording", "recording_stop"),
         ("Pause/Resume", "pause_resume"),
+        ("Add Bookmark", "add_bookmark"),
     ];
     let values: Vec<(&str, String)> = entries
         .iter()
@@ -294,6 +425,7 @@ pub async fn pick_folder(current: Option<String>) -> Option<String> {
 
 // ── Native app icon (PNG extracted from an exe, base64 data URL) ─────────
 
+#[cfg(target_os = "windows")]
 #[tauri::command]
 pub async fn exe_icon(path: String, process: String) -> Option<String> {
     blocking(move || {

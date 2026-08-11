@@ -21,8 +21,8 @@ struct RecordingState {
 // A UI-driven mutation of a clip catalog row. Dispatched to the recorder (the
 // single writer) so the UI never writes the DB concurrently. `method` is one of:
 // "clip_set_favorite", "clip_add_hashtag", "clip_remove_hashtag", "clip_rename",
-// "clip_set_title", "clip_delete". `source` picks the DB ("replay" -> clips.db,
-// "manual" -> recs.db).
+// "clip_set_title", "clip_delete", "clip_trim". `source` picks the DB
+// ("replay" -> clips.db, "manual" -> recs.db).
 struct ClipMutation {
     std::string method;
     std::string source;   // "replay" | "manual"
@@ -31,10 +31,18 @@ struct ClipMutation {
     bool        favorite = false; // set_favorite
     std::string new_name; // clip_rename (stem, no extension)
     std::string title;    // clip_set_title (display name, independent of file)
+    double      start = 0.0; // clip_trim: trim window start (seconds)
+    double      end   = 0.0; // clip_trim: trim window end (seconds)
 };
 
 // Returns "" on success, or a human-readable error message on failure.
 using ClipMutationFn = std::function<std::string(const ClipMutation&)>;
+
+// Adds a bookmark at the current recording position of the running manual
+// recording. Called on an IPC client thread (timestamp accuracy matters, so it
+// must NOT round-trip through the message loop). Returns "" on success or an
+// error message ("not recording", "recording is paused", ...).
+using AddBookmarkFn = std::function<std::string()>;
 
 // UI-driven selection of which detected game to record/clip when several are
 // running. `exe` is the lowercased executable basename (stable across restarts);
@@ -48,11 +56,14 @@ using SelectGameFn = std::function<void(const std::string& exe, uint32_t pid)>;
 // dispatched via PostMessage to hwnd. `status_fn` answers get_status and
 // `mutation_fn` performs clip_* mutations; both may be called concurrently
 // from multiple client-handler threads and must be internally thread-safe.
-// `select_fn` handles set_selected_game. `reload_settings` posts WM_APP+2 to hwnd.
+// `select_fn` handles set_selected_game. `add_bookmark_fn` handles
+// recording_add_bookmark directly on the IPC thread. `reload_settings` posts
+// WM_APP+2 to hwnd.
 void start(HWND hwnd,
            std::function<RecordingState()> status_fn,
            ClipMutationFn mutation_fn = nullptr,
-           SelectGameFn select_fn = nullptr);
+           SelectGameFn select_fn = nullptr,
+           AddBookmarkFn add_bookmark_fn = nullptr);
 void stop();
 
 } // namespace ipc

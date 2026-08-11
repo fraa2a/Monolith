@@ -2,6 +2,7 @@ add_library(encoding STATIC
     encoding.cpp
     mux_common.cpp
     thumbnail.cpp
+    trim.cpp
 )
 
 target_include_directories(encoding

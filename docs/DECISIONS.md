@@ -217,6 +217,48 @@ File be architecture decision record index for Monolith.
   invoke bridge, not this TCP server. Server stays loopback-only
   (`127.0.0.1`) with no request-level auth.
 
+## ADR-0017: Vice Feature Fusion — Collections, Bookmarks, Engine-Side Trim, Disk Replay, AV1
+
+- Status: accepted (2026-08-11).
+- Decision:
+  - **Collections in AppData**: single global `%LocalAppData%\Monolith\collections.db`
+    (via `paths.rs`), tables `collections` + `collection_clips(collection_id,
+    source, clip_id)` with PK de-dup. Collections span both `replay` and
+    `manual` catalogs and survive output-folder moves. UI (Rust/rusqlite,
+    WAL/busy_timeout like ADR-0015) is the writer; membership rows whose
+    clip vanished are pruned on read, so engine/Stream Deck clip deletion
+    never leaves orphans.
+  - **Bookmarks live in clip catalogs**: `clip_bookmarks(clip_id, seq,
+    time_seconds, label, color)` in `recs.db` (and `clips.db` for
+    uniformity), engine-side schema with `IF NOT EXISTS` so existing DBs
+    migrate transparently. During recording bookmarks accumulate in the
+    engine (`recording_elapsed_seconds()` clock excludes pause) and are
+    written to the catalog row at stop via `catalog_clip`'s `on_cataloged`
+    callback. `recording_add_bookmark` is handled on the IPC thread because
+    timestamp accuracy matters. Trim re-times bookmarks (`−start`, out-of-range
+    dropped).
+  - **Trim is engine-side, in-place**: FFmpeg remux lives only in the
+    recorder process; new `clip_trim` JSON-RPC mutation (same channel as
+    `clip_regen_thumb`) copies packets losslessly (`-c copy` semantics,
+    keyframe-backward seek keeps pre-roll), writes `<file>.trimming.<ext>`,
+    then `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` — file replaced
+    in place like Vice, original intact on any failure. Re-encode is a
+    safety-net fallback only. `duration_seconds` re-probed, thumbnail
+    regenerated, `clip_generation` bumped so the UI grid refreshes.
+  - **Replay buffer RAM|Disk**: new `storage` config field
+    (`"ram"|"disk"`); RAM = existing 512 MB ring (unchanged); Disk = new
+    `DiskSegmentBuffer` in `libs/replay-buffer` muxing ~2 s `.mkv` segments
+    into a scratch dir (`%LocalAppData%\Monolith\clip-buffer-segments`),
+    cleaned on startup and on RAM↔Disk switch; `save_clip` trims the first
+    segment + concatenates the rest via `concat_clip_segments` (shared with
+    trim), temp + atomic rename so a failed concat leaves no partial file.
+  - **AV1**: `VideoCodec::AV1` + `resolve_video_encoder("av1")` cascade
+    `av1_nvenc → av1_amf → av1_qsv → libaom-av1` (vcpkg ffmpeg feature
+    `libaom`, not GPL). libaom gets only `cpu-used=8` + `rc-end-usage=cbr`
+    (no preset/tune — unknown options fail `avcodec_open2`).
+- Notes: no-10-bit, no-CRF/CQ, no timeline editor (out of scope). Manual
+  recordings stay always-on-disk. UI text stays English.
+
 ## Open Decisions
 
 - Final MP4 remux/finalization policy for interrupted recordings.
