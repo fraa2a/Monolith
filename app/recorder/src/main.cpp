@@ -997,7 +997,7 @@ static std::string trim_clip(storage::ClipDb* db,
         return "trim succeeded but duration update failed: " + err;
 
     // Retime bookmarks into the trimmed timeline; drop bookmarks outside it.
-    std::vector<storage::BookmarkRow> bookmarks;
+    std::vector<storage::ClipDb::BookmarkRow> bookmarks;
     if (db->list_bookmarks(id, bookmarks, &err)) {
         for (const auto& bm : bookmarks) {
             if (bm.time_seconds >= start && bm.time_seconds <= eff_end) {
