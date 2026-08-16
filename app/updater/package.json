@@ -1,0 +1,24 @@
+{
+  "name": "monolith-updater",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "postbuild": "cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo.toml",
+    "build:dev": "vite build && cargo build --features custom-protocol --manifest-path src-tauri/Cargo.toml",
+    "dev": "vite",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev"
+  },
+  "dependencies": {
+    "preact": "^10.24.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0",
+    "@preact/preset-vite": "^2.9.0",
+    "typescript": "^5.7.0",
+    "@tauri-apps/cli": "^2"
+  }
+}

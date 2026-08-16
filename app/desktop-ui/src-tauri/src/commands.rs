@@ -191,6 +191,44 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     .await
 }
 
+// Spawns the component updater (Updater.exe) with its window visible — the
+// Settings "Check for updates" action. Resolution mirrors the engine's
+// resolve_tauri_ui() (settings_window.cpp): installed exe next to the app
+// root, then the CMake build output, then a dev cargo tree. The updater has
+// its own single-instance guard, so a double spawn just focuses the window.
+#[tauri::command]
+pub async fn open_updater() -> Result<(), String> {
+    blocking_result(move || {
+        let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+        let base = exe
+            .parent()
+            .ok_or_else(|| "no exe directory".to_string())?
+            .to_path_buf();
+        let candidates = [
+            // Installed: <app>\ui\Monolith.UI.exe → <app>\Updater.exe.
+            base.join("..").join("Updater.exe"),
+            // Dev: cargo tree under the repo → CMake output copy.
+            base.join("../../../../../../build/app/recorder/Release/Updater.exe"),
+            // Dev: the updater's own cargo tree.
+            base.join("../../../../app/updater/src-tauri/target/release/updater.exe"),
+            base.join("../../../../app/updater/src-tauri/target/debug/updater.exe"),
+        ];
+        for candidate in candidates {
+            let path = candidate.canonicalize().unwrap_or(candidate);
+            if path.is_file() {
+                let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                return std::process::Command::new(&path)
+                    .current_dir(dir)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|err| err.to_string());
+            }
+        }
+        Err("Updater.exe not found (built by CMake when Rust and Node are installed)".to_string())
+    })
+    .await
+}
+
 // Only mutation that still needs the engine: thumbnail regeneration decodes a
 // video frame via FFmpeg, which only the recorder process links against.
 #[tauri::command]

@@ -8,7 +8,8 @@
 ; recent Windows 10 — no other prerequisites on the target machine.
 ;
 ; Per-user by design: installs under {localappdata}\Programs\Monolith with
-; PrivilegesRequired=lowest so WinSparkle can run the updater without UAC.
+; PrivilegesRequired=lowest so the component updater (Updater.exe) can swap
+; files without UAC prompts.
 
 #ifndef MonolithVersion
   #define MonolithVersion "1.2.3"
@@ -60,7 +61,9 @@ Name: "startupicon"; Description: "Start {#MonolithName} when you sign in"; Grou
 ; Native recorder payload. Keep this explicit so unrelated build files in the
 ; root output directory cannot be bundled accidentally.
 Source: "{#PayloadDir}\Monolith.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\WinSparkle.dll"; DestDir: "{app}"; Flags: ignoreversion
+; Component self-updater (app/updater): fetches update-manifest.json and
+; swaps only the components whose version changed.
+Source: "{#PayloadDir}\Updater.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\av*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\sw*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\lib*.dll"; DestDir: "{app}"; Flags: ignoreversion

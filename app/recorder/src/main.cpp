@@ -33,6 +33,7 @@
 #include "settings_config.h"
 #include "settings_window.h"
 #include "updater.h"
+#include "version.h"
 
 #include <atomic>
 #include <algorithm>
@@ -3324,6 +3325,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_replay_enabled.load(std::memory_order_relaxed),
                 g_recording_enabled.load(std::memory_order_relaxed),
                 g_clip_generation.load(std::memory_order_relaxed),
+                MONOLITH_VERSION_STRING, // engine component version (Settings)
             };
         }, handle_clip_mutation,
         [](const std::string& exe, uint32_t /*pid*/) {
@@ -3335,7 +3337,13 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             PostMessageW(g_main_hwnd, WM_FAST_SCAN, 0, 0);
         },
-        add_bookmark_now);
+        add_bookmark_now,
+        [] {
+            // update_close_ui for Updater.exe: close the UI process so ui\*
+            // can be swapped. Blocks until the process is gone; runs on an
+            // IPC client thread exactly like the WM_DESTROY shutdown path.
+            settings_window::close_running();
+        });
         publish_runtime_status();
         log_msg("app", "app shell ready");
         return 0;
@@ -3439,6 +3447,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     gamelist::set_log_sink([](const char* tag, const char* msg) { log_error(tag, msg); });
     gamelist::init(app_data_dir());
     reconcile_catalogs(); // self-heal clip catalogs on a background thread
+    updater::post_update_cleanup(); // *.old sweep + legacy WinSparkle removal
     updater::init(g_settings.update_auto_check);
     if (g_settings.update_auto_check)
         updater::check_silent(); // immediate check at startup

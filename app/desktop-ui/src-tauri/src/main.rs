@@ -88,6 +88,7 @@ fn main() {
             commands::remove_clip_from_collection,
             commands::collection_clips,
             commands::reveal_in_explorer,
+            commands::open_updater,
             commands::get_settings,
             commands::save_settings,
             commands::runtime_status,

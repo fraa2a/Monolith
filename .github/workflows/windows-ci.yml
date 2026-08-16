@@ -153,6 +153,10 @@ jobs:
             Write-Error "Build output not found: build/app/recorder/Release/ui/Monolith.UI.exe"
             exit 1
           }
+          if (-not (Test-Path "build/app/recorder/Release/Updater.exe")) {
+            Write-Error "Build output not found: build/app/recorder/Release/Updater.exe"
+            exit 1
+          }
           $plugin = Get-ChildItem "plugins/stream-deck/dist/*.streamDeckPlugin" -ErrorAction SilentlyContinue
           if (-not $plugin) {
             Write-Error "Stream Deck package not found under plugins/stream-deck/dist"

@@ -259,6 +259,43 @@ File be architecture decision record index for Monolith.
 - Notes: no-10-bit, no-CRF/CQ, no timeline editor (out of scope). Manual
   recordings stay always-on-disk. UI text stays English.
 
+## ADR-0018: Component Self-Updater (Supersedes WinSparkle Full-Installer Updates)
+
+- Date: 2026-08-16
+- Status: accepted
+- Context: WinSparkle compared only `Monolith.exe`'s FileVersion against a
+  single appcast version and re-ran the full Inno installer (engine + FFmpeg
+  DLLs + UI) for every update. A UI-only change therefore required bumping
+  the engine version/tag, and clients re-downloaded ~everything for nothing.
+  The update UX was WinSparkle's stock native dialog.
+- Decision: a dedicated Tauri v2 process — `Updater.exe` (`app/updater`,
+  deployed at the app root next to `Monolith.exe`) — owns the entire flow:
+  - Feed: `update-manifest.json` on the stable
+    `releases/latest/download/` URL with per-component entries
+    (version / url / size / sha256 / EdDSA signature).
+  - Independent component versions: engine from root `CMakeLists.txt`
+    `project(VERSION)`, ui and updater from their `tauri.conf.json`. The git
+    tag only names the release and versions the full installer.
+  - Download only what changed; verify sha256 + Ed25519 (same key pair as
+    the WinSparkle era, CI secret `WINSPARKLE_ED_PRIVATE_KEY`) before apply.
+  - Apply via the rename-to-`.old` dance (works for loaded DLLs and running
+    images): ui first (engine closes the UI over `update_close_ui`), then
+    engine (`update_engine_exit` → graceful WM_CLOSE, swap, relaunch), the
+    updater itself last (self-swap). `*.old` swept at next engine start.
+  - UI: borderless WebView2 window (Preact, main app's design tokens) with
+    per-component cards, live progress and a bottom "buffer bar".
+  - Recording guard: Update-now is disabled while the engine reports
+    `recording` (an engine update restarts the process).
+- Migration: `appcast.xml` keeps being generated every release so legacy
+  WinSparkle installs roll forward once through the full installer and land
+  on the component-updater build.
+- Consequences: WinSparkle dependency dropped (vcpkg, DLL, updater.cpp
+  wrapper). Two new JSON-RPC methods on the engine (`update_close_ui`,
+  `update_engine_exit`). `get_status` now also reports the engine version
+  (Settings shows interface + engine versions side by side). No binary
+  delta-patching (component granularity only) and no download resume —
+  retry re-downloads; both are accepted v1 limitations.
+
 ## Open Decisions
 
 - Final MP4 remux/finalization policy for interrupted recordings.

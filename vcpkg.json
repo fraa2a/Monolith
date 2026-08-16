@@ -3,7 +3,6 @@
   "dependencies": [
     "nlohmann-json",
     "sqlite3",
-    "winsparkle",
     {
       "name": "ffmpeg",
       "features": ["avcodec", "avformat", "swscale", "swresample", "amf", "nvcodec", "qsv", "x264", "x265", "aom", "gpl"]

@@ -128,14 +128,16 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        env:
-          MONOLITH_VERSION: ${{ steps.version.outputs.version }}
         run: |
           cmake -S . -B build `
             -G "Ninja Multi-Config" `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            "-DMONOLITH_VERSION=$env:MONOLITH_VERSION" `
             "-DCMAKE_MT:FILEPATH=$env:CMAKE_MT"
+          # NOTE: no -DMONOLITH_VERSION from the tag. Engine / ui / updater
+          # are versioned independently (CMakeLists project(), the two
+          # tauri.conf.json files) so a UI-only release can ship without
+          # bumping the engine. The tag only names the release and versions
+          # the full installer.
 
       # The CMake desktop_ui target bundles the Preact frontend (npm/Vite) and
       # compiles the Tauri UI (cargo) into <recorder-output>/ui/Monolith.UI.exe.
@@ -159,7 +161,7 @@ jobs:
           foreach ($f in @(
             "build/app/recorder/Release/Monolith.exe",
             "build/app/recorder/Release/ui/Monolith.UI.exe",
-            "build/app/recorder/Release/WinSparkle.dll",
+            "build/app/recorder/Release/Updater.exe",
             "build/app/recorder/Release/sqlite3.dll",
             "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin"
           )) {
@@ -196,6 +198,90 @@ jobs:
             -ReleaseNotesUrl "https://github.com/${{ github.repository }}/releases/tag/v$ver" `
             -PrivateKeyPem $env:WINSPARKLE_ED_PRIVATE_KEY `
             -OutputPath appcast.xml
+          # Legacy migration feed only: installs still on the WinSparkle
+          # updater read this appcast once and land on the component-updater
+          # build; from there update-manifest.json takes over.
+
+      # ── Component update payload ─────────────────────────────────────────
+      # Per-component zips + update-manifest.json drive Updater.exe: only the
+      # components whose version changed get downloaded by clients.
+
+      - name: Read component versions
+        id: compvars
+        shell: pwsh
+        run: |
+          $engine = [regex]::Match((Get-Content CMakeLists.txt -Raw),
+              'project\(monolith VERSION ([0-9]+\.[0-9]+\.[0-9]+)').Groups[1].Value
+          $ui = (Get-Content app/desktop-ui/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $updater = (Get-Content app/updater/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if (-not $engine -or -not $ui -or -not $updater) {
+            Write-Error "Failed to parse component versions (engine='$engine' ui='$ui' updater='$updater')"
+            exit 1
+          }
+          "engine=$engine" >> $env:GITHUB_OUTPUT
+          "ui=$ui" >> $env:GITHUB_OUTPUT
+          "updater=$updater" >> $env:GITHUB_OUTPUT
+          Write-Host "engine=$engine ui=$ui updater=$updater"
+          # Sanity: the tag names the release, so it should not sort below any
+          # component it ships (legacy WinSparkle clients compare the tag
+          # against their engine FileVersion).
+          $tag = "${{ steps.version.outputs.version }}"
+          foreach ($pair in @(@("engine", $engine), @("ui", $ui), @("updater", $updater))) {
+            if ([version]$pair[1] -gt [version]$tag) {
+              Write-Warning "tag v$tag is lower than $($pair[0]) version $($pair[1])"
+            }
+          }
+
+      - name: Package component zips
+        shell: pwsh
+        run: |
+          $rel = "build/app/recorder/Release"
+          $pkg = "build/update-pkg"
+          Remove-Item -Recurse -Force $pkg -ErrorAction SilentlyContinue
+
+          # engine: exe + codec/sqlite DLLs + config\default-config.json (the
+          # config\ subdir structure is preserved inside the zip).
+          $eng = "$pkg/engine"
+          New-Item -ItemType Directory -Force -Path "$eng/config" | Out-Null
+          Copy-Item "$rel/Monolith.exe" $eng
+          Copy-Item "$rel/av*.dll" $eng -ErrorAction SilentlyContinue
+          Copy-Item "$rel/sw*.dll" $eng -ErrorAction SilentlyContinue
+          Copy-Item "$rel/lib*.dll" $eng -ErrorAction SilentlyContinue
+          Copy-Item "$rel/sqlite3.dll" $eng
+          Copy-Item "config/default-config.json" "$eng/config/"
+          Compress-Archive -Path "$eng/*" -DestinationPath "monolith-engine-${{ steps.compvars.outputs.engine }}.zip"
+
+          # ui: the whole ui\ subtree.
+          $ui = "$pkg/ui"
+          New-Item -ItemType Directory -Force -Path $ui | Out-Null
+          Copy-Item "$rel/ui/*" $ui -Recurse
+          Compress-Archive -Path "$ui/*" -DestinationPath "monolith-ui-${{ steps.compvars.outputs.ui }}.zip"
+
+          # updater: Updater.exe at the app root.
+          $upd = "$pkg/updater"
+          New-Item -ItemType Directory -Force -Path $upd | Out-Null
+          Copy-Item "$rel/Updater.exe" $upd
+          Compress-Archive -Path "$upd/*" -DestinationPath "monolith-updater-${{ steps.compvars.outputs.updater }}.zip"
+
+          Get-ChildItem monolith-*.zip | ForEach-Object { Write-Host "$($_.Name) $([math]::Round($_.Length / 1MB, 1)) MB" }
+
+      - name: Sign components and generate update manifest
+        shell: pwsh
+        env:
+          WINSPARKLE_ED_PRIVATE_KEY: ${{ secrets.WINSPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          ./scripts/generate-update-manifest.ps1 `
+            -EngineVersion  "${{ steps.compvars.outputs.engine }}" `
+            -UiVersion      "${{ steps.compvars.outputs.ui }}" `
+            -UpdaterVersion "${{ steps.compvars.outputs.updater }}" `
+            -EngineZip  "monolith-engine-${{ steps.compvars.outputs.engine }}.zip" `
+            -UiZip      "monolith-ui-${{ steps.compvars.outputs.ui }}.zip" `
+            -UpdaterZip "monolith-updater-${{ steps.compvars.outputs.updater }}.zip" `
+            -BaseUrl    "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}" `
+            -Tag        "${{ github.ref_name }}" `
+            -NotesUrl   "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" `
+            -PrivateKeyPem $env:WINSPARKLE_ED_PRIVATE_KEY `
+            -OutputPath update-manifest.json
 
       # GPLv3: the public release must offer the corresponding source.
       - name: Create source archive
@@ -214,6 +300,10 @@ jobs:
           files: |
             installer/Output/MonolithSetup-*.exe
             appcast.xml
+            update-manifest.json
+            monolith-engine-*.zip
+            monolith-ui-*.zip
+            monolith-updater-*.zip
             monolith-src-*.zip
             plugins/stream-deck/dist/*.streamDeckPlugin
           body: |
@@ -221,6 +311,8 @@ jobs:
 
             **Install:** download and run `MonolithSetup-${{ steps.version.outputs.version }}.exe` (per-user, no admin needed, no prerequisites).
             Existing installs update automatically via the in-app updater.
+
+            **Components:** engine ${{ steps.compvars.outputs.engine }} · ui ${{ steps.compvars.outputs.ui }} · updater ${{ steps.compvars.outputs.updater }} — clients download only what changed.
 
             **Stream Deck:** `Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin`
 

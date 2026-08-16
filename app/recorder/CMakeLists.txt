@@ -51,11 +51,8 @@ target_compile_definitions(monolith
         NOMINMAX
 )
 
-# WinSparkle ships as a prebuilt DLL via vcpkg (no CMake config package).
-find_path(WINSPARKLE_INCLUDE_DIR winsparkle/winsparkle.h REQUIRED)
-find_library(WINSPARKLE_LIBRARY WinSparkle REQUIRED)
-
-target_include_directories(monolith PRIVATE "${WINSPARKLE_INCLUDE_DIR}")
+# Auto-update is delegated to the dedicated Updater.exe (app/updater),
+# launched by src/updater.cpp — no WinSparkle dependency anymore.
 
 target_link_libraries(monolith
     PRIVATE
@@ -70,7 +67,6 @@ target_link_libraries(monolith
         recording
         ipc
         nlohmann_json::nlohmann_json
-        "${WINSPARKLE_LIBRARY}"
         # System libs
         d3d11
         dxgi

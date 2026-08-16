@@ -253,6 +253,9 @@ export interface EngineStatus {
   replay_enabled?: boolean;
   recording_enabled?: boolean;
   clip_generation?: number;
+  // Engine component version (the interface version is separate — the two
+  // are versioned independently by the component updater).
+  version?: string;
   connected?: boolean;
 }
 
@@ -262,4 +265,10 @@ export async function fetchEngineStatus(): Promise<EngineStatus> {
   } catch {
     return { connected: false };
   }
+}
+
+// Opens the component updater window (Updater.exe). Fails when the updater
+// exe is missing (dev trees without a CMake build).
+export function openUpdater(): Promise<void> {
+  return invoke("open_updater");
 }

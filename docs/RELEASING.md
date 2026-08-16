@@ -2,27 +2,31 @@
 
 ## Distribution Model
 
-- Code repo: private `fraa2a/Monolith`.
-- Public release repo: `fraa2a/Monolith-releases`.
-- Published artifacts: installer, WinSparkle appcast, GPLv3 corresponding source archive.
+- Code + releases: `fraa2a/Monolith` (single repo; releases are public
+  assets on tag pushes — no separate releases repo).
+- Published artifacts per release:
+  - `MonolithSetup-X.Y.Z.exe` — full per-user installer (fresh installs).
+  - `update-manifest.json` + `monolith-engine-*.zip` / `monolith-ui-*.zip` /
+    `monolith-updater-*.zip` — component update payload for Updater.exe.
+  - `appcast.xml` — legacy WinSparkle feed (migration only, see below).
+  - `monolith-src-X.Y.Z.zip` (GPLv3 corresponding source), Stream Deck plugin.
 - Install path: `%LocalAppData%\Programs\Monolith`.
 - User data path: `%LocalAppData%\Monolith`.
 - Install per-user, no admin needed.
 
-Shipped payload got:
+Shipped payload:
 
-- `Monolith.exe`.
-- `ui\Monolith.UI.exe`.
-- Native dependency DLLs from vcpkg.
-- Installer metadata + updater support.
+- `Monolith.exe` (engine, owns the tray + recording).
+- `Updater.exe` (component self-updater, `app/updater`).
+- `ui\Monolith.UI.exe` (Tauri v2 interface).
+- Native dependency DLLs from vcpkg + `config\default-config.json`.
 
-No ship Node/npm. Only build-time frontend bundler (Vite) for `app/desktop-ui`.
+No ship Node/npm. Only build-time frontend bundler (Vite) for `app/desktop-ui`
+and `app/updater`.
 
-## One-Time Setup
+## One-Time Setup (already done)
 
-1. Make public repo `fraa2a/Monolith-releases`.
-
-2. Make WinSparkle Ed25519 key pair:
+1. Ed25519 key pair (same pair the WinSparkle era created):
 
    ```powershell
    openssl genpkey -algorithm ed25519 -out monolith-ed25519-priv.pem
@@ -30,26 +34,51 @@ No ship Node/npm. Only build-time frontend bundler (Vite) for `app/desktop-ui`.
    [Convert]::ToBase64String((Get-Content pub.der -AsByteStream)[-32..-1])
    ```
 
-3. Paste base64 public key into `kEdDsaPublicKey` in `app/recorder/src/updater.cpp`.
+2. The base64 public key is embedded in `app/updater/src-tauri/src/download.rs`
+   (`PUBLIC_KEY_B64`).
 
-4. Store private PEM as repo secret `WINSPARKLE_ED_PRIVATE_KEY`.
+3. The private PEM lives in the repo secret `WINSPARKLE_ED_PRIVATE_KEY` and
+   signs the full installer (appcast) and every component zip (manifest).
 
-   ```powershell
-   Get-Content monolith-ed25519-priv.pem -Raw | Set-Clipboard
-   ```
+Never commit the private key. Lose it = shipped clients reject future
+updates signed by a new key.
 
-5. Make fine-grained PAT with `contents: write` on `fraa2a/Monolith-releases` only. Store as `RELEASES_REPO_PAT`.
+## Versioning (independent components)
 
-Never commit private key. Lose it = shipped clients reject future updates signed by new key.
+Each component carries its own version — bump only what changed:
 
-## Versioning
+| Component | Source of truth | Used by |
+|---|---|---|
+| engine | `project(monolith VERSION ...)` in root `CMakeLists.txt` | `Monolith.exe` FileVersion, update-manifest |
+| ui | `version` in `app/desktop-ui/src-tauri/tauri.conf.json` | `Monolith.UI.exe` FileVersion, update-manifest |
+| updater | `version` in `app/updater/src-tauri/tauri.conf.json` | `Updater.exe` FileVersion, update-manifest |
 
-Source of truth:
+The git tag `vX.Y.Z` only names the release and versions the full installer
+(`MonolithSetup-X.Y.Z.exe`). A UI-only release bumps just the ui version —
+clients never re-download the engine. CI warns if the tag sorts below any
+component version it ships.
 
-- CI release: git tag `vX.Y.Z`.
-- Local default: root `CMakeLists.txt` `project(monolith VERSION ...)`.
+## Update flow (clients)
 
-CI pass `-DMONOLITH_VERSION=X.Y.Z` to CMake. Version flow into generated `version.h`, Windows VERSIONINFO resource, installer metadata, appcast version.
+1. Engine startup (if `update.auto_check`) and tray "Check for Updates…"
+   launch `Updater.exe` (`--auto` at startup: silent unless an update exists).
+2. Updater.exe fetches
+   `https://github.com/fraa2a/Monolith/releases/latest/download/update-manifest.json`,
+   compares per-component versions against the installed FileVersions
+   (fallback: `components.json`), and downloads only what changed.
+3. Each zip is verified (sha256 + Ed25519 over the raw bytes) before apply.
+4. Apply order: ui (engine closes the UI process via `update_close_ui`) →
+   engine (`update_engine_exit`, swap, relaunch) → updater itself last
+   (rename-to-`.old` self-swap). `*.old` files are swept on next launch.
+5. Settings → About → "Check now" opens the same updater window.
+
+### Legacy migration (WinSparkle installs)
+
+Installs still on WinSparkle read `appcast.xml` (still generated every
+release, pointing at the full installer). They update once through the old
+full-installer path and land on the component-updater build; from there
+`update-manifest.json` takes over. Keep generating the appcast indefinitely —
+it costs nothing and there is no cutoff to coordinate.
 
 ## Release Command
 
@@ -60,13 +89,16 @@ git push origin vX.Y.Z
 
 CI then:
 
-1. Extract version from tag.
-2. Configure CMake with pinned vcpkg baseline.
-3. Build `Monolith.exe` + `Monolith.UI.exe`.
+1. Extract the version from the tag (installer version only).
+2. Configure CMake with pinned vcpkg baseline (no version injection — the
+   engine version comes from `project(VERSION)`).
+3. Build `Monolith.exe` + `ui\Monolith.UI.exe` + `Updater.exe`.
 4. Compile `installer/monolith.iss` into `MonolithSetup-X.Y.Z.exe`.
-5. Sign installer metadata + make `appcast.xml` via `scripts/generate-appcast.ps1`.
-6. Make GPLv3 source archive from `git archive`.
-7. Publish all artifacts to `fraa2a/Monolith-releases`.
+5. Read the three component versions, package the component zips, sign them
+   and emit `update-manifest.json` (`scripts/generate-update-manifest.ps1`).
+6. Sign the installer + emit `appcast.xml` (`scripts/generate-appcast.ps1`).
+7. Make the GPLv3 source archive from `git archive`.
+8. Publish everything to the GitHub release for the tag.
 
 ## Local Installer Build
 
@@ -77,21 +109,31 @@ cmake --build build --config Release --parallel
 
 Use numeric `X.Y.Z` version for `VersionInfoVersion`.
 
+## Testing the updater locally (no release needed)
+
+- Point the updater at a local manifest:
+  `$env:MONOLITH_UPDATE_MANIFEST = "http://127.0.0.1:PORT/update-manifest.json"`
+  (serve the manifest + zips with any static server; URLs in the manifest
+  point at the same server).
+- `Updater.exe --force` reinstalls even when versions match — the way to
+  exercise the download/apply path without publishing anything.
+- `MONOLITH_APP_DIR` overrides the app directory the updater operates on.
+
 ## Verification Checklist
 
-- Release build make `Monolith.exe`.
-- UI build make `ui\Monolith.UI.exe`.
-- Installer compile.
-- Installer run per-user, no admin.
-- Fresh install start, show tray icon.
-- UI open from tray.
-- Save replay write media + catalog row.
-- Manual recording start/stop write media + catalog row.
+- Release build makes `Monolith.exe`, `ui\Monolith.UI.exe`, `Updater.exe`.
+- Installer compile; installer run per-user, no admin.
+- Fresh install start, show tray icon; UI open from tray.
+- Save replay write media + catalog row; manual recording start/stop ditto.
 - Settings save update `settings.db`, engine reload.
-- Appcast URL resolve publicly.
-- WinSparkle verify signature, apply update.
-- User data survive update + uninstall.
+- Manifest URL resolves publicly; component zip signatures verify.
+- UI-only release: existing install downloads only the ui zip, engine
+  version untouched, no engine restart.
+- Engine release: updater closes UI + engine, swaps, relaunches Monolith.
+- Legacy appcast still updates an old WinSparkle install once.
+- User data survives update + uninstall.
 
 ## Dependency Notes
 
-Deps pinned in `vcpkg.json` via `builtin-baseline`. Bump baseline deliberate, verify release build after any dependency change.
+Deps pinned in `vcpkg.json` via `builtin-baseline`. Bump baseline deliberate,
+verify release build after any dependency change.

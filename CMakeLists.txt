@@ -10,9 +10,10 @@ endif()
 
 project(monolith VERSION 1.5.0 LANGUAGES CXX)
 
-# Single source of truth for the app version. CI overrides this from the git
-# tag with -DMONOLITH_VERSION=X.Y.Z; local builds fall back to project(VERSION).
-set(MONOLITH_VERSION "${PROJECT_VERSION}" CACHE STRING "Monolith app version (X.Y.Z)")
+# Engine version — the engine component of the component updater (the ui and
+# updater components carry their own versions in their tauri.conf.json).
+# Bump it when the engine changes; local builds fall back to project(VERSION).
+set(MONOLITH_VERSION "${PROJECT_VERSION}" CACHE STRING "Monolith engine version (X.Y.Z)")
 
 # Split into numeric components for the Win32 VERSIONINFO resource.
 string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _monolith_ver_match "${MONOLITH_VERSION}")
@@ -43,3 +44,6 @@ add_subdirectory(app/recorder)
 # the frontend and `cargo build --release` compiles Monolith.UI.exe when both
 # toolchains are present. See ADR-0012.
 add_subdirectory(app/desktop-ui)
+# Component self-updater (Updater.exe): fetches update-manifest.json and
+# swaps only the components whose version changed. Sits next to Monolith.exe.
+add_subdirectory(app/updater)

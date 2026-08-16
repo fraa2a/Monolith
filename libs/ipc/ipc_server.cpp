@@ -44,6 +44,7 @@ std::function<RecordingState()> g_status_fn;
 ClipMutationFn                  g_mutation_fn;
 SelectGameFn                    g_select_fn;
 AddBookmarkFn                   g_add_bookmark_fn;
+UpdateCloseUiFn                 g_update_close_ui_fn;
 std::thread                     g_accept_thread;
 
 std::mutex               g_clients_mutex;
@@ -134,9 +135,31 @@ void handle_client(SOCKET client)
                             {"replay_enabled",    st.replay_enabled},
                             {"recording_enabled", st.recording_enabled},
                             {"clip_generation",   st.clip_generation},
+                            {"version",           st.version},
                         });
                     } else if (method == "reload_settings") {
                         PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
+                        response = make_result(req_id, {{"status", "accepted"}});
+                    } else if (method == "update_close_ui") {
+                        // Updater.exe asks the engine to close the UI process
+                        // so ui\* can be swapped on disk. Runs directly on
+                        // this IPC thread (blocks up to ~3s: graceful close,
+                        // then terminate) — the reply is the confirmation
+                        // that the files are safe to replace.
+                        if (!g_update_close_ui_fn) {
+                            response = make_error(req_id, -32601, "Update control unavailable");
+                        } else {
+                            g_update_close_ui_fn();
+                            response = make_result(req_id, {{"status", "ok"}});
+                        }
+                    } else if (method == "update_engine_exit") {
+                        // Updater.exe asks the engine to shut down so the
+                        // engine files can be swapped. Graceful by design:
+                        // WM_CLOSE → WM_DESTROY stops any recording cleanly.
+                        // The reply may never arrive (the engine tears its
+                        // IPC server down during shutdown) — the updater
+                        // polls for the port to close instead.
+                        PostMessage(g_hwnd, WM_CLOSE, 0, 0);
                         response = make_result(req_id, {{"status", "accepted"}});
                     } else if (method == "recording_add_bookmark") {
                         // Handled directly on the IPC thread: bookmark timestamp
@@ -254,13 +277,15 @@ void start(HWND hwnd,
            std::function<RecordingState()> status_fn,
            ClipMutationFn mutation_fn,
            SelectGameFn select_fn,
-           AddBookmarkFn add_bookmark_fn)
+           AddBookmarkFn add_bookmark_fn,
+           UpdateCloseUiFn update_close_ui_fn)
 {
-    g_hwnd            = hwnd;
-    g_status_fn       = std::move(status_fn);
-    g_mutation_fn     = std::move(mutation_fn);
-    g_select_fn       = std::move(select_fn);
-    g_add_bookmark_fn = std::move(add_bookmark_fn);
+    g_hwnd                 = hwnd;
+    g_status_fn            = std::move(status_fn);
+    g_mutation_fn          = std::move(mutation_fn);
+    g_select_fn            = std::move(select_fn);
+    g_add_bookmark_fn      = std::move(add_bookmark_fn);
+    g_update_close_ui_fn   = std::move(update_close_ui_fn);
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;

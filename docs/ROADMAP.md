@@ -138,16 +138,18 @@ Priority order:
 
 ### Release Setup
 
-Done: WinSparkle Ed25519 key pair generated, public key in
-`app/recorder/src/updater.cpp`, private key wired into CI as the
-`WINSPARKLE_ED_PRIVATE_KEY` secret used by `.github/workflows/version-tag.yml`
-to sign appcast.
+Done: component self-updater shipped (ADR-0018) — `Updater.exe`
+(`app/updater`) fetches `update-manifest.json` and downloads only changed
+components (engine / ui / updater, independently versioned). The Ed25519 key
+pair predates this: public half in `app/updater/src-tauri/src/download.rs`,
+private half in the CI secret `WINSPARKLE_ED_PRIVATE_KEY`, used by
+`.github/workflows/version-tag.yml` to sign the component zips and the
+legacy appcast.
 
-External setup still need:
+External setup still needed:
 
-- Create public `fraa2a/Monolith-releases` repo.
-- Add CI secret `RELEASES_REPO_PAT`.
-- Push first `vX.Y.Z` tag, verify install/update path.
+- Push first `vX.Y.Z` tag with the new pipeline, verify install/update path.
+- Clean-VM verification of the WinSparkle → component-updater migration.
 
 ## Not Started Or Deferred
 

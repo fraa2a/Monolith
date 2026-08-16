@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { getVersion } from "@tauri-apps/api/app";
 import { type Config, getConfig, getRuntimeStatus, type RuntimeStatus, saveConfig } from "../lib/settings-api.ts";
+import { fetchEngineStatus, openUpdater } from "../lib/api.ts";
 import { monitorDisplayName } from "../lib/format.ts";
 import { AudioSettings } from "./audio-settings.tsx";
 import {
@@ -131,10 +132,25 @@ export function SettingsPopup({ onClose }: Props) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [engineVersion, setEngineVersion] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(null));
+    // Engine component version via the engine's get_status (independent from
+    // the interface version — the component updater versions them separately).
+    fetchEngineStatus().then((st) => setEngineVersion(st.version ?? null)).catch(() => {});
   }, []);
+
+  const checkForUpdates = async () => {
+    if (checking) return;
+    setChecking(true);
+    try {
+      await openUpdater();
+    } finally {
+      setTimeout(() => setChecking(false), 1500);
+    }
+  };
 
   const skipSave = useRef(true);
   const saveTimer = useRef<number | undefined>(undefined);
@@ -239,7 +255,7 @@ export function SettingsPopup({ onClose }: Props) {
         <div class="settings-body">
           {!draft
             ? <div class="empty">Loading settings… (is the engine running?)</div>
-            : <Pages page={page} cfg={draft} rs={rs} update={update} appVersion={appVersion} />}
+            : <Pages page={page} cfg={draft} rs={rs} update={update} appVersion={appVersion} engineVersion={engineVersion} onCheckUpdates={checkForUpdates} />}
         </div>
       </div>
     </div>
@@ -300,9 +316,11 @@ interface PagesProps {
   rs: RuntimeStatus;
   update: (path: string, value: any) => void;
   appVersion: string | null;
+  engineVersion: string | null;
+  onCheckUpdates: () => void;
 }
 
-function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
+function Pages({ page, cfg, rs, update, appVersion, engineVersion, onCheckUpdates }: PagesProps) {
   const val = (p: string) => getPath(cfg, p);
 
   switch (page) {
@@ -339,7 +357,24 @@ function Pages({ page, cfg, rs, update, appVersion }: PagesProps) {
             />
           </Section>
           <Section title="About">
-            <Field label="Version" control={<span class="set-field-static">{appVersion ?? "—"}</span>} />
+            <Field
+              label="Version"
+              help="Interface and engine are versioned independently."
+              control={
+                <span class="set-field-static">
+                  interface {appVersion ?? "—"} · engine {engineVersion ?? "—"}
+                </span>
+              }
+            />
+            <Field
+              label="Check for updates"
+              help="Opens the updater window. Only the components that changed are downloaded."
+              control={
+                <button type="button" class="set-action" onClick={onCheckUpdates}>
+                  Check now
+                </button>
+              }
+            />
           </Section>
         </>
       );
