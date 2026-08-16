@@ -121,3 +121,4 @@ Testing/
 GoogleTest/
 TestResults/
 *.gtest.xml
+.zcode/
