@@ -248,7 +248,9 @@ export function DetailView(
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  });
+    // Deps are everything the closure reads; without them the listener was
+    // re-subscribed on EVERY render (including ~4 Hz timeupdate-driven ones).
+  }, [editing, fsMode, editingSeq, trimming, hasPrev, hasNext, index, onIndex, onClose]);
 
   useEffect(() => {
     setEditing(false);
@@ -300,7 +302,6 @@ export function DetailView(
       setActionError(res.error ?? "Couldn't update favorite");
     } else {
       setActionError(null);
-      onChanged();
     }
   }
 
@@ -322,7 +323,6 @@ export function DetailView(
       onClipUpdate({ ...clip, title: value });
       setEditing(false);
       setActionError(null);
-      onChanged();
     } else {
       setActionError(res.error ?? "Couldn't rename clip");
     }
@@ -369,7 +369,6 @@ export function DetailView(
     if (res.ok) {
       setActionError(null);
       await refreshBookmarks();
-      onChanged();
     } else {
       setActionError(res.error ?? "Couldn't add bookmark");
     }
@@ -384,7 +383,6 @@ export function DetailView(
       setActionError(null);
       setEditingSeq(null);
       await refreshBookmarks();
-      onChanged();
     } else {
       setActionError(res.error ?? "Couldn't update bookmark");
     }
@@ -399,7 +397,6 @@ export function DetailView(
       setActionError(null);
       setEditingSeq(null);
       await refreshBookmarks();
-      onChanged();
     } else {
       setActionError(res.error ?? "Couldn't delete bookmark");
     }

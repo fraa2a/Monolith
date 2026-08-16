@@ -37,6 +37,9 @@ export function Titlebar({ view }: Props) {
   useEffect(() => {
     let alive = true;
     const load = async () => {
+      // The Rust watcher keeps the engine connection alive; skip the
+      // runtime-status read + TCP poll while the window is hidden.
+      if (document.hidden) return;
       const [rs, es] = await Promise.all([getRuntimeStatus(), fetchEngineStatus()]);
       if (!alive) return;
       setRuntime(rs);

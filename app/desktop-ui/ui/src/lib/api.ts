@@ -232,12 +232,19 @@ export function setSelectedGame(exe: string): Promise<{ ok: boolean; error?: str
 // the file has no icon). Preferred over remote artwork for status backgrounds.
 // `processName` is the cache key on the Rust side (survives reinstalls/path
 // changes); pass "" when unknown (skips caching for that one lookup).
-export async function exeIconUrl(executablePath: string, processName: string): Promise<string | null> {
-  try {
-    return await invoke<string | null>("exe_icon", { path: executablePath, process: processName });
-  } catch {
-    return null;
+const exeIconRequests = new Map<string, Promise<string | null>>();
+
+export function exeIconUrl(executablePath: string, processName: string): Promise<string | null> {
+  // Every card of the same game used to issue its own IPC round-trip (with a
+  // base64 PNG payload each); share one promise per process/path instead.
+  const key = `${processName}\u0000${executablePath}`;
+  let request = exeIconRequests.get(key);
+  if (!request) {
+    request = invoke<string | null>("exe_icon", { path: executablePath, process: processName })
+      .catch(() => null);
+    exeIconRequests.set(key, request);
   }
+  return request;
 }
 
 export interface EngineStatus {

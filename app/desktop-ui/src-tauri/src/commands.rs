@@ -396,7 +396,11 @@ pub async fn save_settings(app: tauri::AppHandle, config: Value) -> Result<(), S
         return Err(err);
     }
     blocking_result(move || settings_store::write_config(&config).map_err(|err| err.to_string())).await?;
-    blocking(engine_rpc::reload_settings).await;
+    if let Err(err) = blocking(engine_rpc::reload_settings).await {
+        // Settings are saved; the engine just couldn't reload them right now
+        // (it may not be running — it reads the new values at next start).
+        eprintln!("engine settings reload failed: {err}");
+    }
     // Output folders may have changed: re-scope the asset protocol so
     // convertFileSrc() keeps working for the (possibly new) clip/recording
     // dirs. Cheap in-memory scope update, safe to run on the main thread.

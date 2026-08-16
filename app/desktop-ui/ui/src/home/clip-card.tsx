@@ -1,3 +1,4 @@
+import { memo } from "preact/compat";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi, exeIconUrl, mediaUrl, thumbUrl } from "../lib/api.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
@@ -33,7 +34,9 @@ function drawVideoThumb(video: HTMLVideoElement): string | null {
   return canvas.toDataURL("image/png");
 }
 
-export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenDetail }: Props) {
+export const ClipCard = memo(function ClipCard(
+  { clip, onChanged, onContextMenu, onFullscreen, onOpenDetail }: Props,
+) {
   const [preview, setPreview] = useState(false);
   const [ready, setReady] = useState(false);
   const [muted, setMuted] = useState(true);
@@ -317,4 +320,4 @@ export function ClipCard({ clip, onChanged, onContextMenu, onFullscreen, onOpenD
       </div>
     </div>
   );
-}
+});

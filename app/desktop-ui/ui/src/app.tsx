@@ -30,6 +30,11 @@ interface MenuState {
   clip: Clip;
 }
 
+// Clicking the already-active nav entry must not refire the reload effect:
+// keep the previous filter object when the values are identical.
+const sameFilter = (a: Filter, b: Filter) =>
+  a.game === b.game && a.hashtag === b.hashtag && a.favorite === b.favorite && a.search === b.search;
+
 export function App() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [games, setGames] = useState<string[]>([]);
@@ -49,9 +54,11 @@ export function App() {
 
   const reload = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
+    // In collection view the grid isn't shown: skip the clips+games scans
+    // (each is a full catalog pass); hashtags stay for the detail filter UI.
     const [c, g, h, cols] = await Promise.all([
-      fetchClips(filter),
-      fetchGames(),
+      collectionView ? Promise.resolve([] as Clip[]) : fetchClips(filter),
+      collectionView ? Promise.resolve([] as string[]) : fetchGames(),
       fetchHashtags(),
       collectionView ? collectionsApi.list() : Promise.resolve(null as CollectionSummary[] | null),
     ]);
@@ -89,8 +96,31 @@ export function App() {
     return () => document.removeEventListener("contextmenu", block);
   }, []);
 
-  const openMenu = (e: MouseEvent, clip: Clip) =>
+  // Stable callbacks: ClipCard is memoized, so inline closures here would
+  // re-render the whole grid on every unrelated state change.
+  const openMenu = useCallback((e: MouseEvent, clip: Clip) => {
     setMenu({ x: e.clientX, y: e.clientY, clip });
+  }, []);
+
+  const openFullscreen = useCallback((clip: Clip, initialTime: number) => {
+    setFullscreen({ clip, initialTime });
+  }, []);
+
+  const openDetail = useCallback((clip: Clip) => {
+    const i = clips.findIndex((item) => item.source === clip.source && item.id === clip.id);
+    if (i >= 0) setDetailIndex(i);
+  }, [clips]);
+
+  // Card-level mutations (favorite, thumbnail capture, duration fix) are all
+  // patched optimistically via updateClip — a full catalog reload per event
+  // caused a reload storm when many cards were missing thumbnails.
+  const handleCardChanged = useCallback((next: Clip) => {
+    updateClip(next);
+  }, [updateClip]);
+
+  const changeFilter = useCallback((next: Filter) => {
+    setFilter((prev) => (sameFilter(prev, next) ? prev : next));
+  }, []);
 
   const onMenuAction = async (action: MenuAction, clip: Clip) => {
     switch (action) {
@@ -144,7 +174,7 @@ export function App() {
       <div class="shell">
         <Sidebar
           filter={filter}
-          onChange={setFilter}
+          onChange={changeFilter}
           onOpenSettings={() => setShowSettings(true)}
           collectionsActive={collectionView != null}
           onOpenCollections={() => setCollectionView({ kind: "list" })}
@@ -184,7 +214,7 @@ export function App() {
             games={games}
             hashtags={hashtags}
             filter={filter}
-            onChange={setFilter}
+            onChange={changeFilter}
           />
 
           {loading
@@ -212,17 +242,14 @@ export function App() {
         : (
           <>
             <div class="grid">
-              {clips.map((c, i) => (
+              {clips.map((c) => (
                 <ClipCard
                   key={`${c.source}:${c.id}`}
                   clip={c}
-                  onChanged={(next) => {
-                    updateClip(next);
-                    reload(true);
-                  }}
+                  onChanged={handleCardChanged}
                   onContextMenu={openMenu}
-                  onFullscreen={(c, t) => setFullscreen({ clip: c, initialTime: t })}
-                  onOpenDetail={() => setDetailIndex(i)}
+                  onFullscreen={openFullscreen}
+                  onOpenDetail={openDetail}
                 />
               ))}
             </div>

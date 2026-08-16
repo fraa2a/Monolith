@@ -186,6 +186,9 @@ export function SettingsPopup({ onClose }: Props) {
     return () => clearTimeout(saveTimer.current);
   }, [draft]);
 
+  // Don't let the "saved" reset timer fire on an unmounted popup.
+  useEffect(() => () => clearTimeout(savedTimer.current), []);
+
   const update = (path: string, value: any) => {
     skipSave.current = false;
     setDraft((d) => (d ? setPath(d, path, value) : d));

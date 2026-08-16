@@ -3,6 +3,8 @@ use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 pub fn settings_db_path() -> PathBuf {
     paths::monolith_data_dir().join("settings.db")
@@ -70,8 +72,35 @@ pub fn read_runtime_status() -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
+// output_dirs() is on the hot path of every catalog command (db_path +
+// media_folder each call it). Reading settings.db + parsing the full JSON
+// each time showed up with large libraries, so cache the result keyed by the
+// settings.db mtime+size — a stat() instead of a DB round-trip, and still
+// correct when the engine (or anything else) rewrites the file.
+static DIRS_CACHE: Mutex<Option<(Option<SystemTime>, u64, paths::OutputDirs)>> = Mutex::new(None);
+
 pub fn output_dirs() -> paths::OutputDirs {
     let defaults = paths::default_output_dirs();
+    let meta = fs::metadata(settings_db_path()).ok();
+    let mtime = meta.as_ref().and_then(|m| m.modified().ok());
+    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    if let Ok(guard) = DIRS_CACHE.lock() {
+        if let Some((c_mtime, c_size, dirs)) = guard.as_ref() {
+            if *c_mtime == mtime && *c_size == size {
+                return dirs.clone();
+            }
+        }
+    }
+
+    let dirs = compute_output_dirs(defaults);
+    if let Ok(mut guard) = DIRS_CACHE.lock() {
+        *guard = Some((mtime, size, dirs.clone()));
+    }
+    dirs
+}
+
+fn compute_output_dirs(defaults: paths::OutputDirs) -> paths::OutputDirs {
     let Some(config) = read_config() else {
         return defaults;
     };

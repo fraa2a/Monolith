@@ -1,7 +1,7 @@
 use crate::{game_catalog, settings_store};
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -74,6 +74,19 @@ fn media_folder(source: ClipSource) -> PathBuf {
     }
 }
 
+// ── Bookmarks ─────────────────────────────────────────────────────────────
+// The engine inserts bookmarks at recording-save time (timestamped live from
+// its own clock); the UI reads/edits them here. Table DDL mirrors
+// engine's storage.cpp so either side can create it (IF NOT EXISTS).
+
+const BOOKMARK_DDL: &str = "CREATE TABLE IF NOT EXISTS clip_bookmarks (
+    clip_id INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    time_seconds REAL NOT NULL,
+    label TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (clip_id, seq))";
+
 fn open(source: ClipSource, readonly: bool) -> Option<Connection> {
     let path = db_path(source);
     if !path.is_file() {
@@ -86,6 +99,11 @@ fn open(source: ClipSource, readonly: bool) -> Option<Connection> {
     };
     let conn = Connection::open_with_flags(path, flags).ok()?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(4000));
+    if !readonly {
+        // Ensure the bookmarks table exists once per write connection instead
+        // of re-running the DDL on every add_bookmark insert.
+        let _ = conn.execute(BOOKMARK_DDL, []);
+    }
     Some(conn)
 }
 
@@ -104,21 +122,20 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     found
 }
 
-fn clip_hashtags(conn: &Connection) -> Vec<(i64, String)> {
+// clip_id -> tags, built once per catalog pass (a linear filter per row made
+// listing O(clips x tags)).
+fn clip_hashtags(conn: &Connection) -> HashMap<i64, Vec<String>> {
+    let mut map: HashMap<i64, Vec<String>> = HashMap::new();
     let Ok(mut stmt) = conn.prepare("SELECT clip_id, tag FROM clip_hashtags") else {
-        return Vec::new();
+        return map;
     };
     let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))) else {
-        return Vec::new();
+        return map;
     };
-    rows.flatten().collect()
-}
-
-fn tags_for(tags: &[(i64, String)], clip_id: i64) -> Vec<String> {
-    tags.iter()
-        .filter(|(id, _)| *id == clip_id)
-        .map(|(_, tag)| tag.clone())
-        .collect()
+    for (id, tag) in rows.flatten() {
+        map.entry(id).or_default().push(tag);
+    }
+    map
 }
 
 fn clip_select_sql(conn: &Connection) -> String {
@@ -144,7 +161,8 @@ fn map_clip_row(
     row: &rusqlite::Row<'_>,
     source: ClipSource,
     folder: &Path,
-    tags: &[(i64, String)],
+    tags: &HashMap<i64, Vec<String>>,
+    artwork: &game_catalog::ArtworkCache,
 ) -> rusqlite::Result<Clip> {
     let id = row.get::<_, i64>(0)?;
     let video_file = row.get::<_, String>(1)?;
@@ -156,7 +174,7 @@ fn map_clip_row(
     // Cache-only read: the clip grid must never make a synchronous network
     // call. Artwork not yet cached shows up once the scheduled refresh
     // (see game_catalog::refresh_stale) has run.
-    let artwork = game_catalog::resolve_artwork_cached(discord_app_id.as_deref(), game_process_name.as_deref());
+    let art = artwork.resolve(discord_app_id.as_deref(), game_process_name.as_deref());
     let video_path = folder.join(&video_file);
     let thumbnail_path = thumbnail_file
         .as_ref()
@@ -171,13 +189,13 @@ fn map_clip_row(
         created_at_utc: row.get(3)?,
         duration_seconds: row.get(4)?,
         game_process_name,
-        game_display_name: game_display_name.or_else(|| if artwork.display_name.is_empty() { None } else { Some(artwork.display_name.clone()) }),
+        game_display_name: game_display_name.or_else(|| if art.display_name.is_empty() { None } else { Some(art.display_name.clone()) }),
         game_executable_path,
-        discord_app_id: discord_app_id.or(artwork.discord_app_id.clone()),
-        game_icon_url: artwork.icon_url,
-        game_cover_url: artwork.cover_url,
+        discord_app_id: discord_app_id.or(art.discord_app_id.clone()),
+        game_icon_url: art.icon_url,
+        game_cover_url: art.cover_url,
         favorite: row.get::<_, i64>(7).unwrap_or(0) != 0,
-        hashtags: tags_for(tags, id),
+        hashtags: tags.get(&id).cloned().unwrap_or_default(),
         size_bytes: file_size(&video_path),
         video_path: video_path.to_string_lossy().to_string(),
         thumbnail_path,
@@ -190,13 +208,16 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
     };
     let folder = media_folder(source);
     let tags = clip_hashtags(&conn);
-    let sql = format!("{} ORDER BY datetime(created_at_utc) DESC", clip_select_sql(&conn));
+    let artwork = game_catalog::ArtworkCache::load();
+    // ISO-8601 strings sort lexicographically; list_clips re-sorts the merged
+    // sources anyway, and datetime() here would defeat any index.
+    let sql = format!("{} ORDER BY created_at_utc DESC", clip_select_sql(&conn));
 
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
 
-    let Ok(rows) = stmt.query_map([], |row| map_clip_row(row, source, &folder, &tags)) else {
+    let Ok(rows) = stmt.query_map([], |row| map_clip_row(row, source, &folder, &tags, &artwork)) else {
         return Vec::new();
     };
 
@@ -210,9 +231,10 @@ pub fn clip_by_id(source: ClipSource, id: i64) -> Option<Clip> {
     let conn = open(source, true)?;
     let folder = media_folder(source);
     let tags = clip_hashtags(&conn);
+    let artwork = game_catalog::ArtworkCache::load();
     let sql = format!("{} WHERE id = ?1", clip_select_sql(&conn));
     let clip = conn
-        .query_row(&sql, params![id], |row| map_clip_row(row, source, &folder, &tags))
+        .query_row(&sql, params![id], |row| map_clip_row(row, source, &folder, &tags, &artwork))
         .ok()?;
     if !clip.video_path.is_empty() && std::path::Path::new(&clip.video_path).is_file() {
         Some(clip)
@@ -360,19 +382,6 @@ pub fn remove_hashtag(source: ClipSource, id: i64, tag: &str) -> Result<(), Stri
     Ok(())
 }
 
-// ── Bookmarks ─────────────────────────────────────────────────────────────
-// The engine inserts bookmarks at recording-save time (timestamped live from
-// its own clock); the UI reads/edits them here. Table DDL mirrors
-// engine's storage.cpp so either side can create it (IF NOT EXISTS).
-
-const BOOKMARK_DDL: &str = "CREATE TABLE IF NOT EXISTS clip_bookmarks (
-    clip_id INTEGER NOT NULL,
-    seq INTEGER NOT NULL,
-    time_seconds REAL NOT NULL,
-    label TEXT NOT NULL,
-    color TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (clip_id, seq))";
-
 #[derive(Serialize)]
 pub struct BookmarkRow {
     pub seq: i64,
@@ -422,7 +431,6 @@ pub fn add_bookmark(
     if !clip_exists(&conn, id) {
         return Err("clip not found".to_string());
     }
-    conn.execute(BOOKMARK_DDL, []).map_err(|err| err.to_string())?;
     let next_seq: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM clip_bookmarks WHERE clip_id = ?1",
@@ -488,10 +496,16 @@ pub fn remove_clip(source: ClipSource, id: i64) -> Result<(), String> {
         .map_err(|_| "clip not found".to_string())?;
     let (video_file, thumbnail_file) = row;
 
-    conn.execute("DELETE FROM clip_hashtags WHERE clip_id = ?1", params![id])
+    // One transaction: a failure between the DELETEs must not strand hashtag
+    // or bookmark rows pointing at a deleted clip.
+    let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+    tx.execute("DELETE FROM clip_bookmarks WHERE clip_id = ?1", params![id])
         .map_err(|err| err.to_string())?;
-    conn.execute("DELETE FROM clips WHERE id = ?1", params![id])
+    tx.execute("DELETE FROM clip_hashtags WHERE clip_id = ?1", params![id])
         .map_err(|err| err.to_string())?;
+    tx.execute("DELETE FROM clips WHERE id = ?1", params![id])
+        .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
 
     let folder = media_folder(source);
     let _ = fs::remove_file(folder.join(&video_file));
@@ -536,15 +550,27 @@ pub fn rename_clip(source: ClipSource, id: i64, new_stem: &str) -> Result<(), St
         .map_err(|_| "could not rename video file".to_string())?;
 
     let old_thumb_name = old_thumb.unwrap_or_else(|| thumb_basename_for(&old_video));
-    let stored_thumb = fs::rename(folder.join(".thumbs").join(&old_thumb_name), folder.join(".thumbs").join(&new_thumb))
-        .ok()
-        .map(|_| new_thumb);
-
-    conn.execute(
-        "UPDATE clips SET video_file = ?1, thumbnail_file = ?2 WHERE id = ?3",
-        params![new_video, stored_thumb, id],
+    let thumb_renamed = fs::rename(
+        folder.join(".thumbs").join(&old_thumb_name),
+        folder.join(".thumbs").join(&new_thumb),
     )
-    .map_err(|err| err.to_string())?;
+    .is_ok();
+
+    if let Err(err) = conn.execute(
+        "UPDATE clips SET video_file = ?1, thumbnail_file = ?2 WHERE id = ?3",
+        params![new_video, if thumb_renamed { Some(&new_thumb) } else { None }, id],
+    ) {
+        // Roll the filesystem back so the DB never points at files that no
+        // longer exist under their recorded names.
+        let _ = fs::rename(folder.join(&new_video), folder.join(&old_video));
+        if thumb_renamed {
+            let _ = fs::rename(
+                folder.join(".thumbs").join(&new_thumb),
+                folder.join(".thumbs").join(&old_thumb_name),
+            );
+        }
+        return Err(err.to_string());
+    }
     Ok(())
 }
 

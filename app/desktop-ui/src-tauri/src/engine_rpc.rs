@@ -60,8 +60,16 @@ pub fn command(method: &str) -> Value {
     }
 }
 
-pub fn reload_settings() {
-    let _ = rpc("reload_settings", None);
+pub fn reload_settings() -> Result<(), String> {
+    let response = rpc("reload_settings", None)?;
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("engine returned an error");
+        return Err(message.to_string());
+    }
+    Ok(())
 }
 
 pub fn get_status() -> Value {

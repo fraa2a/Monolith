@@ -63,7 +63,11 @@ fn ensure_schema(conn: &Connection) {
             discord_app_id TEXT,
             icon_url TEXT,
             cover_url TEXT
-        );",
+        );
+        // entry_by_app_id and refresh_stale filter on discord_app_id; without
+        // this index both are full table scans on the clip-grid hot path.
+        CREATE INDEX IF NOT EXISTS idx_game_catalog_app_id
+            ON game_catalog(discord_app_id);",
     );
     for (name, ty) in [
         ("display_name", "TEXT NOT NULL DEFAULT ''"),
@@ -196,26 +200,54 @@ pub fn store_exe_icon(process_name: &str, png: &[u8]) {
     );
 }
 
-// Local-cache-only lookup: never makes a network call. Used by the clip grid
-// display path (list_clips), which must not block on/wait for Discord.
-pub fn resolve_artwork_cached(app_id: Option<&str>, process_name: Option<&str>) -> CatalogEntry {
-    if let Some(app_id) = app_id.filter(|id| !id.is_empty()) {
-        if let Some(entry) = entry_by_app_id(app_id) {
-            return entry;
-        }
+// Batched form of the cache-only lookup: one DB read serves a whole page of
+// clips instead of re-opening game_catalog.db and re-scanning per row.
+pub struct ArtworkCache {
+    by_process: BTreeMap<String, CatalogEntry>,
+    by_app_id: BTreeMap<String, CatalogEntry>,
+}
+
+impl ArtworkCache {
+    pub fn load() -> Self {
+        let by_process = catalog_map();
+        let by_app_id = by_process
+            .values()
+            .filter_map(|entry| {
+                entry
+                    .discord_app_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                    .map(|id| (id.to_string(), entry.clone()))
+            })
+            .collect();
+        Self { by_process, by_app_id }
     }
-    if let Some(process_name) = process_name.filter(|name| !name.is_empty()) {
-        if let Some(entry) = entry_by_process(process_name) {
-            return entry;
+
+    pub fn resolve(&self, app_id: Option<&str>, process_name: Option<&str>) -> CatalogEntry {
+        if let Some(app_id) = app_id.filter(|id| !id.is_empty()) {
+            if let Some(entry) = self.by_app_id.get(app_id) {
+                return entry.clone();
+            }
         }
+        if let Some(process_name) = process_name.filter(|name| !name.is_empty()) {
+            if let Some(entry) = self.by_process.get(&process_name.to_lowercase()) {
+                return entry.clone();
+            }
+        }
+        CatalogEntry::fallback(app_id, process_name)
     }
-    CatalogEntry {
-        process_name_lower: process_name.unwrap_or_default().to_lowercase(),
-        display_name: String::new(),
-        discord_app_id: app_id.map(str::to_string),
-        icon_url: None,
-        cover_url: None,
-        last_updated: 0,
+}
+
+impl CatalogEntry {
+    fn fallback(app_id: Option<&str>, process_name: Option<&str>) -> Self {
+        CatalogEntry {
+            process_name_lower: process_name.unwrap_or_default().to_lowercase(),
+            display_name: String::new(),
+            discord_app_id: app_id.map(str::to_string),
+            icon_url: None,
+            cover_url: None,
+            last_updated: 0,
+        }
     }
 }
 
@@ -248,14 +280,7 @@ pub fn resolve_artwork(app_id: Option<&str>, process_name: Option<&str>) -> Cata
             return entry;
         }
     }
-    CatalogEntry {
-        process_name_lower: process_name.unwrap_or_default().to_lowercase(),
-        display_name: String::new(),
-        discord_app_id: app_id.map(str::to_string),
-        icon_url: None,
-        cover_url: None,
-        last_updated: 0,
-    }
+    CatalogEntry::fallback(app_id, process_name)
 }
 
 fn discord_cdn_icon(app_id: &str, hash: &str) -> String {

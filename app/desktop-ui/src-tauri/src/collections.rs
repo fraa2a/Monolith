@@ -29,6 +29,7 @@ fn open() -> Result<Connection, String> {
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let conn = Connection::open(dir.join("collections.db")).map_err(|err| err.to_string())?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(4000));
+    conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|err| err.to_string())?;
     conn.execute_batch(DDL).map_err(|err| err.to_string())?;
     Ok(conn)
 }
@@ -118,10 +119,11 @@ pub fn rename_collection(id: i64, name: &str) -> Result<(), String> {
 
 pub fn delete_collection(id: i64) -> Result<(), String> {
     let conn = open()?;
-    // collection_clips rows go via the FK ON DELETE CASCADE (enabled per
-    // connection below); delete clips first anyway for engines where the
-    // pragma didn't stick.
-    let _ = conn.execute("DELETE FROM collection_clips WHERE collection_id = ?1", params![id]);
+    // collection_clips rows go via the FK ON DELETE CASCADE now that the
+    // pragma is enabled in open(); delete clips first anyway so a failed
+    // cascade (older DB, pragma didn't stick) cannot leave orphans.
+    conn.execute("DELETE FROM collection_clips WHERE collection_id = ?1", params![id])
+        .map_err(|err| err.to_string())?;
     conn.execute("DELETE FROM collections WHERE id = ?1", params![id])
         .map_err(|err| err.to_string())?;
     if conn.changes() == 0 {

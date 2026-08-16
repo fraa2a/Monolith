@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct OutputDirs {
     pub clips: PathBuf,
     pub recs: PathBuf,
