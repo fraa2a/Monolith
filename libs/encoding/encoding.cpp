@@ -435,7 +435,9 @@ static void drain_video(ImplT* impl)
 
 // Shared tail of push_bgra/push_frame: stamp pts and hand the frame to the
 // encoder. Returns avcodec_send_frame's value. Caller holds the mutex.
-static int submit_current_frame(VideoEncoder::Impl* impl, int64_t pts)
+// (Templated like drain_video so it never names the private Impl type.)
+template <typename ImplT>
+static int submit_current_frame(ImplT* impl, int64_t pts)
 {
     // PTS: clock-locked frame index from the pacer (preferred), or fall back
     // to the internal counter when pts < 0.  The pacer is the single source

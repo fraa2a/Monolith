@@ -352,7 +352,9 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
     // Disk mode: hand off to the segment buffer (it owns its own save
     // thread); the facade's saving flag mirrors it so stats() stays honest.
     // Read cfg/disk under the lock — configure() can swap storage modes and
-    // reset the disk buffer concurrently (settings reload thread).
+    // reset the disk buffer concurrently (settings reload thread). RAM mode
+    // (disk == nullptr, the normal configuration) falls through to the
+    // snapshot path below.
     {
         std::lock_guard lk(impl_->mutex);
         if (impl_->disk) {
@@ -369,8 +371,6 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
             if (!accepted) impl_->saving.store(false);
             return;
         }
-        impl_->saving.store(false); // reconfigured to ram mid-call: drop
-        return;
     }
 
     // Snapshot the ring buffer and stream params under the lock.
