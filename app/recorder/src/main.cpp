@@ -146,7 +146,7 @@ static void log_msg(const char* tag, const char* msg)
 
 static void log_path(const char* tag, const char* prefix, const std::wstring& path)
 {
-    char narrow[MAX_PATH * 2];
+    char narrow[MAX_PATH * 2] = {};
     WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
         narrow, sizeof(narrow), nullptr, nullptr);
     char msg[MAX_PATH * 2 + 64];
@@ -163,7 +163,7 @@ static void log_error(const char* tag, const char* msg)
 
 static void log_error_path(const char* tag, const char* prefix, const std::wstring& path)
 {
-    char narrow[MAX_PATH * 2];
+    char narrow[MAX_PATH * 2] = {};
     WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
         narrow, sizeof(narrow), nullptr, nullptr);
     char msg[MAX_PATH * 2 + 64];
@@ -340,8 +340,8 @@ static double recording_elapsed_seconds()
     int64_t elapsed_qpc = now.QuadPart - start;
     if (anchor > 0) elapsed_qpc -= now.QuadPart - anchor; // currently paused
     elapsed_qpc -= paused;
-    return std::max(0.0, static_cast<double>(elapsed_qpc) * 1000000.0
-                        / static_cast<double>(freq) / 1000000.0);
+    return std::max(0.0, static_cast<double>(elapsed_qpc)
+                        / static_cast<double>(freq));
 }
 
 static void rec_clock_start()
@@ -410,6 +410,17 @@ static DWORD         g_last_fast_scan_ms = 0;
 
 static std::mutex g_status_mutex;
 static settings::RuntimeStatus g_runtime_status;
+
+// "YYYY-MM-DDTHH:MM:SS" local time, used for runtime-status switch stamps.
+static std::string now_local_ts()
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char ts[32];
+    snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02d",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    return ts;
+}
 
 // Re-writes AppData\Local\Monolith\runtime-status.json from g_runtime_status,
 // but only when the serialized content actually changed — the active-game poll
@@ -498,24 +509,26 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
         nullptr, nullptr,
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 
-    // Tick at ~2x frame rate so the CFR loop has fine-grained wakeups to land
-    // each frame slot near its real deadline (dup/skip absorbs the rest).
-    int tick_ms = (g_pacer_fps > 0) ? (1000 / (g_pacer_fps * 2)) : 4;
-    if (tick_ms < 1) tick_ms = 1;
+    // One wakeup per frame slot (4 ms floor). The QPC-locked CFR below absorbs
+    // tick jitter with dup/skip, so oversampling the tick 2x only doubles
+    // wakeups (and blocks CPU C-states) without tightening output timing.
+    int tick_ms = (g_pacer_fps > 0) ? (1000 / g_pacer_fps) : 4;
+    if (tick_ms < 4) tick_ms = 4;
 
     while (true) {
-        // Wait for the next tick, or stop signal.
+        // Wait for the next tick, or stop signal. WAIT_FAILED (handles closed
+        // underneath us) must exit too, or the loop busy-spins at 100% CPU.
         if (htimer) {
             LARGE_INTEGER due;
             due.QuadPart = -static_cast<LONGLONG>(tick_ms) * 10000; // 100ns units, relative
             SetWaitableTimer(htimer, &due, 0, nullptr, nullptr, FALSE);
             HANDLE handles[2] = { g_pacer_stop_event, htimer };
             DWORD w = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
-            if (w == WAIT_OBJECT_0) break;          // stop event
+            if (w == WAIT_OBJECT_0 || w == WAIT_FAILED) break;
         } else {
             DWORD w = WaitForSingleObject(g_pacer_stop_event,
                                           static_cast<DWORD>(tick_ms));
-            if (w == WAIT_OBJECT_0) break;
+            if (w == WAIT_OBJECT_0 || w == WAIT_FAILED) break;
         }
 
         // Frozen-frame: when the captured game window is minimized, WGC delivers
@@ -546,7 +559,13 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
             }
         }
 
-        if (!g_video_enc.is_open() || local_bgra.empty())
+        if (!g_video_enc.is_open()) {
+            // Replay disabled but pipeline alive: don't keep a full-frame
+            // buffer pinned while nothing consumes it.
+            if (!local_bgra.empty()) std::vector<uint8_t>().swap(local_bgra);
+            continue;
+        }
+        if (local_bgra.empty())
             continue;
 
         // ── Clock-locked CFR: emit frames until we've caught up to wall-clock.
@@ -587,6 +606,11 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
 
 static void pacer_start()
 {
+    // media_start can reach pacer_start twice without a stop in between
+    // (video init failure + retry): a second CreateEventW/CreateThread would
+    // leak the first event handle and strand the first thread forever on an
+    // orphaned stop event.
+    if (g_pacer_running.load()) return;
     if (g_settings.video_fps <= 0) return;
     g_pacer_fps          = g_settings.video_fps;
 
@@ -613,7 +637,11 @@ static void pacer_stop()
     if (g_pacer_stop_event) {
         SetEvent(g_pacer_stop_event);
         if (g_pacer_thread) {
-            WaitForSingleObject(g_pacer_thread, 3000);
+            // Unbounded join: the loop always exits once the stop event is
+            // set (WAIT_FAILED included), so this cannot hang — and the old
+            // 3 s timeout closed the handles of a possibly-live thread,
+            // leaving a busy-spinning pacer using a closing encoder.
+            WaitForSingleObject(g_pacer_thread, INFINITE);
             CloseHandle(g_pacer_thread);
             g_pacer_thread = nullptr;
         }
@@ -870,14 +898,16 @@ static void clear_pending_bookmarks()
 // Runs on the manual-stop catalog thread (off the UI/tray loop).
 static void flush_pending_bookmarks(int64_t clip_id, const std::wstring& folder)
 {
+    // Validate before swapping: the swap consumes the queue, and losing the
+    // bookmarks because the clip row is missing would be silent data loss.
+    if (clip_id <= 0) {
+        log_msg("storage", "bookmark flush skipped: clip row missing");
+        return;
+    }
     std::vector<PendingBookmark> pending;
     {
         std::lock_guard<std::mutex> lk(g_pending_bookmarks_mutex);
         pending.swap(g_pending_bookmarks);
-    }
-    if (clip_id <= 0) {
-        log_msg("storage", "bookmark flush skipped: clip row missing");
-        return;
     }
     if (pending.empty()) return;
     std::string error;
@@ -1985,9 +2015,7 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
         g_pending_game_first_ms = 0;
         publish_audio_params();
         {
-            SYSTEMTIME st; GetLocalTime(&st);
-            char ts[32]; snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02d",
-                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+            const std::string ts = now_local_ts();
             std::lock_guard<std::mutex> lk(g_status_mutex);
             g_runtime_status.active_game.process_id      = ok ? best_pid : 0;
             g_runtime_status.active_game.process_name    = result.process.process_name;
@@ -2054,9 +2082,7 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
 
     publish_audio_params();
     {
-        SYSTEMTIME st; GetLocalTime(&st);
-        char ts[32]; snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02d",
-            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        const std::string ts = now_local_ts();
         std::lock_guard<std::mutex> lk(g_status_mutex);
         g_runtime_status.active_game.process_id      = best_pid;
         g_runtime_status.active_game.process_name    = result.process.process_name;
@@ -2298,6 +2324,11 @@ static void resolve_target_size(int src_w, int src_h, const std::string& preset,
 
 static void media_start(HWND hwnd)
 {
+    // Publish the hwnd before any early return: IPC (set_selected_game) posts
+    // to it and the foreground hook needs it, even when the pipeline itself
+    // stays down (replay disabled + recording idle).
+    g_main_hwnd = hwnd;
+
     // ── Replay buffer config ───────────────────────────────────────────────────
     apply_runtime_settings();
 
@@ -2367,7 +2398,6 @@ static void media_start(HWND hwnd)
     pacer_start();
 
     // ── Audio capture/routing ──────────────────────────────────────────────────
-    g_main_hwnd = hwnd;
     start_audio_system();
     if (g_settings.active_game.detection_enabled) {
         // Detection runs in ALL modes now (game_only AND screen): it drives
@@ -2384,6 +2414,10 @@ static void media_start(HWND hwnd)
         bool ok = g_video.start(hmon, [](capture::FrameInfo const& f) {
             // Log buffer stats every 300 frames (~5s at 60fps).
             if (f.seq % 300 == 0) {
+                // FrameArrived can fire on different thread-pool threads and
+                // the last_* baselines below are shared mutable state.
+                static std::mutex stats_mutex;
+                std::lock_guard<std::mutex> stats_lk(stats_mutex);
                 auto stats = g_replay.stats();
                 size_t raw_capacity = 0;
                 {
@@ -2658,8 +2692,11 @@ static void media_start(HWND hwnd)
 
 static void media_stop()
 {
-    pacer_stop();   // stop video thread before capture/encoder
+    // Stop capture FIRST: while WGC delivers frames the pacer keeps swapping
+    // full-frame buffers, and a pacer stalled past its old join timeout could
+    // still touch the encoder we're about to close.
     g_video.stop();
+    pacer_stop();
     stop_audio_system();
     g_video_enc.close(); // flushes + frees encoder
     if (g_recording.state() != recording::RecordingState::Idle) {

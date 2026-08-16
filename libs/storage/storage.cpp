@@ -254,7 +254,8 @@ bool settings_replace_all(const std::wstring& app_data_dir,
             if (error) *error = sqlite3_errmsg(db);
         }
     }
-    exec(db, ok ? "COMMIT" : "ROLLBACK", nullptr);
+    if (ok && !exec(db, "COMMIT", error)) ok = false;
+    else if (!ok) exec(db, "ROLLBACK", nullptr);
     sqlite3_close(db);
     return ok;
 }
@@ -266,7 +267,7 @@ struct ClipDb::Impl {
     std::wstring folder;
     std::wstring db_path;
 
-    ~Impl() { if (db) sqlite3_close(db); }
+    ~Impl() { if (db) sqlite3_close_v2(db); }
 
     std::wstring thumbs_dir() const { return folder + L"\\.thumbs"; }
     std::wstring video_path(const std::wstring& basename) const {
@@ -427,25 +428,11 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string* error)
         }
     }
 
-    if (!exec(impl_->db, "BEGIN", nullptr)) {}
+    if (!exec(impl_->db, "BEGIN", error)) return false;
     bool ok = true;
     {
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(impl_->db, "DELETE FROM clip_hashtags WHERE clip_id=?",
-                               -1, &st, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(st, 1, id);
-            sqlite3_step(st);
-            sqlite3_finalize(st);
-        }
-        st = nullptr;
-        if (sqlite3_prepare_v2(impl_->db, "DELETE FROM clip_bookmarks WHERE clip_id=?",
-                               -1, &st, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(st, 1, id);
-            sqlite3_step(st);
-            sqlite3_finalize(st);
-        }
-        st = nullptr;
-        if (sqlite3_prepare_v2(impl_->db, "DELETE FROM clips WHERE id=?",
                                -1, &st, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(st, 1, id);
             ok = sqlite3_step(st) == SQLITE_DONE;
@@ -453,8 +440,29 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string* error)
         } else {
             ok = false;
         }
+        st = nullptr;
+        if (sqlite3_prepare_v2(impl_->db, "DELETE FROM clip_bookmarks WHERE clip_id=?",
+                               -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(st, 1, id);
+            ok = ok && sqlite3_step(st) == SQLITE_DONE;
+            sqlite3_finalize(st);
+        } else {
+            ok = false;
+        }
+        st = nullptr;
+        if (sqlite3_prepare_v2(impl_->db, "DELETE FROM clips WHERE id=?",
+                               -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(st, 1, id);
+            ok = ok && sqlite3_step(st) == SQLITE_DONE;
+            sqlite3_finalize(st);
+        } else {
+            ok = false;
+        }
     }
-    exec(impl_->db, ok ? "COMMIT" : "ROLLBACK", nullptr);
+    // No FK between the tables, so every DELETE must succeed before COMMIT;
+    // a failed COMMIT (disk full, locked) must not report success either.
+    if (ok && !exec(impl_->db, "COMMIT", error)) ok = false;
+    else if (!ok) exec(impl_->db, "ROLLBACK", nullptr);
     if (!ok) {
         if (error) *error = sqlite3_errmsg(impl_->db);
         return false;

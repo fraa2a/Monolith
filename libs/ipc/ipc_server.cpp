@@ -108,106 +108,112 @@ void handle_client(SOCKET client)
                 req_id             = req.value("id", -1);
                 std::string method = req.value("method", "");
 
-                if (method == "save_replay") {
-                    PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdSaveReplay, 0), 0);
-                    response = make_result(req_id, {{"status", "accepted"}});
-                } else if (method == "recording_start") {
-                    PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdRecordingStart, 0), 0);
-                    response = make_result(req_id, {{"status", "accepted"}});
-                } else if (method == "recording_stop") {
-                    PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdRecordingStop, 0), 0);
-                    response = make_result(req_id, {{"status", "accepted"}});
-                } else if (method == "pause_resume") {
-                    PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdPauseResume, 0), 0);
-                    response = make_result(req_id, {{"status", "accepted"}});
-                } else if (method == "get_status") {
-                    // g_status_fn/g_mutation_fn are set once in start() before the
-                    // accept loop begins and never reassigned, so concurrent
-                    // handle_client() threads reading them is safe without a lock.
-                    // Each call reads live engine state (g_recording, etc.), which
-                    // is independently synchronized by its own owner.
-                    RecordingState st = g_status_fn();
-                    response = make_result(req_id, {
-                        {"recording",         st.is_recording},
-                        {"paused",            st.is_paused},
-                        {"replay_enabled",    st.replay_enabled},
-                        {"recording_enabled", st.recording_enabled},
-                        {"clip_generation",   st.clip_generation},
-                    });
-                } else if (method == "reload_settings") {
-                    PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
-                    response = make_result(req_id, {{"status", "accepted"}});
-                } else if (method == "recording_add_bookmark") {
-                    // Handled directly on the IPC thread: bookmark timestamp
-                    // accuracy matters, so it must not round-trip through the
-                    // message loop.
-                    if (!g_add_bookmark_fn) {
-                        response = make_error(req_id, -32601, "Bookmark handler unavailable");
-                    } else {
-                        const std::string err = g_add_bookmark_fn();
-                        if (err.empty())
-                            response = make_result(req_id, {{"status", "ok"}});
-                        else
-                            response = make_error(req_id, -32000, err.c_str());
-                    }
-                } else if (method == "set_selected_game") {
-                    if (!g_select_fn) {
-                        response = make_error(req_id, -32601, "Selection unavailable");
-                    } else {
-                        const auto& p = req.contains("params") ? req["params"]
-                                                               : nlohmann::json::object();
-                        std::string exe = (p.contains("exe") && p["exe"].is_string())
-                                              ? p["exe"].get<std::string>() : std::string();
-                        std::transform(exe.begin(), exe.end(), exe.begin(),
-                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                        uint32_t pid = (p.contains("pid") && p["pid"].is_number_unsigned())
-                                           ? p["pid"].get<uint32_t>() : 0u;
-                        if (exe == "auto") exe.clear();
-                        g_select_fn(exe, pid);
+                try {
+                    if (method == "save_replay") {
+                        PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdSaveReplay, 0), 0);
                         response = make_result(req_id, {{"status", "accepted"}});
-                    }
-                } else if (method == "clip_set_favorite" ||
-                           method == "clip_add_hashtag" ||
-                           method == "clip_remove_hashtag" ||
-                           method == "clip_rename" ||
-                           method == "clip_set_title" ||
-                           method == "clip_regen_thumb" ||
-                           method == "clip_delete" ||
-                           method == "clip_trim") {
-                    if (!g_mutation_fn) {
-                        response = make_error(req_id, -32601, "Mutations unavailable");
+                    } else if (method == "recording_start") {
+                        PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdRecordingStart, 0), 0);
+                        response = make_result(req_id, {{"status", "accepted"}});
+                    } else if (method == "recording_stop") {
+                        PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdRecordingStop, 0), 0);
+                        response = make_result(req_id, {{"status", "accepted"}});
+                    } else if (method == "pause_resume") {
+                        PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdPauseResume, 0), 0);
+                        response = make_result(req_id, {{"status", "accepted"}});
+                    } else if (method == "get_status") {
+                        // g_status_fn/g_mutation_fn are set once in start() before the
+                        // accept loop begins and never reassigned, so concurrent
+                        // handle_client() threads reading them is safe without a lock.
+                        // Each call reads live engine state (g_recording, etc.), which
+                        // is independently synchronized by its own owner.
+                        RecordingState st = g_status_fn();
+                        response = make_result(req_id, {
+                            {"recording",         st.is_recording},
+                            {"paused",            st.is_paused},
+                            {"replay_enabled",    st.replay_enabled},
+                            {"recording_enabled", st.recording_enabled},
+                            {"clip_generation",   st.clip_generation},
+                        });
+                    } else if (method == "reload_settings") {
+                        PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
+                        response = make_result(req_id, {{"status", "accepted"}});
+                    } else if (method == "recording_add_bookmark") {
+                        // Handled directly on the IPC thread: bookmark timestamp
+                        // accuracy matters, so it must not round-trip through the
+                        // message loop.
+                        if (!g_add_bookmark_fn) {
+                            response = make_error(req_id, -32601, "Bookmark handler unavailable");
+                        } else {
+                            const std::string err = g_add_bookmark_fn();
+                            if (err.empty())
+                                response = make_result(req_id, {{"status", "ok"}});
+                            else
+                                response = make_error(req_id, -32000, err.c_str());
+                        }
+                    } else if (method == "set_selected_game") {
+                        if (!g_select_fn) {
+                            response = make_error(req_id, -32601, "Selection unavailable");
+                        } else {
+                            const auto& p = req.contains("params") ? req["params"]
+                                                                   : nlohmann::json::object();
+                            std::string exe = (p.contains("exe") && p["exe"].is_string())
+                                                  ? p["exe"].get<std::string>() : std::string();
+                            std::transform(exe.begin(), exe.end(), exe.begin(),
+                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                            uint32_t pid = (p.contains("pid") && p["pid"].is_number_unsigned())
+                                               ? p["pid"].get<uint32_t>() : 0u;
+                            if (exe == "auto") exe.clear();
+                            g_select_fn(exe, pid);
+                            response = make_result(req_id, {{"status", "accepted"}});
+                        }
+                    } else if (method == "clip_set_favorite" ||
+                               method == "clip_add_hashtag" ||
+                               method == "clip_remove_hashtag" ||
+                               method == "clip_rename" ||
+                               method == "clip_set_title" ||
+                               method == "clip_regen_thumb" ||
+                               method == "clip_delete" ||
+                               method == "clip_trim") {
+                        if (!g_mutation_fn) {
+                            response = make_error(req_id, -32601, "Mutations unavailable");
+                        } else {
+                            const auto& p = req.contains("params") ? req["params"]
+                                                                   : nlohmann::json::object();
+                            auto get_or = [&p](const char* key, auto default_value) {
+                                using T = decltype(default_value);
+                                if (p.contains(key) && !p[key].is_null())
+                                    return p.value(key, default_value);
+                                return T(default_value);
+                            };
+                            ClipMutation m;
+                            m.method   = method;
+                            m.source   = get_or("source", std::string("replay"));
+                            m.id       = get_or("id", static_cast<int64_t>(0));
+                            m.tag      = get_or("tag", std::string());
+                            m.favorite = get_or("favorite", false);
+                            m.new_name = get_or("new_name", std::string());
+                            m.title    = get_or("title", std::string());
+                            m.start    = get_or("start", 0.0);
+                            m.end      = get_or("end", 0.0);
+                            // handle_client runs on its own thread per connection; the
+                            // mutation callback (handle_clip_mutation in main.cpp)
+                            // opens its own DB handle per call and only touches
+                            // mutex-guarded globals, so concurrent invocations from
+                            // different client threads are safe.
+                            std::string err = g_mutation_fn(m);
+                            if (err.empty())
+                                response = make_result(req_id, {{"status", "ok"}});
+                            else
+                                response = make_error(req_id, -32000, err.c_str());
+                        }
                     } else {
-                        const auto& p = req.contains("params") ? req["params"]
-                                                               : nlohmann::json::object();
-                        auto get_or = [&p](const char* key, auto default_value) {
-                            using T = decltype(default_value);
-                            if (p.contains(key) && !p[key].is_null())
-                                return p.value(key, default_value);
-                            return T(default_value);
-                        };
-                        ClipMutation m;
-                        m.method   = method;
-                        m.source   = get_or("source", std::string("replay"));
-                        m.id       = get_or("id", static_cast<int64_t>(0));
-                        m.tag      = get_or("tag", std::string());
-                        m.favorite = get_or("favorite", false);
-                        m.new_name = get_or("new_name", std::string());
-                        m.title    = get_or("title", std::string());
-                        m.start    = get_or("start", 0.0);
-                        m.end      = get_or("end", 0.0);
-                        // handle_client runs on its own thread per connection; the
-                        // mutation callback (handle_clip_mutation in main.cpp)
-                        // opens its own DB handle per call and only touches
-                        // mutex-guarded globals, so concurrent invocations from
-                        // different client threads are safe.
-                        std::string err = g_mutation_fn(m);
-                        if (err.empty())
-                            response = make_result(req_id, {{"status", "ok"}});
-                        else
-                            response = make_error(req_id, -32000, err.c_str());
+                        response = make_error(req_id, -32601, "Method not found");
                     }
-                } else {
-                    response = make_error(req_id, -32601, "Method not found");
+                } catch (...) {
+                    // Handler failure (bad_alloc, DB error...) — not a parse
+                    // problem; report it as an internal error.
+                    response = make_error(req_id, -32603, "Internal error");
                 }
             } catch (...) {
                 response = make_error(req_id, -32700, "Parse error");
