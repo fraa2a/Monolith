@@ -30,8 +30,10 @@ namespace disk_segments {
 namespace mux = encoding::mux;
 
 // Roll a new segment once the open one has held this much media time (rolled
-// only on video keyframes, so every segment starts on a keyframe).
-constexpr double kSegmentSeconds = 2.0;
+// only on video keyframes, so every segment starts on a keyframe). 5 s keeps
+// open/header/trailer churn on the capture thread low (~12 files/min instead
+// of ~30) while the retention window granularity stays coarse enough.
+constexpr double kSegmentSeconds = 5.0;
 // Sequence counter width in segment filenames.
 constexpr int kSegCounterDigits = 6;
 
@@ -66,6 +68,13 @@ struct DiskSegmentBuffer::Impl {
     {
         if (save_thread.joinable()) save_thread.join();
         close_segment_locked();
+        // The buffer owns its segment files: remove whatever is left so a
+        // storage-mode switch or shutdown doesn't strand seg_*.mkv files in
+        // the temp dir (the save thread is already joined, no reader left).
+        for (const auto& seg : segments) {
+            std::error_code ec;
+            std::filesystem::remove(std::filesystem::path(seg.path), ec);
+        }
     }
 
     AVStream* stream_for(int stream_index) const
@@ -149,7 +158,10 @@ struct DiskSegmentBuffer::Impl {
         const double cutoff = seg_now_sec - static_cast<double>(cfg.duration_sec);
         while (segments.size() >= 2 && segments.front().end_seconds <= cutoff) {
             std::error_code ec;
-            std::filesystem::remove(std::filesystem::path(segments.front().path), ec);
+            const auto path = std::filesystem::path(segments.front().path);
+            const auto fs = std::filesystem::file_size(path, ec);
+            if (!ec) disk_bytes -= std::min<uint64_t>(disk_bytes, fs);
+            std::filesystem::remove(path, ec);
             segments.erase(segments.begin());
         }
     }
@@ -166,6 +178,10 @@ void DiskSegmentBuffer::configure(Config const& cfg)
 
 void DiskSegmentBuffer::clear()
 {
+    // An in-flight save reads the segment files from its snapshot; wait for
+    // it before deleting anything (purge_locked has the same guard).
+    if (impl_->save_thread.joinable())
+        impl_->save_thread.join();
     std::lock_guard lk(impl_->mutex);
     impl_->close_segment_locked();
     for (const auto& seg : impl_->segments) {
@@ -245,12 +261,12 @@ DiskSegmentBuffer::Stats DiskSegmentBuffer::stats() const
     return s;
 }
 
-void DiskSegmentBuffer::save_clip(const std::wstring& out_dir,
+bool DiskSegmentBuffer::save_clip(const std::wstring& out_dir,
                                   std::function<void(std::wstring)> cb)
 {
     bool expected = false;
     if (!impl_->saving.compare_exchange_strong(expected, true))
-        return;
+        return false;
 
     Config cfg;
     std::vector<encoding::ClipSegment> segs;
@@ -260,7 +276,7 @@ void DiskSegmentBuffer::save_clip(const std::wstring& out_dir,
         // Finalize the open segment first so the save thread only ever reads
         // completed files (the writer reopens a fresh segment on the next
         // push). This rolls at most one extra segment per save — negligible
-        // next to the ~2 s segments. Retention pauses while saving (the
+        // next to the ~5 s segments. Retention pauses while saving (the
         // purge_locked guard), so the snapshot's files stay on disk.
         impl_->close_segment_locked();
         segs   = impl_->segments;
@@ -283,25 +299,21 @@ void DiskSegmentBuffer::save_clip(const std::wstring& out_dir,
                 if (start < segs.front().start_seconds)
                     start = segs.front().start_seconds;
 
-                SYSTEMTIME st;
-                GetLocalTime(&st);
-                const wchar_t* ext = mux::file_extension(cfg.container);
-                wchar_t path[MAX_PATH];
-                swprintf_s(path, MAX_PATH,
-                    L"%s\\%04d%02d%02d_%02d%02d%02d_%ds_clip.%s",
-                    out_dir.c_str(),
-                    st.wYear, st.wMonth, st.wDay,
-                    st.wHour, st.wMinute, st.wSecond,
-                    cfg.duration_sec, ext);
+                const std::wstring path = mux::generate_clip_path(
+                    out_dir, cfg.duration_sec, cfg.container);
                 CreateDirectoryW(out_dir.c_str(), nullptr);
 
                 std::string err;
                 if (encoding::concat_clip_segments(segs, start, newest, path, &err))
                     result = path;
             }
-            impl_->saving.store(false);
+            // Callback first, flag after: a follow-up save_clip can then CAS
+            // and join this thread without waiting on the callback (which
+            // does catalog/thumbnail work) still running.
             if (cb) cb(result);
+            impl_->saving.store(false);
         });
+    return true;
 }
 
 } // namespace disk_segments

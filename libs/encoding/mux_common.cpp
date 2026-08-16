@@ -16,6 +16,7 @@ extern "C" {
 #include <windows.h>
 
 #include <cstring>
+#include <filesystem>
 
 namespace encoding::mux {
 
@@ -164,6 +165,23 @@ bool write_packet(AVFormatContext* fmt,
     bool ok = av_interleaved_write_frame(fmt, pkt) >= 0;
     av_packet_free(&pkt);
     return ok;
+}
+
+std::wstring generate_clip_path(const std::wstring& dir,
+                                int duration_sec,
+                                const std::string& container)
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    const wchar_t* ext = file_extension(container);
+    wchar_t name[64];
+    swprintf_s(name, 64, L"%04u%02u%02u_%02u%02u%02u%03u_%ds_clip.%s",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        duration_sec, ext);
+    // filesystem::path concatenation: no MAX_PATH-sized buffer to overflow
+    // when the user-configured output directory is long.
+    return (std::filesystem::path(dir) / name).wstring();
 }
 
 } // namespace encoding::mux

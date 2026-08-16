@@ -267,18 +267,7 @@ static size_t find_clip_start(
 static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec,
                                        const std::string& container)
 {
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    const wchar_t* ext = mux::file_extension(container);
-    wchar_t path[MAX_PATH];
-    swprintf_s(path, MAX_PATH,
-        L"%s\\%04d%02d%02d_%02d%02d%02d_%ds_clip.%s",
-        dir.c_str(),
-        st.wYear, st.wMonth, st.wDay,
-        st.wHour, st.wMinute, st.wSecond,
-        duration_sec,
-        ext);
-    return path;
+    return mux::generate_clip_path(dir, duration_sec, container);
 }
 
 static std::wstring write_clip(
@@ -314,7 +303,7 @@ static std::wstring write_clip(
     std::array<AVStream*, 7>& audio_streams = streams.audio;
 
     if (!mux::open_file_and_write_header(fmt, path_utf, container)) {
-        avio_closep(&fmt->pb);
+        // pb is already closed by open_file_and_write_header on failure.
         avformat_free_context(fmt);
         return {};
     }
@@ -362,13 +351,25 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
 
     // Disk mode: hand off to the segment buffer (it owns its own save
     // thread); the facade's saving flag mirrors it so stats() stays honest.
-    if (impl_->disk) {
-        const std::wstring out_dir = impl_->cfg.output_dir;
-        impl_->disk->save_clip(out_dir,
-            [this, cb = std::move(cb)](std::wstring path) mutable {
-                impl_->saving.store(false);
-                if (cb) cb(std::move(path));
-            });
+    // Read cfg/disk under the lock — configure() can swap storage modes and
+    // reset the disk buffer concurrently (settings reload thread).
+    {
+        std::lock_guard lk(impl_->mutex);
+        if (impl_->disk) {
+            const bool accepted = impl_->disk->save_clip(impl_->cfg.output_dir,
+                [this, cb = std::move(cb)](std::wstring path) mutable {
+                    // Run the completion callback before clearing the flag so
+                    // a follow-up save cannot join this thread while its
+                    // callback (catalog/thumbnail work) is still running.
+                    if (cb) cb(std::move(path));
+                    impl_->saving.store(false);
+                });
+            // The segment buffer dropped the request (its own save still
+            // running): release our flag too, or saves would stall forever.
+            if (!accepted) impl_->saving.store(false);
+            return;
+        }
+        impl_->saving.store(false); // reconfigured to ram mid-call: drop
         return;
     }
 
@@ -407,8 +408,9 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
                                     cfg.output_dir, cfg.duration_sec,
                                     cfg.container);
             }
-            impl_->saving.store(false);
+            // Callback first, flag after: see the disk branch above.
             if (cb) cb(result);
+            impl_->saving.store(false);
         });
 }
 

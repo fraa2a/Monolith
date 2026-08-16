@@ -43,9 +43,17 @@ bool alloc_output(const std::string&                          path_utf,
 
 // Opens the file and writes the container header. mp4 keeps the moov atom at the
 // end (no +faststart) so finalizing never rewrites the whole file on stop.
-// Returns false without closing on failure (caller frees the context).
+// On failure the io context is closed here (avformat_free_context alone does
+// not release it), so callers only need to free the context.
 bool open_file_and_write_header(AVFormatContext* fmt,
                                 const std::string& path_utf,
+                                const std::string& container);
+
+// Builds "<dir>\<yyyymmdd_hhmmss_mmm>_<N>s_clip.<ext>" from local time. The
+// millisecond field keeps two saves issued within the same second from
+// overwriting each other. Safe for long directories (no fixed-size buffer).
+std::wstring generate_clip_path(const std::wstring& dir,
+                                int duration_sec,
                                 const std::string& container);
 
 // Builds an AVPacket from `ep`, applies the per-stream pts/dts offset (subtracted

@@ -11,7 +11,7 @@ namespace disk_segments {
 // Rolling keyframe-aligned buffer of clip segments on disk — the "disk"
 // storage mode for the replay buffer. Mirrors replay_buffer::ReplayBuffer's
 // public surface so that class can route on its Config::storage. Segments are
-// ~2 s long (rolled on video keyframes); retention is age-based, keeping only
+// ~5 s long (rolled on video keyframes); retention is age-based, keeping only
 // the last Config::duration_sec behind the newest packet.
 //
 // Each segment is an independent, fully muxed file whose packets restart at
@@ -45,8 +45,9 @@ public:
     // Concatenates the retained window [newest − duration, newest] into a
     // clip in `out_dir` on a worker thread. cb runs on that thread with the
     // output path (empty on failure / empty buffer). Concurrent calls are
-    // dropped (one save at a time), mirroring ReplayBuffer::save_clip.
-    void save_clip(const std::wstring& out_dir,
+    // dropped (one save at a time), mirroring ReplayBuffer::save_clip:
+    // returns false when dropped (cb will not run in that case).
+    bool save_clip(const std::wstring& out_dir,
                    std::function<void(std::wstring)> cb = nullptr);
 
     struct Stats {
