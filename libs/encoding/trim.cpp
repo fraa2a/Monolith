@@ -45,7 +45,7 @@ struct OutFmt {
             // header/trailer never wrote) — close it so the file handle and
             // AVIOContext aren't leaked. avio_closep is a no-op on a closed pb.
             avio_closep(&p->pb);
-            avformat_free_context(&p);
+            avformat_free_context(p);
         }
     }
 };
