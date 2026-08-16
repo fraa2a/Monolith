@@ -8,7 +8,7 @@ if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
         CACHE STRING "vcpkg toolchain file")
 endif()
 
-project(monolith VERSION 1.5.0 LANGUAGES CXX)
+project(monolith VERSION 1.6.0 LANGUAGES CXX)
 
 # Engine version — the engine component of the component updater (the ui and
 # updater components carry their own versions in their tauri.conf.json).
