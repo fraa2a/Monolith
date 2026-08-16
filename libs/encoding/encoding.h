@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+struct AVFrame;
+
 namespace encoding {
 
 // Decodes the first frame of an existing video file and writes it as a PNG
@@ -128,6 +130,10 @@ public:
         // (also accepts ',' or ' ' between pairs).  If the encoder rejects
         // them, open() retries without and extra_options_rejected() is set.
         std::string extra_options;
+        // Live capture keeps zerolatency tuning (no B-frames, fast presets).
+        // Offline re-encode (quick trim) clears this for better quality per
+        // bit and full frame-threading.
+        bool low_latency = true;
     };
 
     // Open codec.  sink receives encoded packets (called synchronously).
@@ -142,6 +148,13 @@ public:
     // to fall back to the internal auto-increment counter (legacy behaviour).
     void push_bgra(const uint8_t* bgra, int stride, int width, int height,
                    int64_t pts = -1);
+
+    // Encode one decoded frame directly (e.g. YUV420P from a demuxer).  When
+    // the frame already matches the encoder's pixel format and output size
+    // the planes are shared — no BGRA round-trip, no extra quality loss.
+    // Otherwise the frame is converted/scaled like push_bgra would.
+    // pts semantics as in push_bgra.
+    void push_frame(const AVFrame* frame, int64_t pts = -1);
 
     void flush();
     void close();

@@ -193,10 +193,13 @@ bool remux_window(AVFormatContext* in,
         return false;
     }
 
-    // Anchor per output stream: pts of the first kept packet (video = the
-    // seeked keyframe; audio = first packet at/after start, so pre-roll is
-    // dropped). dts gets the same offset so B-frame deltas stay intact.
+    // Anchor per output stream: pts of the first kept packet. Video anchors
+    // at the seeked keyframe (<= start); audio anchors at the first packet
+    // at/after the VIDEO anchor so both timelines start together — anchoring
+    // audio at `start` instead would lead the audio by up to a GOP. dts gets
+    // the same offset so B-frame deltas stay intact.
     std::vector<int64_t> anchor(dst_streams.size(), std::numeric_limits<int64_t>::min());
+    double vanchor_sec = -1.0;
 
     Packet pkt;
     pkt.p = av_packet_alloc();
@@ -220,9 +223,13 @@ bool remux_window(AVFormatContext* in,
             break;
         }
 
-        if (anchor[dst_idx] == std::numeric_limits<int64_t>::min() &&
-            (pkt.p->stream_index == vidx || sec >= start_sec)) {
-            anchor[dst_idx] = pkt.p->pts;
+        if (anchor[dst_idx] == std::numeric_limits<int64_t>::min()) {
+            if (pkt.p->stream_index == vidx) {
+                anchor[dst_idx] = pkt.p->pts;
+                vanchor_sec = sec;
+            } else if (vanchor_sec >= 0.0 && sec >= vanchor_sec) {
+                anchor[dst_idx] = pkt.p->pts;
+            }
         }
 
         AVStream* dst = dst_streams[dst_idx];
@@ -231,6 +238,7 @@ bool remux_window(AVFormatContext* in,
             / static_cast<double>(dst->time_base.num));
         if (anchor[dst_idx] != std::numeric_limits<int64_t>::min()) {
             pkt.p->stream_index = dst->index;
+            if (pkt.p->dts == AV_NOPTS_VALUE) pkt.p->dts = pkt.p->pts;
             pkt.p->pts = pkt.p->pts - anchor[dst_idx] + acc;
             pkt.p->dts = pkt.p->dts - anchor[dst_idx] + acc;
             if (pkt.p->dts > pkt.p->pts) pkt.p->dts = pkt.p->pts;
@@ -273,7 +281,9 @@ bool trim_clip_lossless(const std::wstring& path,
     FmtCtx in;
     std::vector<int> order;
     if (!open_input(path, &in, &order, err)) return false;
-    const double duration = probe_duration_seconds(path);
+    // Duration from the container we just opened — no second probe pass.
+    const double duration = (in.p->duration > 0)
+        ? static_cast<double>(in.p->duration) / AV_TIME_BASE : 0.0;
     if (duration > 0.0 && start >= duration) {
         if (err) *err = "start is past the end of the clip";
         return false;
@@ -303,7 +313,9 @@ bool trim_clip_reencode(const std::wstring& path,
 
     FmtCtx in;
     if (!open_input(path, &in, nullptr, err)) return false;
-    const double duration = probe_duration_seconds(path);
+    // Duration from the container we just opened — no second probe pass.
+    const double duration = (in.p->duration > 0)
+        ? static_cast<double>(in.p->duration) / AV_TIME_BASE : 0.0;
     if (duration > 0.0 && start >= duration) {
         if (err) *err = "start is past the end of the clip";
         return false;
@@ -319,8 +331,12 @@ bool trim_clip_reencode(const std::wstring& path,
     if (!vdec) { if (err) *err = "no decoder for input video"; return false; }
     CodecCtx vdec_ctx;
     vdec_ctx.p = avcodec_alloc_context3(vdec);
-    if (!vdec_ctx.p || avcodec_parameters_to_context(vdec_ctx.p, vs->codecpar) < 0 ||
-        avcodec_open2(vdec_ctx.p, vdec, nullptr) < 0) {
+    if (!vdec_ctx.p || avcodec_parameters_to_context(vdec_ctx.p, vs->codecpar) < 0) {
+        if (err) *err = "could not open video decoder";
+        return false;
+    }
+    vdec_ctx.p->thread_count = 0; // offline decode: use all cores
+    if (avcodec_open2(vdec_ctx.p, vdec, nullptr) < 0) {
         if (err) *err = "could not open video decoder";
         return false;
     }
@@ -340,8 +356,11 @@ bool trim_clip_reencode(const std::wstring& path,
 
     std::vector<EncodedPacket> vpkt, apkt;
     VideoEncoder venc;
+    // low_latency=false: offline encode keeps B-frames/frame-threading (better
+    // quality per bit than zerolatency) and lets the SW encoders use all cores.
     if (!venc.open(
-            VideoEncoder::Config{out_w, out_h, fps, bitrate, 0, "bilinear", "", ""},
+            VideoEncoder::Config{out_w, out_h, fps, bitrate, 0, "bilinear", "", "",
+                                 /*low_latency=*/false},
             [&](EncodedPacket ep) { vpkt.push_back(std::move(ep)); })) {
         if (err) *err = "could not open video encoder";
         return false;
@@ -356,13 +375,14 @@ bool trim_clip_reencode(const std::wstring& path,
         if (adec) {
             adec_ctx.p = avcodec_alloc_context3(adec);
             if (adec_ctx.p &&
-                avcodec_parameters_to_context(adec_ctx.p, as->codecpar) == 0 &&
-                avcodec_open2(adec_ctx.p, adec, nullptr) == 0) {
-                have_audio = aenc.open(
-                    AudioEncoder::Config{as->codecpar->sample_rate,
-                                         as->codecpar->ch_layout.nb_channels,
-                                         192'000, 1},
-                    [&](EncodedPacket ep) { apkt.push_back(std::move(ep)); });
+                avcodec_parameters_to_context(adec_ctx.p, as->codecpar) == 0) {
+                adec_ctx.p->thread_count = 0; // offline decode: all cores
+                if (avcodec_open2(adec_ctx.p, adec, nullptr) == 0)
+                    have_audio = aenc.open(
+                        AudioEncoder::Config{as->codecpar->sample_rate,
+                                             as->codecpar->ch_layout.nb_channels,
+                                             192'000, 1},
+                        [&](EncodedPacket ep) { apkt.push_back(std::move(ep)); });
             }
         }
     }
@@ -377,15 +397,6 @@ bool trim_clip_reencode(const std::wstring& path,
         return false;
     }
 
-    SwsCtx sws;
-    Frame rgb;
-    rgb.p = av_frame_alloc();
-    if (!rgb.p) { if (err) *err = "out of memory"; return false; }
-    rgb.p->format = AV_PIX_FMT_BGRA;
-    rgb.p->width  = out_w;
-    rgb.p->height = out_h;
-    if (av_frame_get_buffer(rgb.p, 32) < 0) { if (err) *err = "out of memory"; return false; }
-
     SwrCtx swr;
     Frame pcm;
     pcm.p = av_frame_alloc();
@@ -397,6 +408,41 @@ bool trim_clip_reencode(const std::wstring& path,
     pkt.p = av_packet_alloc();
     if (!pkt.p) { if (err) *err = "out of memory"; return false; }
 
+    // Convert one decoded audio frame to interleaved S16 and feed the encoder.
+    std::vector<uint8_t> audio_buf; // reused across frames
+    const auto encode_audio_frame = [&]() -> bool {
+        // Convert to interleaved S16 (push_pcm accepts it and resamples
+        // internally); decoder output is often planar.
+        if (!swr.p) {
+            AVChannelLayout src_chl{};
+            av_channel_layout_copy(&src_chl, &pcm.p->ch_layout);
+            swr_alloc_set_opts2(&swr.p,
+                &pcm.p->ch_layout, AV_SAMPLE_FMT_S16, pcm.p->sample_rate,
+                &src_chl,
+                static_cast<AVSampleFormat>(pcm.p->format),
+                pcm.p->sample_rate, 0, nullptr);
+            av_channel_layout_uninit(&src_chl);
+            if (!swr.p || swr_init(swr.p) < 0) {
+                if (err) *err = "could not init audio resampler";
+                return false;
+            }
+        }
+        const int out_samples = static_cast<int>(av_rescale_rnd(
+            swr_get_delay(swr.p, pcm.p->sample_rate) + pcm.p->nb_samples,
+            pcm.p->sample_rate, pcm.p->sample_rate, AV_ROUND_UP));
+        audio_buf.resize(static_cast<size_t>(out_samples) *
+                         2 * pcm.p->ch_layout.nb_channels);
+        uint8_t* out_data = audio_buf.data();
+        const int converted = swr_convert(swr.p, &out_data, out_samples,
+            const_cast<const uint8_t**>(pcm.p->data), pcm.p->nb_samples);
+        if (converted > 0)
+            aenc.push_pcm(audio_buf.data(),
+                          converted * 2 * pcm.p->ch_layout.nb_channels,
+                          pcm.p->sample_rate, pcm.p->ch_layout.nb_channels,
+                          16, false);
+        return true;
+    };
+
     int64_t frames = 0;
     bool video_done = false;
     while (!video_done && av_read_frame(in.p, pkt.p) >= 0) {
@@ -407,18 +453,10 @@ bool trim_clip_reencode(const std::wstring& path,
             if (sec < start) { av_packet_unref(pkt.p); continue; }
             if (avcodec_send_packet(vdec_ctx.p, pkt.p) >= 0) {
                 while (avcodec_receive_frame(vdec_ctx.p, dec.p) == 0) {
-                    if (!sws.p) {
-                        sws.p = sws_getContext(
-                            dec.p->width, dec.p->height,
-                            static_cast<AVPixelFormat>(dec.p->format),
-                            out_w, out_h, AV_PIX_FMT_BGRA,
-                            SWS_BILINEAR, nullptr, nullptr, nullptr);
-                        if (!sws.p) { if (err) *err = "could not init scaler"; return false; }
-                    }
-                    sws_scale(sws.p, dec.p->data, dec.p->linesize, 0, dec.p->height,
-                              rgb.p->data, rgb.p->linesize);
-                    venc.push_bgra(rgb.p->data[0], rgb.p->linesize[0],
-                                   out_w, out_h, frames++);
+                    // Decoder planes are shared with the encoder when they
+                    // already match its format/size — no YUV→BGRA→YUV
+                    // round-trip, no extra rounding loss.
+                    venc.push_frame(dec.p, frames++);
                     av_frame_unref(dec.p);
                 }
             }
@@ -427,41 +465,38 @@ bool trim_clip_reencode(const std::wstring& path,
             const double sec = pkt.p->pts == AV_NOPTS_VALUE
                 ? 0.0 : pts_seconds(pkt.p->pts, atb);
             if (sec >= eff_end) { av_packet_unref(pkt.p); continue; }
+            // Drop pre-roll between the seeked keyframe and the trim start so
+            // audio and video enter the output window together.
+            if (sec < start) { av_packet_unref(pkt.p); continue; }
             if (avcodec_send_packet(adec_ctx.p, pkt.p) >= 0) {
                 while (avcodec_receive_frame(adec_ctx.p, pcm.p) == 0) {
-                    // Convert to interleaved S16 (push_pcm accepts it and
-                    // resamples internally); decoder output is often planar.
-                    if (!swr.p) {
-                        AVChannelLayout src_chl{};
-                        av_channel_layout_copy(&src_chl, &pcm.p->ch_layout);
-                        swr_alloc_set_opts2(&swr.p,
-                            &pcm.p->ch_layout, AV_SAMPLE_FMT_S16, pcm.p->sample_rate,
-                            &src_chl,
-                            static_cast<AVSampleFormat>(pcm.p->format),
-                            pcm.p->sample_rate, 0, nullptr);
-                        av_channel_layout_uninit(&src_chl);
-                        if (!swr.p || swr_init(swr.p) < 0) {
-                            if (err) *err = "could not init audio resampler";
-                            return false;
-                        }
-                    }
-                    const int out_samples = static_cast<int>(av_rescale_rnd(
-                        swr_get_delay(swr.p, pcm.p->sample_rate) + pcm.p->nb_samples,
-                        pcm.p->sample_rate, pcm.p->sample_rate, AV_ROUND_UP));
-                    std::vector<uint8_t> buf(static_cast<size_t>(out_samples) *
-                                             2 * pcm.p->ch_layout.nb_channels);
-                    uint8_t* out_data = buf.data();
-                    const int converted = swr_convert(swr.p, &out_data, out_samples,
-                        const_cast<const uint8_t**>(pcm.p->data), pcm.p->nb_samples);
-                    if (converted > 0)
-                        aenc.push_pcm(buf.data(), converted * 2 * pcm.p->ch_layout.nb_channels,
-                                      pcm.p->sample_rate, pcm.p->ch_layout.nb_channels,
-                                      16, false);
+                    if (!encode_audio_frame()) return false;
                     av_frame_unref(pcm.p);
                 }
             }
         }
         av_packet_unref(pkt.p);
+    }
+
+    // Drain the decoders' reorder queues so trailing frames (inputs with
+    // B-frames keep frames buffered at EOF) aren't truncated.
+    avcodec_send_packet(vdec_ctx.p, nullptr);
+    while (avcodec_receive_frame(vdec_ctx.p, dec.p) == 0) {
+        const double fsec = dec.p->pts == AV_NOPTS_VALUE
+            ? 0.0 : pts_seconds(dec.p->pts, vtb);
+        if (fsec < eff_end)
+            venc.push_frame(dec.p, frames++);
+        av_frame_unref(dec.p);
+    }
+    if (have_audio) {
+        const AVRational atb = tb_of(in.p->streams[aidx]);
+        avcodec_send_packet(adec_ctx.p, nullptr);
+        while (avcodec_receive_frame(adec_ctx.p, pcm.p) == 0) {
+            const double fsec = pcm.p->pts == AV_NOPTS_VALUE
+                ? 0.0 : pts_seconds(pcm.p->pts, atb);
+            if (fsec < eff_end && !encode_audio_frame()) return false;
+            av_frame_unref(pcm.p);
+        }
     }
 
     venc.flush();

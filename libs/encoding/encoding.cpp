@@ -162,6 +162,7 @@ struct VideoEncoder::Impl {
     int             cfg_h    = 0;
     int             src_w    = 0;   // source dimensions the sws ctx was built for
     int             src_h    = 0;
+    int             src_fmt  = AV_PIX_FMT_NONE; // and its pixel format
     std::string     enc_name;
     bool            extra_rejected = false;
     int             sws_flags = SWS_BILINEAR;
@@ -209,12 +210,14 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         return false;
     if (cfg.bitrate <= 0 && cfg.quality <= 0)
         return false;
-    if (cfg.quality > 0) {
-        int clamped = cfg.quality;
-        if (clamped < 10) clamped = 10;
-        if (clamped > 30) clamped = 30;
-        const_cast<Config&>(cfg).quality = clamped;
-    }
+    // Legacy quality knob, clamped to the encoder-supported range without
+    // mutating the caller's config.
+    const int quality = (cfg.quality > 0)
+        ? std::max(10, std::min(30, cfg.quality)) : 0;
+    // HW encoders (NVENC/QSV) refuse odd dimensions; align once here so the
+    // probe (which also aligns) and the real open agree on the frame size.
+    const int out_w = (cfg.width  + 1) & ~1;
+    const int out_h = (cfg.height + 1) & ~1;
 
     close();
     std::lock_guard lk(impl_->mutex);
@@ -227,6 +230,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         impl_->cfg_h    = 0;
         impl_->src_w    = 0;
         impl_->src_h    = 0;
+        impl_->src_fmt  = AV_PIX_FMT_NONE;
         impl_->enc_name.clear();
         impl_->vsp      = {};
         impl_->sink     = nullptr;
@@ -235,8 +239,8 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     };
 
     impl_->sink  = std::move(sink);
-    impl_->cfg_w = cfg.width;
-    impl_->cfg_h = cfg.height;
+    impl_->cfg_w = out_w;
+    impl_->cfg_h = out_h;
     impl_->extra_rejected = false;
 
     // Candidate order: preferred encoder first (when set), then probe order.
@@ -256,39 +260,44 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         if (!impl_->ctx) return false;
         AVCodecContext* ctx = impl_->ctx;
 
-        ctx->width     = cfg.width;
-        ctx->height    = cfg.height;
+        const bool is_hw = (name.find("nvenc") != std::string::npos ||
+                            name.find("amf")   != std::string::npos ||
+                            name.find("qsv")   != std::string::npos);
+        const bool is_sw = (name == "libx264" || name == "libx265" ||
+                            name == "libaom-av1");
+
+        ctx->width     = out_w;
+        ctx->height    = out_h;
         ctx->time_base = {1, cfg.fps};
         ctx->framerate = {cfg.fps, 1};
         ctx->gop_size  = cfg.fps * 2;  // keyframe every 2 s
         ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
         ctx->flags    |= AV_CODEC_FLAG_GLOBAL_HEADER; // SPS/PPS in extradata
 
+        // Offline encodes (trim re-encode) want all cores; the live path keeps
+        // libavcodec defaults so capture latency is unchanged.
+        if (is_sw && !cfg.low_latency)
+            ctx->thread_count = 0; // auto
+
         AVDictionary* opts = nullptr;
 
-        bool is_hw = (name.find("nvenc") != std::string::npos ||
-                      name.find("amf")   != std::string::npos ||
-                      name.find("qsv")   != std::string::npos);
-        bool is_sw = (name == "libx264" || name == "libx265" ||
-                      name == "libaom-av1");
-
-        if (cfg.quality > 0 && (is_hw || is_sw)) {
+        if (quality > 0 && (is_hw || is_sw)) {
             // Legacy path (probe/back-compat only): CQP for HW, CRF for SW.
             if (is_hw) {
                 if (name.find("nvenc") != std::string::npos) {
                     av_dict_set(&opts, "rc",  "constqp", 0);
-                    av_dict_set_int(&opts, "qp", cfg.quality, 0);
+                    av_dict_set_int(&opts, "qp", quality, 0);
                 } else if (name.find("amf") != std::string::npos) {
                     av_dict_set(&opts, "rc",     "cqp", 0);
-                    av_dict_set_int(&opts, "qp_i", cfg.quality, 0);
-                    av_dict_set_int(&opts, "qp_p", cfg.quality, 0);
-                    av_dict_set_int(&opts, "qp_b", cfg.quality, 0);
+                    av_dict_set_int(&opts, "qp_i", quality, 0);
+                    av_dict_set_int(&opts, "qp_p", quality, 0);
+                    av_dict_set_int(&opts, "qp_b", quality, 0);
                 } else if (name.find("qsv") != std::string::npos) {
                     av_dict_set(&opts, "rc", "CQP", 0);
-                    av_dict_set_int(&opts, "qp", cfg.quality, 0);
+                    av_dict_set_int(&opts, "qp", quality, 0);
                 }
             } else {
-                av_dict_set_int(&opts, "crf", cfg.quality, 0);
+                av_dict_set_int(&opts, "crf", quality, 0);
             }
         } else {
             // CBR: pin the average, ceiling and floor to the same target so the
@@ -327,11 +336,16 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         if (is_sw) {
             // libx264/libx265 use "preset"/"tune"; libaom-av1 has neither
             // (its speed knob is cpu-used), so only the x26x pair gets them.
+            // Offline encodes drop zerolatency (B-frames + frame threading:
+            // better quality per bit) and use a quality-leaning speed knob.
             if (name == "libx264" || name == "libx265") {
-                av_dict_set(&opts, "preset", "fast", 0);
-                av_dict_set(&opts, "tune",   "zerolatency", 0);
+                av_dict_set(&opts, "preset",
+                            cfg.low_latency ? "fast" : "medium", 0);
+                if (cfg.low_latency)
+                    av_dict_set(&opts, "tune", "zerolatency", 0);
             } else if (name == "libaom-av1") {
-                av_dict_set(&opts, "cpu-used", "8", 0);
+                av_dict_set(&opts, "cpu-used",
+                            cfg.low_latency ? "8" : "6", 0);
             }
         } else if (name.find("nvenc") != std::string::npos) {
             av_dict_set(&opts, "preset", "p4", 0);
@@ -370,20 +384,22 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     impl_->frame = av_frame_alloc();
     if (!impl_->frame) { cleanup(); return false; }
     impl_->frame->format = ctx->pix_fmt;
-    impl_->frame->width  = cfg.width;
-    impl_->frame->height = cfg.height;
+    impl_->frame->width  = out_w;
+    impl_->frame->height = out_h;
     if (av_frame_get_buffer(impl_->frame, 0) < 0) { cleanup(); return false; }
 
-    // sws ctx is (re-)created lazily in push_bgra for the actual source size.
+    // sws ctx is (re-)created lazily in push_bgra/push_frame for the actual
+    // source size/format.
     impl_->src_w = 0;
     impl_->src_h = 0;
+    impl_->src_fmt = AV_PIX_FMT_NONE;
 
     // Store stream params for replay buffer.
     impl_->vsp.codec   = (ctx->codec_id == AV_CODEC_ID_HEVC)
         ? VideoCodec::H265
         : (ctx->codec_id == AV_CODEC_ID_AV1 ? VideoCodec::AV1 : VideoCodec::H264);
-    impl_->vsp.width   = cfg.width;
-    impl_->vsp.height  = cfg.height;
+    impl_->vsp.width   = out_w;
+    impl_->vsp.height  = out_h;
     impl_->vsp.fps_num = cfg.fps;
     impl_->vsp.fps_den = 1;
     impl_->vsp.tb_num  = 1;
@@ -397,24 +413,43 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
 template <typename ImplT>
 static void drain_video(ImplT* impl)
 {
-    AVPacket* pkt = av_packet_alloc();
-    if (!pkt) return;
-    while (avcodec_receive_packet(impl->ctx, pkt) == 0) {
+    // Zero-initialised stack packet: receive overwrites it, unref after each
+    // use — no per-frame heap allocation in the hot path.
+    AVPacket pkt{};
+    while (avcodec_receive_packet(impl->ctx, &pkt) == 0) {
         EncodedPacket ep;
-        ep.bytes        = make_encoded_bytes(pkt->data, pkt->size);
-        ep.pts          = pkt->pts;
-        ep.dts          = pkt->dts;
-        ep.dts_usec     = av_rescale(pkt->dts, 1000000,
+        ep.bytes        = make_encoded_bytes(pkt.data, pkt.size);
+        ep.pts          = pkt.pts;
+        ep.dts          = pkt.dts;
+        ep.dts_usec     = av_rescale(pkt.dts, 1000000,
                                      impl->cfg_fps);
         ep.stream_index = 0;
-        ep.is_keyframe  = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+        ep.is_keyframe  = (pkt.flags & AV_PKT_FLAG_KEY) != 0;
         ep.tb_num       = 1;
         ep.tb_den       = impl->cfg_fps;
         impl->perf.packets_output++;
         if (impl->sink) impl->sink(std::move(ep));
-        av_packet_unref(pkt);
+        av_packet_unref(&pkt);
     }
-    av_packet_free(&pkt);
+}
+
+// Shared tail of push_bgra/push_frame: stamp pts and hand the frame to the
+// encoder. Returns avcodec_send_frame's value. Caller holds the mutex.
+static int submit_current_frame(VideoEncoder::Impl* impl, int64_t pts)
+{
+    // PTS: clock-locked frame index from the pacer (preferred), or fall back
+    // to the internal counter when pts < 0.  The pacer is the single source
+    // of timing truth — it emits exactly fps frames per real second (dup/skip),
+    // so this PTS advances at wall-clock rate.
+    if (pts >= 0) {
+        impl->frame->pts = pts;
+        impl->next_pts   = pts + 1;
+    } else {
+        impl->frame->pts = impl->next_pts;
+    }
+    const int ret = avcodec_send_frame(impl->ctx, impl->frame);
+    if (ret == 0 && pts < 0) impl->next_pts++;
+    return ret;
 }
 
 void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int height,
@@ -426,7 +461,8 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
 
     // (Re-)create the scaler when the source size changes (display mode
     // switches, or output resolution differs from capture resolution).
-    if (!impl_->sws || width != impl_->src_w || height != impl_->src_h) {
+    if (!impl_->sws || width != impl_->src_w || height != impl_->src_h ||
+        impl_->src_fmt != AV_PIX_FMT_BGRA) {
         if (impl_->sws) sws_freeContext(impl_->sws);
         impl_->sws = sws_getContext(
             width, height, AV_PIX_FMT_BGRA,
@@ -435,9 +471,10 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
         if (!impl_->sws) return;
         impl_->src_w = width;
         impl_->src_h = height;
+        impl_->src_fmt = AV_PIX_FMT_BGRA;
     }
 
-    av_frame_make_writable(impl_->frame);
+    if (av_frame_make_writable(impl_->frame) < 0) return;
 
     const uint8_t* src_slices[1] = { bgra };
     int            src_stride[1] = { stride };
@@ -447,24 +484,49 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
         impl_->frame->data, impl_->frame->linesize);
     impl_->perf.sws_scale_time_us_total += steady_now_us() - sws_start_us;
 
-    // PTS: clock-locked frame index from the pacer (preferred), or fall back
-    // to the internal counter when pts < 0.  The pacer is the single source of
-    // timing truth — it emits exactly fps frames per real second (dup/skip),
-    // so this PTS advances at wall-clock rate.
-    if (pts >= 0) {
-        impl_->frame->pts = pts;
-        impl_->next_pts   = pts + 1;
-    } else {
-        impl_->frame->pts = impl_->next_pts;
-    }
     const uint64_t encode_start_us = steady_now_us();
-    int ret = avcodec_send_frame(impl_->ctx, impl_->frame);
-    if (ret == 0) {
+    if (submit_current_frame(impl_, pts) == 0)
         impl_->perf.frames_submitted++;
-        if (pts < 0) impl_->next_pts++;
-    }
     drain_video(impl_);
     impl_->perf.encode_time_us_total += steady_now_us() - encode_start_us;
+}
+
+void VideoEncoder::push_frame(const AVFrame* frame, int64_t pts)
+{
+    std::lock_guard lk(impl_->mutex);
+    if (!impl_->ctx || !frame || frame->width <= 0 || frame->height <= 0) return;
+
+    if (frame->format == static_cast<int>(impl_->ctx->pix_fmt) &&
+        frame->width == impl_->cfg_w && frame->height == impl_->cfg_h) {
+        // Decoder output already matches the encoder format and size: share
+        // the planes instead of round-tripping YUV→BGRA→YUV (saves a full
+        // sws pass per frame and its rounding loss).
+        av_frame_unref(impl_->frame);
+        if (av_frame_ref(impl_->frame, frame) < 0) return;
+    } else {
+        if (!impl_->sws || frame->width != impl_->src_w ||
+            frame->height != impl_->src_h ||
+            frame->format != impl_->src_fmt) {
+            if (impl_->sws) sws_freeContext(impl_->sws);
+            impl_->sws = sws_getContext(
+                frame->width, frame->height,
+                static_cast<AVPixelFormat>(frame->format),
+                impl_->cfg_w, impl_->cfg_h, impl_->ctx->pix_fmt,
+                impl_->sws_flags, nullptr, nullptr, nullptr);
+            if (!impl_->sws) return;
+            impl_->src_w = frame->width;
+            impl_->src_h = frame->height;
+            impl_->src_fmt = frame->format;
+        }
+        if (av_frame_make_writable(impl_->frame) < 0) return;
+        sws_scale(impl_->sws,
+            frame->data, frame->linesize, 0, frame->height,
+            impl_->frame->data, impl_->frame->linesize);
+    }
+
+    if (submit_current_frame(impl_, pts) == 0)
+        impl_->perf.frames_submitted++;
+    drain_video(impl_);
 }
 
 void VideoEncoder::flush()
@@ -488,6 +550,7 @@ void VideoEncoder::close()
     impl_->next_pts = 0;
     impl_->src_w    = 0;
     impl_->src_h    = 0;
+    impl_->src_fmt  = AV_PIX_FMT_NONE;
     impl_->enc_name.clear();
     impl_->vsp      = {};
 }
@@ -506,9 +569,23 @@ struct AudioEncoder::Impl {
     int             swr_src_rate = 0;
     int             swr_src_ch   = 0;
     AVSampleFormat  swr_src_fmt  = AV_SAMPLE_FMT_NONE;
+    // Reusable swr output planes (grown on demand). push_pcm runs every
+    // ~10 ms per track — per-call alloc/free is avoidable churn.
+    uint8_t**       conv_data    = nullptr;
+    int             conv_linesize = 0;
+    int             conv_cap     = 0; // capacity in samples
     int             stream_index = 1;
     int             cfg_sample_rate = 0;
     AudioStreamParams asp;
+
+    void free_conv()
+    {
+        if (conv_data) {
+            av_freep(&conv_data[0]);
+            av_freep(&conv_data);
+        }
+        conv_cap = 0;
+    }
 };
 
 AudioEncoder::AudioEncoder()  : impl_(new Impl()) {}
@@ -540,6 +617,7 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
         if (impl_->swr)   { swr_free(&impl_->swr);                                   }
         if (impl_->frame) { av_frame_free(&impl_->frame);                            }
         if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);                       }
+        impl_->free_conv();
         impl_->next_pts        = 0;
         impl_->swr_src_rate    = 0;
         impl_->swr_src_ch      = 0;
@@ -597,23 +675,21 @@ bool AudioEncoder::open(Config const& cfg, PacketSink sink)
 template <typename ImplT>
 static void drain_audio(ImplT* impl)
 {
-    AVPacket* pkt = av_packet_alloc();
-    if (!pkt) return;
-    while (avcodec_receive_packet(impl->ctx, pkt) == 0) {
+    AVPacket pkt{}; // zero-initialised stack packet, unref after each use
+    while (avcodec_receive_packet(impl->ctx, &pkt) == 0) {
         EncodedPacket ep;
-        ep.bytes        = make_encoded_bytes(pkt->data, pkt->size);
-        ep.pts          = pkt->pts;
-        ep.dts          = pkt->dts;
-        ep.dts_usec     = av_rescale(pkt->dts, 1000000,
+        ep.bytes        = make_encoded_bytes(pkt.data, pkt.size);
+        ep.pts          = pkt.pts;
+        ep.dts          = pkt.dts;
+        ep.dts_usec     = av_rescale(pkt.dts, 1000000,
                                      impl->cfg_sample_rate);
         ep.stream_index = impl->stream_index;
         ep.is_keyframe  = true; // AAC frames are all independently decodable
         ep.tb_num       = 1;
         ep.tb_den       = impl->cfg_sample_rate;
         if (impl->sink) impl->sink(std::move(ep));
-        av_packet_unref(pkt);
+        av_packet_unref(&pkt);
     }
-    av_packet_free(&pkt);
 }
 
 static AVSampleFormat wasapi_to_av_fmt(int bit_depth, bool is_float)
@@ -672,27 +748,28 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
         impl_->swr_src_fmt  = src_fmt;
     }
 
-    // Allocate temporary buffer for the converted output.
+    // Grow (only) the reusable conversion buffer for this call's output.
     int max_out = (int)av_rescale_rnd(
         swr_get_delay(impl_->swr, sample_rate) + src_frames,
         impl_->ctx->sample_rate, sample_rate, AV_ROUND_UP);
 
-    uint8_t** dst_data = nullptr;
-    int       dst_linesize;
-    if (av_samples_alloc_array_and_samples(
-            &dst_data, &dst_linesize,
-            impl_->ctx->ch_layout.nb_channels,
-            max_out, impl_->ctx->sample_fmt, 0) < 0)
-        return;
+    if (max_out > impl_->conv_cap) {
+        impl_->free_conv();
+        if (av_samples_alloc_array_and_samples(
+                &impl_->conv_data, &impl_->conv_linesize,
+                impl_->ctx->ch_layout.nb_channels,
+                max_out, impl_->ctx->sample_fmt, 0) < 0) {
+            impl_->conv_data = nullptr;
+            return;
+        }
+        impl_->conv_cap = max_out;
+    }
 
     int converted = swr_convert(impl_->swr,
-        dst_data, max_out,
+        impl_->conv_data, impl_->conv_cap,
         &src_data, src_frames);
     if (converted > 0)
-        av_audio_fifo_write(impl_->fifo, (void**)dst_data, converted);
-
-    av_freep(&dst_data[0]);
-    av_freep(&dst_data);
+        av_audio_fifo_write(impl_->fifo, (void**)impl_->conv_data, converted);
 
     // Drain fifo in frame_size chunks.
     const int frame_size = impl_->ctx->frame_size;
@@ -755,6 +832,7 @@ void AudioEncoder::close()
     if (impl_->swr)   { swr_free(&impl_->swr);                                   }
     if (impl_->frame) { av_frame_free(&impl_->frame);                            }
     if (impl_->ctx)   { avcodec_free_context(&impl_->ctx);                       }
+    impl_->free_conv();
     impl_->next_pts      = 0;
     impl_->swr_src_rate  = 0;
     impl_->swr_src_ch    = 0;
@@ -780,10 +858,21 @@ constexpr int kMaxFifoFrames   = 48000 * 2; // ~2 s cap per source at 48 kHz
 struct MixSource {
     SwrContext*    swr      = nullptr;
     AVAudioFifo*   fifo     = nullptr;
+    uint8_t**      conv     = nullptr; // reusable swr output planes
+    int            conv_cap = 0;       // capacity in samples
     int            src_rate = 0;
     int            src_ch   = 0;
     AVSampleFormat src_fmt  = AV_SAMPLE_FMT_NONE;
     float          gain     = 1.0f;  // linear gain applied before summing
+
+    void free_conv()
+    {
+        if (conv) {
+            av_freep(&conv[0]);
+            av_freep(&conv);
+        }
+        conv_cap = 0;
+    }
 };
 
 struct TrackMixer::Impl {
@@ -925,6 +1014,7 @@ void TrackMixer::remove_source(int source_id)
     if (it == impl_->sources.end()) return;
     if (it->second->swr)  swr_free(&it->second->swr);
     if (it->second->fifo) av_audio_fifo_free(it->second->fifo);
+    it->second->free_conv();
     impl_->sources.erase(it);
 }
 
@@ -954,22 +1044,27 @@ void TrackMixer::push(int source_id, const uint8_t* data, int bytes,
         impl_->out_rate, sample_rate, AV_ROUND_UP));
     if (max_out <= 0) return;
 
-    uint8_t** dst = nullptr; int dst_linesize = 0;
-    if (av_samples_alloc_array_and_samples(
-            &dst, &dst_linesize, impl_->out_ch, max_out, AV_SAMPLE_FMT_FLT, 0) < 0)
-        return;
+    if (max_out > s.conv_cap) {
+        s.free_conv();
+        int conv_linesize = 0;
+        if (av_samples_alloc_array_and_samples(
+                &s.conv, &conv_linesize,
+                impl_->out_ch, max_out, AV_SAMPLE_FMT_FLT, 0) < 0) {
+            s.conv = nullptr;
+            return;
+        }
+        s.conv_cap = max_out;
+    }
 
-    int converted = swr_convert(s.swr, dst, max_out, &src_data, src_frames);
+    int converted = swr_convert(s.swr, s.conv, s.conv_cap, &src_data, src_frames);
     if (converted > 0) {
         // Drop oldest data if a source overruns (downstream stalled / paused).
         if (av_audio_fifo_size(s.fifo) + converted > kMaxFifoFrames) {
             int drop = av_audio_fifo_size(s.fifo) + converted - kMaxFifoFrames;
             av_audio_fifo_drain(s.fifo, drop);
         }
-        av_audio_fifo_write(s.fifo, reinterpret_cast<void**>(dst), converted);
+        av_audio_fifo_write(s.fifo, reinterpret_cast<void**>(s.conv), converted);
     }
-    av_freep(&dst[0]);
-    av_freep(&dst);
 }
 
 void TrackMixer::close()
@@ -981,6 +1076,7 @@ void TrackMixer::close()
     for (auto& [id, sp] : impl_->sources) {
         if (sp->swr)  swr_free(&sp->swr);
         if (sp->fifo) av_audio_fifo_free(sp->fifo);
+        sp->free_conv();
     }
     impl_->sources.clear();
     impl_->next_id = 0;

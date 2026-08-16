@@ -129,6 +129,11 @@ bool open_file_and_write_header(AVFormatContext* fmt,
     // the moov at the end (OBS default); local playback and editing are
     // unaffected, and finalizing only writes the index, so stop is near-instant.
     const bool ok = avformat_write_header(fmt, nullptr) >= 0;
+    if (!ok) {
+        // avformat_free_context does not close pb — callers that only free the
+        // context on failure would leak the AVIOContext and the file handle.
+        avio_closep(&fmt->pb);
+    }
     return ok;
 }
 
