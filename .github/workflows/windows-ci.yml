@@ -145,18 +145,27 @@ jobs:
       - name: Verify build output
         shell: pwsh
         run: |
-          if (-not (Test-Path "build/app/recorder/Release/Monolith.exe")) {
-            Write-Error "Build output not found: build/app/recorder/Release/Monolith.exe"
+          foreach ($f in @(
+            "build/app/recorder/Release/Monolith.exe",
+            "build/app/recorder/Release/ui/Monolith.UI.exe",
+            "build/app/recorder/Release/Updater.exe",
+            "build/app/recorder/Release/sqlite3.dll",
+            "build/app/recorder/Release/aom.dll"
+          )) {
+            if (-not (Test-Path $f)) {
+              Write-Error "Build output not found: $f"
+              exit 1
+            }
+          }
+
+          $runtimeDlls = Get-ChildItem "build/app/recorder/Release/*.dll" -File
+          if (-not $runtimeDlls) {
+            Write-Error "No native runtime DLLs found beside Monolith.exe"
             exit 1
           }
-          if (-not (Test-Path "build/app/recorder/Release/ui/Monolith.UI.exe")) {
-            Write-Error "Build output not found: build/app/recorder/Release/ui/Monolith.UI.exe"
-            exit 1
-          }
-          if (-not (Test-Path "build/app/recorder/Release/Updater.exe")) {
-            Write-Error "Build output not found: build/app/recorder/Release/Updater.exe"
-            exit 1
-          }
+          Write-Host "Native runtime DLLs:"
+          $runtimeDlls.Name | Sort-Object | ForEach-Object { Write-Host "  $_" }
+
           $plugin = Get-ChildItem "plugins/stream-deck/dist/*.streamDeckPlugin" -ErrorAction SilentlyContinue
           if (-not $plugin) {
             Write-Error "Stream Deck package not found under plugins/stream-deck/dist"

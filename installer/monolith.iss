@@ -2,10 +2,11 @@
 ;
 ; Build:  iscc /DMonolithVersion=X.Y.Z monolith.iss
 ; CI passes MonolithVersion from the git tag (.github/workflows/version-tag.yml).
-; The payload is native Monolith.exe plus codec/updater DLLs at the root and
-; the self-contained Tauri UI (Monolith.UI.exe) under .\ui. The only runtime
-; dependency is the Edge WebView2 runtime, which ships with Windows 11 and
-; recent Windows 10 — no other prerequisites on the target machine.
+; The payload is native Monolith.exe plus all native runtime DLLs at the root
+; and the self-contained Tauri UI (Monolith.UI.exe) under .\ui. The only
+; external runtime dependency is the Edge WebView2 runtime, which ships with
+; Windows 11 and recent Windows 10 — no other prerequisites on the target
+; machine.
 ;
 ; Per-user by design: installs under {localappdata}\Programs\Monolith with
 ; PrivilegesRequired=lowest so the component updater (Updater.exe) can swap
@@ -58,17 +59,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startupicon"; Description: "Start {#MonolithName} when you sign in"; GroupDescription: "Startup:"
 
 [Files]
-; Native recorder payload. Keep this explicit so unrelated build files in the
-; root output directory cannot be bundled accidentally.
+; Native recorder payload. CMake/vcpkg places the runtime DLL closure beside
+; Monolith.exe. Package every DLL from that output directory rather than
+; maintaining fragile filename prefixes (which previously omitted aom.dll and
+; can miss future transitive dependencies with new names).
 Source: "{#PayloadDir}\Monolith.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Component self-updater (app/updater): fetches update-manifest.json and
 ; swaps only the components whose version changed.
 Source: "{#PayloadDir}\Updater.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\av*.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\sw*.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\lib*.dll"; DestDir: "{app}"; Flags: ignoreversion
-; SQLite (vcpkg, dynamically linked by the engine for settings.db + clip DBs).
-Source: "{#PayloadDir}\sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Self-contained Tauri UI (Monolith.UI.exe) lives in a subfolder.
 Source: "{#PayloadDir}\ui\*"; DestDir: "{app}\ui"; Flags: recursesubdirs ignoreversion
 ; Default config is resolved from <exe dir>\config\default-config.json.
