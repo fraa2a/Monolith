@@ -163,6 +163,7 @@ jobs:
             "build/app/recorder/Release/ui/Monolith.UI.exe",
             "build/app/recorder/Release/Updater.exe",
             "build/app/recorder/Release/sqlite3.dll",
+            "build/app/recorder/Release/aom.dll",
             "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin"
           )) {
             if (-not (Test-Path $f)) {
@@ -170,6 +171,14 @@ jobs:
               exit 1
             }
           }
+
+          $runtimeDlls = Get-ChildItem "build/app/recorder/Release/*.dll" -File
+          if (-not $runtimeDlls) {
+            Write-Error "No native runtime DLLs found beside Monolith.exe"
+            exit 1
+          }
+          Write-Host "Runtime DLLs that will be packaged:"
+          $runtimeDlls.Name | Sort-Object | ForEach-Object { Write-Host "  $_" }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -239,15 +248,14 @@ jobs:
           $pkg = "build/update-pkg"
           Remove-Item -Recurse -Force $pkg -ErrorAction SilentlyContinue
 
-          # engine: exe + codec/sqlite DLLs + config\default-config.json (the
-          # config\ subdir structure is preserved inside the zip).
+          # engine: exe + every native runtime DLL emitted beside it +
+          # config\default-config.json. Do not filter DLLs by filename prefix:
+          # transitive vcpkg/FFmpeg dependencies such as aom.dll need to ship
+          # too, and future dependencies may use names we do not know today.
           $eng = "$pkg/engine"
           New-Item -ItemType Directory -Force -Path "$eng/config" | Out-Null
           Copy-Item "$rel/Monolith.exe" $eng
-          Copy-Item "$rel/av*.dll" $eng -ErrorAction SilentlyContinue
-          Copy-Item "$rel/sw*.dll" $eng -ErrorAction SilentlyContinue
-          Copy-Item "$rel/lib*.dll" $eng -ErrorAction SilentlyContinue
-          Copy-Item "$rel/sqlite3.dll" $eng
+          Copy-Item "$rel/*.dll" $eng
           Copy-Item "config/default-config.json" "$eng/config/"
           Compress-Archive -Path "$eng/*" -DestinationPath "monolith-engine-${{ steps.compvars.outputs.engine }}.zip"
 
