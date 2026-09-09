@@ -2,11 +2,8 @@
 // loopback HTTP `/api/*` routes (server.rs, removed) now that the window loads
 // bundled assets directly (see main.rs) and has the Tauri JS API available.
 //
-// Clip/settings mutations write straight to the on-disk SQLite catalogs
-// (clip_catalog.rs / settings_store.rs) so they work without the recorder
-// engine running. Only `clip_regen_thumb` and the recorder-control commands
-// cross to the engine over the JSON-RPC channel in engine_rpc.rs, which is
-// unchanged and still used by the Stream Deck plugin (127.0.0.1:45991). See
+// Read-only catalog commands work without the recorder. Delete and rename
+// cross to the engine over JSON-RPC so it owns their catalog/filesystem recovery. See
 // docs/DECISIONS.md.
 //
 // IMPORTANT: every command here is `async fn`. Tauri v2 runs plain
@@ -112,7 +109,7 @@ pub async fn set_selected_game(exe: String, pid: Option<u32>) -> Result<(), Stri
     }
 }
 
-// ── Clip mutations (direct SQLite writes; work without the engine) ───────
+// ── Clip mutations ──────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn clip_set_duration(source: String, id: i64, duration: f64) -> Result<(), String> {
@@ -165,13 +162,27 @@ pub async fn clip_remove_hashtag(source: String, id: i64, tag: String) -> Result
 #[tauri::command]
 pub async fn clip_rename(source: String, id: i64, new_name: String) -> Result<(), String> {
     let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::rename_clip(src, id, &new_name)).await
+    let params = serde_json::json!({ "source": src.as_str(), "id": id, "new_name": new_name });
+    let result = blocking(move || engine_rpc::mutate_clip("clip_rename", params)).await;
+    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        Ok(())
+    } else {
+        Err(result.get("error").and_then(Value::as_str)
+            .unwrap_or("recorder must be running to rename clips").to_string())
+    }
 }
 
 #[tauri::command]
 pub async fn clip_delete(source: String, id: i64) -> Result<(), String> {
     let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::remove_clip(src, id)).await
+    let params = serde_json::json!({ "source": src.as_str(), "id": id });
+    let result = blocking(move || engine_rpc::mutate_clip("clip_delete", params)).await;
+    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        Ok(())
+    } else {
+        Err(result.get("error").and_then(Value::as_str)
+            .unwrap_or("recorder must be running to delete clips").to_string())
+    }
 }
 
 // Opens Explorer with the clip's video file pre-selected. `/select,` is an

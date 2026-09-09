@@ -1,608 +1,436 @@
 #include "trim.h"
-
 #include "mux_common.h"
-
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavutil/avutil.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/frame.h>
-#include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
-#include <libswresample/swresample.h>
-#include <libswscale/swscale.h>
 }
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <limits>
-#include <vector>
+#include <memory>
+#include <deque>
 
 namespace encoding {
 namespace {
-
-using mux::wcs_to_utf8;
-
-// RAII wrappers so early returns can't leak libav objects.
-struct FmtCtx {
-    AVFormatContext* p = nullptr;
-    ~FmtCtx() { if (p) avformat_close_input(&p); }
-};
-struct OutFmt {
-    AVFormatContext* p = nullptr;
-    ~OutFmt() {
-        if (p) {
-            // Error paths can leave pb open (avio_open succeeded but the
-            // header/trailer never wrote) — close it so the file handle and
-            // AVIOContext aren't leaked. avio_closep is a no-op on a closed pb.
-            avio_closep(&p->pb);
-            avformat_free_context(p);
-        }
-    }
-};
-struct CodecCtx {
-    AVCodecContext* p = nullptr;
-    ~CodecCtx() { if (p) avcodec_free_context(&p); }
-};
-struct Frame {
-    AVFrame* p = nullptr;
-    ~Frame() { if (p) av_frame_free(&p); }
-};
-struct Packet {
-    AVPacket* p = nullptr;
-    ~Packet() { if (p) av_packet_free(&p); }
-};
-struct SwsCtx {
-    SwsContext* p = nullptr;
-    ~SwsCtx() { if (p) sws_freeContext(p); }
-};
-struct SwrCtx {
-    SwrContext* p = nullptr;
-    ~SwrCtx() { if (p) swr_free(&p); }
-};
-
-const char* muxer_for_path(const std::wstring& out_path)
-{
-    const std::string utf = wcs_to_utf8(out_path);
-    const char* ext = strrchr(utf.c_str(), '.');
-    if (ext && _stricmp(ext, ".mp4") == 0) return "mp4";
-    return "matroska";
+constexpr int kMaxPacketBytes = 256 * 1024 * 1024;
+constexpr unsigned kMaxStreams = 64;
+struct Input { AVFormatContext* p = nullptr; ~Input() { avformat_close_input(&p); } };
+struct Output { AVFormatContext* p = nullptr; ~Output() { if (p) { avio_closep(&p->pb); avformat_free_context(p); } } };
+struct Codec { AVCodecContext* p = nullptr; ~Codec() { avcodec_free_context(&p); } };
+struct Packet { AVPacket* p = av_packet_alloc(); ~Packet() { av_packet_free(&p); } };
+struct Frame { AVFrame* p = av_frame_alloc(); ~Frame() { av_frame_free(&p); } };
+bool fail(std::string* err, const char* text) { if (err) *err = text; return false; }
+bool cancelled(const std::atomic<bool>* cancel) { return cancel && cancel->load(); }
+int interrupt_io(void* opaque) { return static_cast<const std::atomic<bool>*>(opaque)->load() ? 1 : 0; }
+bool valid_range(double start, double end) {
+    return std::isfinite(start) && std::isfinite(end) && start >= 0 && end > start && end < 1e9;
 }
+int64_t us(double seconds) { return static_cast<int64_t>(std::llround(seconds * AV_TIME_BASE)); }
+int64_t origin(AVFormatContext* in) { return in->start_time == AV_NOPTS_VALUE ? 0 : in->start_time; }
+double seconds(int64_t ts, AVRational tb) { return static_cast<double>(ts) * av_q2d(tb); }
 
-// Opens `path` and returns the stream indices to copy: video first, then every
-// audio stream in order of appearance.
-bool open_input(const std::wstring& path, FmtCtx* fmt,
-                std::vector<int>* stream_order, std::string* err)
-{
-    const std::string url = wcs_to_utf8(path);
-    if (avformat_open_input(&fmt->p, url.c_str(), nullptr, nullptr) < 0) {
-        if (err) *err = "could not open input file";
-        return false;
-    }
-    if (avformat_find_stream_info(fmt->p, nullptr) < 0) {
-        if (err) *err = "could not read input stream info";
-        return false;
-    }
-    if (!stream_order) return true;
-    int vidx = av_find_best_stream(fmt->p, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (vidx < 0) {
-        if (err) *err = "input has no video stream";
-        return false;
-    }
-    stream_order->push_back(vidx);
-    for (unsigned i = 0; i < fmt->p->nb_streams; ++i) {
-        if (static_cast<int>(i) != vidx &&
-            fmt->p->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
-            stream_order->push_back(static_cast<int>(i));
+bool open_input(const std::wstring& path, Input& in, std::vector<int>& order,
+                std::string* err, const std::atomic<bool>* cancel = nullptr) {
+    in.p = avformat_alloc_context();
+    if (!in.p) return fail(err, "out of memory");
+    if (cancel) in.p->interrupt_callback = {interrupt_io, const_cast<std::atomic<bool>*>(cancel)};
+    if (avformat_open_input(&in.p, mux::wcs_to_utf8(path).c_str(), nullptr, nullptr) < 0 ||
+        avformat_find_stream_info(in.p, nullptr) < 0) return fail(err, "could not read input");
+    if (in.p->nb_streams > kMaxStreams) return fail(err, "too many input streams");
+    int video = av_find_best_stream(in.p, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (video < 0) return fail(err, "input has no video stream");
+    order.push_back(video);
+    for (unsigned i = 0; i < in.p->nb_streams; ++i) {
+        auto* s = in.p->streams[i];
+        if (s->time_base.num <= 0 || s->time_base.den <= 0) return fail(err, "invalid input timebase");
+        if (static_cast<int>(i) != video && s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+            order.push_back(static_cast<int>(i));
+        else if (static_cast<int>(i) != video && s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+            return fail(err, "multiple video streams are not supported");
     }
     return true;
 }
 
-AVRational tb_of(AVStream* s)
-{
-    return (s->time_base.num > 0 && s->time_base.den > 0)
-        ? s->time_base : AVRational{1, 1000};
+struct Window {
+    int64_t anchor = AV_NOPTS_VALUE; // exact video PTS, not a rounded microsecond anchor
+    AVRational tb{};
+    int64_t decode_end_us = 0;
+    double source_start = 0;
+    double extent = 0;
+};
+int64_t packet_duration(const AVPacket* p, AVStream* s) {
+    if (p->duration > 0) return p->duration;
+    const AVRational rate = s->avg_frame_rate;
+    return rate.num > 0 && rate.den > 0 ? std::max<int64_t>(1, av_rescale_q(1, av_inv_q(rate), s->time_base)) : 1;
 }
-
-double pts_seconds(int64_t pts, AVRational tb)
-{
-    return static_cast<double>(pts) * static_cast<double>(tb.num)
-        / static_cast<double>(tb.den);
-}
-
-// Builds the output muxer mirroring `in`'s layout: one stream per entry of
-// `stream_order` (video first, then audio streams), codecpar copied.
-bool alloc_copy_output(const std::wstring& out_path,
-                       AVFormatContext* in,
-                       const std::vector<int>& stream_order,
-                       OutFmt* out,
-                       std::vector<AVStream*>* dst_streams,
-                       std::string* err)
-{
-    const std::string url = wcs_to_utf8(out_path);
-    const AVOutputFormat* guess =
-        av_guess_format(muxer_for_path(out_path), url.c_str(), nullptr);
-    if (!guess) {
-        if (err) *err = "no muxer for output format";
-        return false;
-    }
-    if (avformat_alloc_output_context2(&out->p, guess, nullptr, url.c_str()) < 0) {
-        if (err) *err = "could not allocate output muxer";
-        return false;
-    }
-    for (int idx : stream_order) {
-        AVStream* src = in->streams[idx];
-        AVStream* dst = avformat_new_stream(out->p, nullptr);
-        if (!dst) {
-            if (err) *err = "could not allocate output stream";
-            return false;
-        }
-        if (avcodec_parameters_copy(dst->codecpar, src->codecpar) < 0) {
-            if (err) *err = "could not copy stream parameters";
-            return false;
-        }
-        dst->time_base = tb_of(src);
-        dst_streams->push_back(dst);
-    }
-    return true;
-}
-
-// Opens the output file and writes the container header. Called once per
-// output, before any remux_window pass.
-bool open_output(AVFormatContext* out, const std::string& out_utf, std::string* err)
-{
-    if (avio_open(&out->pb, out_utf.c_str(), AVIO_FLAG_WRITE) < 0) {
-        if (err) *err = "could not open output file";
-        return false;
-    }
-    if (avformat_write_header(out, nullptr) < 0) {
-        if (err) *err = "could not write output header";
-        return false;
-    }
-    return true;
-}
-
-// Copies the packets of every stream whose media time falls inside
-// [start_sec, end_sec] of `in`'s timeline into the already-opened output
-// `out` (mapping dst[i] ← in stream `stream_order[i]`). The video stream
-// drives the end cut; the start is keyframe-aligned via a backward seek.
-// pts/dts are re-anchored to zero per stream, then shifted by `offset_sec`
-// (used when concatenating several segments into one timeline). Writes
-// packets only — the caller opens the file and finalizes.
-bool remux_window(AVFormatContext* in,
-                  const std::vector<int>& stream_order,
-                  double start_sec, double end_sec, double offset_sec,
-                  AVFormatContext* out,
-                  const std::vector<AVStream*>& dst_streams,
-                  std::string* err)
-{
-    const int vidx = stream_order.front();
-    const AVRational vtb = tb_of(in->streams[vidx]);
-    const int64_t seek_ts = static_cast<int64_t>(start_sec * vtb.den / vtb.num);
-    if (av_seek_frame(in, vidx, seek_ts, AVSEEK_FLAG_BACKWARD) < 0) {
-        if (err) *err = "could not seek to trim start";
-        return false;
-    }
-
-    // Anchor per output stream: pts of the first kept packet. Video anchors
-    // at the seeked keyframe (<= start); audio anchors at the first packet
-    // at/after the VIDEO anchor so both timelines start together — anchoring
-    // audio at `start` instead would lead the audio by up to a GOP. dts gets
-    // the same offset so B-frame deltas stay intact.
-    std::vector<int64_t> anchor(dst_streams.size(), std::numeric_limits<int64_t>::min());
-    double vanchor_sec = -1.0;
-
-    Packet pkt;
-    pkt.p = av_packet_alloc();
-    if (!pkt.p) { if (err) *err = "out of memory"; return false; }
-
-    bool done = false;
-    while (!done && av_read_frame(in, pkt.p) >= 0) {
-        if (pkt.p->pts == AV_NOPTS_VALUE) { av_packet_unref(pkt.p); continue; }
-
-        int dst_idx = -1;
-        for (size_t i = 0; i < stream_order.size(); ++i) {
-            if (stream_order[i] == pkt.p->stream_index) { dst_idx = static_cast<int>(i); break; }
-        }
-        if (dst_idx < 0) { av_packet_unref(pkt.p); continue; }
-
-        const AVRational tb = tb_of(in->streams[pkt.p->stream_index]);
-        const double sec = pts_seconds(pkt.p->pts, tb);
-        if (pkt.p->stream_index == vidx && sec >= end_sec) {
-            done = true;
-            av_packet_unref(pkt.p);
-            break;
-        }
-
-        if (anchor[dst_idx] == std::numeric_limits<int64_t>::min()) {
-            if (pkt.p->stream_index == vidx) {
-                anchor[dst_idx] = pkt.p->pts;
-                vanchor_sec = sec;
-            } else if (vanchor_sec >= 0.0 && sec >= vanchor_sec) {
-                anchor[dst_idx] = pkt.p->pts;
+// Matroska omits leading decode timestamps for reordered video. Recover only
+// from the next known DTS by subtracting the intervening packet durations in
+// the SAME input timebase. Never clamp DTS to PTS or fabricate a CFR timeline.
+// Unresolvable/malformed prefixes fail explicitly rather than grow a queue.
+struct TimestampReader {
+    AVFormatContext* in;
+    std::deque<AVPacket*> pending;
+    size_t pending_bytes = 0;
+    ~TimestampReader() { for (auto* p : pending) av_packet_free(&p); }
+    int read(AVPacket* out) {
+        for (;;) {
+            if (!pending.empty()) {
+                auto* first = pending.front();
+                auto* stream = in->streams[first->stream_index];
+                if (first->dts == AV_NOPTS_VALUE && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+                    first->dts = first->pts;
+                if (first->dts != AV_NOPTS_VALUE) {
+                    pending_bytes -= static_cast<size_t>(first->size);
+                    pending.pop_front(); av_packet_move_ref(out, first); av_packet_free(&first); return 0;
+                }
+                int64_t duration = 0;
+                for (auto* next : pending) {
+                    if (next->stream_index != first->stream_index) continue;
+                    if (next->dts != AV_NOPTS_VALUE) { first->dts = next->dts - duration; break; }
+                    if (next->duration <= 0) return AVERROR_INVALIDDATA;
+                    duration += next->duration;
+                }
+                if (first->dts != AV_NOPTS_VALUE) continue;
             }
+            if (pending.size() >= 256 || pending_bytes >= 64 * 1024 * 1024) return AVERROR_INVALIDDATA;
+            auto* next = av_packet_alloc();
+            if (!next) return AVERROR(ENOMEM);
+            const int rc = av_read_frame(in, next);
+            if (rc < 0) { av_packet_free(&next); return pending.empty() ? rc : AVERROR_INVALIDDATA; }
+            if (next->size < 0 || static_cast<size_t>(next->size) > 64 * 1024 * 1024 - pending_bytes) {
+                av_packet_free(&next); return AVERROR_INVALIDDATA;
+            }
+            pending_bytes += static_cast<size_t>(next->size);
+            pending.push_back(next);
         }
-
-        AVStream* dst = dst_streams[dst_idx];
-        const int64_t acc = static_cast<int64_t>(
-            offset_sec * static_cast<double>(dst->time_base.den)
-            / static_cast<double>(dst->time_base.num));
-        if (anchor[dst_idx] != std::numeric_limits<int64_t>::min()) {
-            pkt.p->stream_index = dst->index;
-            if (pkt.p->dts == AV_NOPTS_VALUE) pkt.p->dts = pkt.p->pts;
-            pkt.p->pts = pkt.p->pts - anchor[dst_idx] + acc;
-            pkt.p->dts = pkt.p->dts - anchor[dst_idx] + acc;
-            if (pkt.p->dts > pkt.p->pts) pkt.p->dts = pkt.p->pts;
-            if (av_interleaved_write_frame(out, pkt.p) < 0) {
-                av_packet_unref(pkt.p);
-                if (err) *err = "failed to write output packet";
-                return false;
+    }
+};
+bool seek(AVFormatContext* in, int video, int64_t time_us, std::string* err) {
+    if (av_seek_frame(in, video, av_rescale_q(time_us, AV_TIME_BASE_Q, in->streams[video]->time_base),
+                      AVSEEK_FLAG_BACKWARD) < 0) return fail(err, "could not seek to trim start");
+    return true;
+}
+// A bounded-memory planning pass finds the key and presentation extent of a
+// decode-order prefix. Do not stop at the first future PTS: it may be a reference
+// for B frames whose presentation lies inside the requested interval.
+bool plan_window(AVFormatContext* in, int video, double start, double end,
+                 Window& w, std::string* err, const std::atomic<bool>* cancel) {
+    w.tb = in->streams[video]->time_base;
+    w.decode_end_us = origin(in) + us(end);
+    if (!seek(in, video, origin(in) + us(start), err)) return false;
+    Packet pkt;
+    if (!pkt.p) return fail(err, "out of memory");
+    int rc = 0;
+    TimestampReader reader{in, {}};
+    while (!cancelled(cancel) && (rc = reader.read(pkt.p)) >= 0) {
+        if (pkt.p->size > kMaxPacketBytes) return fail(err, "packet exceeds trim limit");
+        if (pkt.p->stream_index == video) {
+            if (pkt.p->pts == AV_NOPTS_VALUE || pkt.p->dts == AV_NOPTS_VALUE)
+                return fail(err, "video packet has no timestamp");
+            if (av_compare_ts(pkt.p->dts, w.tb, w.decode_end_us, AV_TIME_BASE_Q) >= 0) break;
+            if (w.anchor == AV_NOPTS_VALUE && (pkt.p->flags & AV_PKT_FLAG_KEY)) w.anchor = pkt.p->pts;
+            if (w.anchor != AV_NOPTS_VALUE) {
+                const double packet_end = seconds(pkt.p->pts - w.anchor + packet_duration(pkt.p, in->streams[video]), w.tb);
+                w.extent = std::max(w.extent, packet_end);
             }
         }
         av_packet_unref(pkt.p);
     }
+    if (cancelled(cancel)) return fail(err, "save cancelled");
+    if (rc < 0 && rc != AVERROR_EOF) return fail(err, "input read failed");
+    if (w.anchor == AV_NOPTS_VALUE || w.extent <= 0) return fail(err, "no decodable video in trim window");
+    w.source_start = seconds(w.anchor, w.tb) - static_cast<double>(origin(in)) / AV_TIME_BASE;
+    if (w.source_start + w.extent <= start) return fail(err, "start is past the end of the clip");
     return true;
 }
 
-// Finalizes an output muxer (trailer + close). The context itself is owned by
-// the caller's RAII (OutFmt) or freed explicitly (raw pointers).
-bool finalize_output(AVFormatContext* out, std::string* err)
-{
-    if (av_write_trailer(out) < 0) {
-        if (err) *err = "failed to finalize output";
-        return false;
+bool alloc_output(const std::wstring& path, AVFormatContext* in, const std::vector<int>& order,
+                  Output& out, std::string* err, const std::atomic<bool>* cancel = nullptr) {
+    auto ext = std::filesystem::path(path).extension().wstring();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return static_cast<wchar_t>(c >= L'A' && c <= L'Z' ? c + (L'a' - L'A') : c); });
+    if (avformat_alloc_output_context2(&out.p, nullptr, ext == L".mp4" ? "mp4" : "matroska",
+                                       mux::wcs_to_utf8(path).c_str()) < 0 || !out.p)
+        return fail(err, "could not allocate output muxer");
+    if (cancel) out.p->interrupt_callback = {interrupt_io, const_cast<std::atomic<bool>*>(cancel)};
+    // Preserve negative decode timestamps rather than shifting streams by
+    // independent anchors. MP4 edit lists represent initial decode preroll.
+    out.p->avoid_negative_ts = AVFMT_AVOID_NEG_TS_DISABLED;
+    for (int idx : order) {
+        auto* src = in->streams[idx];
+        if (avformat_query_codec(out.p->oformat, src->codecpar->codec_id, FF_COMPLIANCE_NORMAL) == 0)
+            return fail(err, "output container cannot preserve an input codec");
+        auto* dst = avformat_new_stream(out.p, nullptr);
+        if (!dst || avcodec_parameters_copy(dst->codecpar, src->codecpar) < 0) return fail(err, "could not copy stream");
+        dst->codecpar->codec_tag = 0;
+        dst->time_base = src->time_base;
+        dst->avg_frame_rate = src->avg_frame_rate;
+        dst->sample_aspect_ratio = src->sample_aspect_ratio;
+        dst->disposition = src->disposition;
+        av_dict_copy(&dst->metadata, src->metadata, 0);
     }
-    avio_closep(&out->pb);
     return true;
 }
-
-// ── Re-encode fallback ───────────────────────────────────────────────────────
-
+bool header(Output& out, const std::wstring& path, std::string* err) {
+    if (avio_open2(&out.p->pb, mux::wcs_to_utf8(path).c_str(), AVIO_FLAG_WRITE,
+                   &out.p->interrupt_callback, nullptr) < 0 || avformat_write_header(out.p, nullptr) < 0)
+        return fail(err, "could not write output header");
+    return true;
+}
+bool finish(Output& out, std::string* err) {
+    if (av_write_trailer(out.p) < 0 || avio_closep(&out.p->pb) < 0) return fail(err, "could not finalize output");
+    return true;
+}
+bool retained_result(const std::wstring& path, double anchor, TrimResult* result, std::string* err,
+                     AVFormatContext* expected, const std::atomic<bool>* cancel = nullptr) {
+    if (cancelled(cancel)) return fail(err, "save cancelled");
+    Input check;
+    check.p = avformat_alloc_context();
+    if (!check.p) return fail(err, "out of memory");
+    if (cancel) check.p->interrupt_callback = {interrupt_io, const_cast<std::atomic<bool>*>(cancel)};
+    if (avformat_open_input(&check.p, mux::wcs_to_utf8(path).c_str(), nullptr, nullptr) < 0 ||
+        avformat_find_stream_info(check.p, nullptr) < 0 || check.p->duration <= 0)
+        return fail(err, "could not validate finalized output duration");
+    if (check.p->nb_streams != expected->nb_streams) return fail(err, "output lost an input stream");
+    for (unsigned i = 0; i < expected->nb_streams; ++i) {
+        auto* a = expected->streams[i]->codecpar; auto* b = check.p->streams[i]->codecpar;
+        if (a->codec_id != b->codec_id || a->codec_type != b->codec_type ||
+            a->sample_rate != b->sample_rate || a->ch_layout.nb_channels != b->ch_layout.nb_channels)
+            return fail(err, "output changed stream compatibility");
+    }
+    if (result) *result = {anchor, static_cast<double>(check.p->duration) / AV_TIME_BASE};
+    return true;
+}
+// Rescale every timestamp/duration AFTER header. One exact video anchor is
+// converted to each destination timebase; PTS-DTS and interstream offsets survive.
+bool write_packet(AVPacket* pkt, AVRational src_tb, int dst_idx, const Window& w,
+                  int64_t offset_us, Output& out, std::string* err) {
+    if (pkt->size > kMaxPacketBytes || pkt->pts == AV_NOPTS_VALUE || pkt->dts == AV_NOPTS_VALUE)
+        return fail(err, "invalid or oversized packet");
+    const auto dst_tb = out.p->streams[dst_idx]->time_base;
+    av_packet_rescale_ts(pkt, src_tb, dst_tb);
+    const int64_t shift = av_rescale_q(w.anchor, w.tb, dst_tb) - av_rescale_q(offset_us, AV_TIME_BASE_Q, dst_tb);
+    pkt->pts -= shift; pkt->dts -= shift; pkt->pos = -1; pkt->stream_index = dst_idx;
+    // No libavformat interleaving queue proportional to skew or clip length.
+    // Demux/encoder order is streamed directly; muxers accept cross-stream skew.
+    return av_write_frame(out.p, pkt) >= 0 || fail(err, "failed to mux output packet");
+}
+bool copy_window(AVFormatContext* in, const std::vector<int>& order, const Window& w,
+                 int64_t offset_us, Output& out, std::string* err, const std::atomic<bool>* cancel,
+                 std::optional<std::pair<double, double>> audio_window = std::nullopt) {
+    if (!seek(in, order[0], av_rescale_q(w.anchor, w.tb, AV_TIME_BASE_Q), err)) return false;
+    Packet pkt;
+    if (!pkt.p) return fail(err, "out of memory");
+    std::vector<bool> done(order.size(), false);
+    bool video_started = false;
+    int rc = 0;
+    TimestampReader reader{in, {}};
+    while (!cancelled(cancel) && (rc = reader.read(pkt.p)) >= 0) {
+        auto it = std::find(order.begin(), order.end(), pkt.p->stream_index);
+        if (it != order.end()) {
+            const auto idx = static_cast<size_t>(it - order.begin());
+            const auto tb = in->streams[*it]->time_base;
+            if (pkt.p->pts == AV_NOPTS_VALUE || pkt.p->dts == AV_NOPTS_VALUE) return fail(err, "missing packet timestamp");
+            bool keep = false;
+            if (idx == 0) {
+                if ((pkt.p->flags & AV_PKT_FLAG_KEY) && pkt.p->pts == w.anchor) video_started = true;
+                done[idx] = av_compare_ts(pkt.p->dts, tb, w.decode_end_us, AV_TIME_BASE_Q) >= 0;
+                keep = video_started && !done[idx];
+            } else {
+                const double lower = audio_window ? audio_window->first : seconds(w.anchor, w.tb);
+                const double upper = audio_window ? audio_window->second : seconds(w.anchor, w.tb) + w.extent;
+                done[idx] = seconds(pkt.p->pts, tb) >= upper;
+                keep = !done[idx] && (audio_window ? seconds(pkt.p->pts, tb) >= lower
+                    : av_compare_ts(pkt.p->pts, tb, w.anchor, w.tb) >= 0);
+            }
+            if (keep && !write_packet(pkt.p, tb, static_cast<int>(idx), w, offset_us, out, err)) return false;
+        }
+        av_packet_unref(pkt.p);
+        if (std::all_of(done.begin(), done.end(), [](bool v) { return v; })) break;
+    }
+    if (cancelled(cancel)) return fail(err, "save cancelled");
+    if (rc < 0 && rc != AVERROR_EOF) return fail(err, "input read failed");
+    return true;
+}
+bool same_layout(AVFormatContext* a, const std::vector<int>& ao, AVFormatContext* b, const std::vector<int>& bo) {
+    if (ao.size() != bo.size()) return false;
+    for (size_t i = 0; i < ao.size(); ++i) {
+        auto* x = a->streams[ao[i]]->codecpar; auto* y = b->streams[bo[i]]->codecpar;
+        if (x->codec_id != y->codec_id || x->width != y->width || x->height != y->height ||
+            x->sample_rate != y->sample_rate || av_channel_layout_compare(&x->ch_layout, &y->ch_layout) != 0 ||
+            x->extradata_size != y->extradata_size || (x->extradata_size && std::memcmp(x->extradata, y->extradata, x->extradata_size))) return false;
+    }
+    return true;
+}
 } // namespace
 
-bool trim_clip_lossless(const std::wstring& path,
-                        double start, double end,
-                        const std::wstring& out_path,
-                        std::string* err)
-{
-    if (start < 0.0 || end <= start) {
-        if (err) *err = "end must be after start";
-        return false;
-    }
-    FmtCtx in;
-    std::vector<int> order;
-    if (!open_input(path, &in, &order, err)) return false;
-    // Duration from the container we just opened — no second probe pass.
-    const double duration = (in.p->duration > 0)
-        ? static_cast<double>(in.p->duration) / AV_TIME_BASE : 0.0;
-    if (duration > 0.0 && start >= duration) {
-        if (err) *err = "start is past the end of the clip";
-        return false;
-    }
-    const double eff_end = (duration > 0.0 && end > duration) ? duration : end;
-
-    OutFmt out;
-    std::vector<AVStream*> dst;
-    if (!alloc_copy_output(out_path, in.p, order, &out, &dst, err)) return false;
-
-    const std::string out_utf = wcs_to_utf8(out_path);
-    if (!open_output(out.p, out_utf, err)) return false;
-    if (!remux_window(in.p, order, start, eff_end, 0.0, out.p, dst, err))
-        return false;
-    return finalize_output(out.p, err);
+bool trim_clip_lossless(const std::wstring& path, double start, double end, const std::wstring& out_path,
+                        std::string* err, TrimResult* result) {
+    if (result) *result = {};
+    if (!valid_range(start, end)) return fail(err, "invalid trim interval");
+    Input in; std::vector<int> order;
+    if (!open_input(path, in, order, err)) return false;
+    Window w;
+    if (!plan_window(in.p, order[0], start, end, w, err, nullptr)) return false;
+    Output out;
+    if (!alloc_output(out_path, in.p, order, out, err) || !header(out, out_path, err) ||
+        !copy_window(in.p, order, w, 0, out, err, nullptr) || !finish(out, err)) return false;
+    return retained_result(out_path, w.source_start, result, err, out.p);
 }
 
-bool trim_clip_reencode(const std::wstring& path,
-                        double start, double end,
-                        const std::wstring& out_path,
-                        std::string* err)
-{
-    if (start < 0.0 || end <= start) {
-        if (err) *err = "end must be after start";
-        return false;
-    }
-
-    FmtCtx in;
-    if (!open_input(path, &in, nullptr, err)) return false;
-    // Duration from the container we just opened — no second probe pass.
-    const double duration = (in.p->duration > 0)
-        ? static_cast<double>(in.p->duration) / AV_TIME_BASE : 0.0;
-    if (duration > 0.0 && start >= duration) {
-        if (err) *err = "start is past the end of the clip";
-        return false;
-    }
-    const double eff_end = (duration > 0.0 && end > duration) ? duration : end;
-
-    const int vidx = av_find_best_stream(in.p, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    const int aidx = av_find_best_stream(in.p, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
-    if (vidx < 0) { if (err) *err = "input has no video stream"; return false; }
-
-    AVStream* vs = in.p->streams[vidx];
-    const AVCodec* vdec = avcodec_find_decoder(vs->codecpar->codec_id);
-    if (!vdec) { if (err) *err = "no decoder for input video"; return false; }
-    CodecCtx vdec_ctx;
-    vdec_ctx.p = avcodec_alloc_context3(vdec);
-    if (!vdec_ctx.p || avcodec_parameters_to_context(vdec_ctx.p, vs->codecpar) < 0) {
-        if (err) *err = "could not open video decoder";
-        return false;
-    }
-    vdec_ctx.p->thread_count = 0; // offline decode: use all cores
-    if (avcodec_open2(vdec_ctx.p, vdec, nullptr) < 0) {
-        if (err) *err = "could not open video decoder";
-        return false;
-    }
-
-    // Encoder config mirrors the source: same dims (even-aligned), fps, bitrate.
-    const int out_w = (vs->codecpar->width + 1) & ~1;
-    const int out_h = (vs->codecpar->height + 1) & ~1;
-    int fps = 60;
-    if (vs->avg_frame_rate.num > 0 && vs->avg_frame_rate.den > 0)
-        fps = std::max(1, (vs->avg_frame_rate.num + vs->avg_frame_rate.den / 2)
-                          / vs->avg_frame_rate.den);
-    else if (vs->r_frame_rate.num > 0 && vs->r_frame_rate.den > 0)
-        fps = std::max(1, (vs->r_frame_rate.num + vs->r_frame_rate.den / 2)
-                          / vs->r_frame_rate.den);
-    int64_t bitrate = vs->codecpar->bit_rate;
-    if (bitrate <= 0) bitrate = 20'000'000;
-
-    std::vector<EncodedPacket> vpkt, apkt;
-    VideoEncoder venc;
-    // low_latency=false: offline encode keeps B-frames/frame-threading (better
-    // quality per bit than zerolatency) and lets the SW encoders use all cores.
-    if (!venc.open(
-            VideoEncoder::Config{out_w, out_h, fps, bitrate, 0, "bilinear", "", "",
-                                 /*low_latency=*/false},
-            [&](EncodedPacket ep) { vpkt.push_back(std::move(ep)); })) {
-        if (err) *err = "could not open video encoder";
-        return false;
-    }
-
-    AudioEncoder aenc;
-    CodecCtx adec_ctx;
-    bool have_audio = false;
-    if (aidx >= 0) {
-        AVStream* as = in.p->streams[aidx];
-        const AVCodec* adec = avcodec_find_decoder(as->codecpar->codec_id);
-        if (adec) {
-            adec_ctx.p = avcodec_alloc_context3(adec);
-            if (adec_ctx.p &&
-                avcodec_parameters_to_context(adec_ctx.p, as->codecpar) == 0) {
-                adec_ctx.p->thread_count = 0; // offline decode: all cores
-                if (avcodec_open2(adec_ctx.p, adec, nullptr) == 0)
-                    have_audio = aenc.open(
-                        AudioEncoder::Config{as->codecpar->sample_rate,
-                                             as->codecpar->ch_layout.nb_channels,
-                                             192'000, 1},
-                        [&](EncodedPacket ep) { apkt.push_back(std::move(ep)); });
-            }
-        }
-    }
-
-    // Decode [start, eff_end): seek to the keyframe at/before start; frames
-    // whose pts lands inside the window are re-encoded at CFR `fps` (frame
-    // counter as pts), so the trimmed span plays at the source speed.
-    const AVRational vtb = tb_of(vs);
-    const int64_t seek_ts = static_cast<int64_t>(start * vtb.den / vtb.num);
-    if (av_seek_frame(in.p, vidx, seek_ts, AVSEEK_FLAG_BACKWARD) < 0) {
-        if (err) *err = "could not seek to trim start";
-        return false;
-    }
-
-    SwrCtx swr;
-    Frame pcm;
-    pcm.p = av_frame_alloc();
-    Frame dec;
-    dec.p = av_frame_alloc();
-    if (!pcm.p || !dec.p) { if (err) *err = "out of memory"; return false; }
-
-    Packet pkt;
-    pkt.p = av_packet_alloc();
-    if (!pkt.p) { if (err) *err = "out of memory"; return false; }
-
-    // Convert one decoded audio frame to interleaved S16 and feed the encoder.
-    std::vector<uint8_t> audio_buf; // reused across frames
-    const auto encode_audio_frame = [&]() -> bool {
-        // Convert to interleaved S16 (push_pcm accepts it and resamples
-        // internally); decoder output is often planar.
-        if (!swr.p) {
-            AVChannelLayout src_chl{};
-            av_channel_layout_copy(&src_chl, &pcm.p->ch_layout);
-            swr_alloc_set_opts2(&swr.p,
-                &pcm.p->ch_layout, AV_SAMPLE_FMT_S16, pcm.p->sample_rate,
-                &src_chl,
-                static_cast<AVSampleFormat>(pcm.p->format),
-                pcm.p->sample_rate, 0, nullptr);
-            av_channel_layout_uninit(&src_chl);
-            if (!swr.p || swr_init(swr.p) < 0) {
-                if (err) *err = "could not init audio resampler";
-                return false;
-            }
-        }
-        const int out_samples = static_cast<int>(av_rescale_rnd(
-            swr_get_delay(swr.p, pcm.p->sample_rate) + pcm.p->nb_samples,
-            pcm.p->sample_rate, pcm.p->sample_rate, AV_ROUND_UP));
-        audio_buf.resize(static_cast<size_t>(out_samples) *
-                         2 * pcm.p->ch_layout.nb_channels);
-        uint8_t* out_data = audio_buf.data();
-        const int converted = swr_convert(swr.p, &out_data, out_samples,
-            const_cast<const uint8_t**>(pcm.p->data), pcm.p->nb_samples);
-        if (converted > 0)
-            aenc.push_pcm(audio_buf.data(),
-                          converted * 2 * pcm.p->ch_layout.nb_channels,
-                          pcm.p->sample_rate, pcm.p->ch_layout.nb_channels,
-                          16, false);
-        return true;
-    };
-
-    int64_t frames = 0;
+bool trim_clip_reencode(const std::wstring& path, double start, double end, const std::wstring& out_path,
+                        std::string* err, TrimResult* result) {
+    if (result) *result = {};
+    if (!valid_range(start, end)) return fail(err, "invalid trim interval");
+    Input in; std::vector<int> order;
+    if (!open_input(path, in, order, err)) return false;
+    auto* vs = in.p->streams[order[0]];
+    const char* name = vs->codecpar->codec_id == AV_CODEC_ID_H264 ? "libx264" :
+                       vs->codecpar->codec_id == AV_CODEC_ID_HEVC ? "libx265" :
+                       vs->codecpar->codec_id == AV_CODEC_ID_AV1 ? "libaom-av1" : nullptr;
+    const AVCodec* encoder = name ? avcodec_find_encoder_by_name(name) : nullptr;
+    const AVCodec* decoder = avcodec_find_decoder(vs->codecpar->codec_id);
+    if (!encoder || !decoder) return fail(err, "same-codec software fallback unavailable");
+    Codec dec, enc;
+    dec.p = avcodec_alloc_context3(decoder); enc.p = avcodec_alloc_context3(encoder);
+    if (!dec.p || !enc.p || avcodec_parameters_to_context(dec.p, vs->codecpar) < 0) return fail(err, "out of memory");
+    dec.p->thread_count = 2; dec.p->pkt_timebase = vs->time_base;
+    if (avcodec_open2(dec.p, decoder, nullptr) < 0) return fail(err, "could not open video decoder");
+    Output out;
+    if (!alloc_output(out_path, in.p, order, out, err)) return false;
+    enc.p->width = vs->codecpar->width; enc.p->height = vs->codecpar->height;
+    enc.p->pix_fmt = static_cast<AVPixelFormat>(vs->codecpar->format);
+    enc.p->time_base = vs->time_base; enc.p->framerate = vs->avg_frame_rate;
+    enc.p->sample_aspect_ratio = vs->sample_aspect_ratio;
+    enc.p->color_range = vs->codecpar->color_range; enc.p->colorspace = vs->codecpar->color_space;
+    enc.p->color_primaries = vs->codecpar->color_primaries; enc.p->color_trc = vs->codecpar->color_trc;
+    enc.p->bit_rate = vs->codecpar->bit_rate > 0 ? vs->codecpar->bit_rate : 20000000;
+    enc.p->thread_count = 2; enc.p->max_b_frames = 2; enc.p->gop_size = 120;
+    if (out.p->oformat->flags & AVFMT_GLOBALHEADER) enc.p->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    if (avcodec_open2(enc.p, encoder, nullptr) < 0) return fail(err, "same-codec encoder cannot preserve input format");
+    if (avcodec_parameters_from_context(out.p->streams[0]->codecpar, enc.p) < 0 || !header(out, out_path, err)) return false;
+    if (!seek(in.p, order[0], origin(in.p) + us(start), err)) return false;
+    Packet input, encoded; Frame frame;
+    if (!input.p || !encoded.p || !frame.p) return fail(err, "out of memory");
+    Window w; w.tb = vs->time_base;
     bool video_done = false;
-    while (!video_done && av_read_frame(in.p, pkt.p) >= 0) {
-        if (pkt.p->stream_index == vidx) {
-            const double sec = pkt.p->pts == AV_NOPTS_VALUE
-                ? 0.0 : pts_seconds(pkt.p->pts, vtb);
-            if (sec >= eff_end) { video_done = true; break; }
-            if (sec < start) { av_packet_unref(pkt.p); continue; }
-            if (avcodec_send_packet(vdec_ctx.p, pkt.p) >= 0) {
-                while (avcodec_receive_frame(vdec_ctx.p, dec.p) == 0) {
-                    // Decoder planes are shared with the encoder when they
-                    // already match its format/size — no YUV→BGRA→YUV
-                    // round-trip, no extra rounding loss.
-                    venc.push_frame(dec.p, frames++);
-                    av_frame_unref(dec.p);
-                }
-            }
-        } else if (aidx >= 0 && pkt.p->stream_index == aidx && have_audio) {
-            const AVRational atb = tb_of(in.p->streams[aidx]);
-            const double sec = pkt.p->pts == AV_NOPTS_VALUE
-                ? 0.0 : pts_seconds(pkt.p->pts, atb);
-            if (sec >= eff_end) { av_packet_unref(pkt.p); continue; }
-            // Drop pre-roll between the seeked keyframe and the trim start so
-            // audio and video enter the output window together.
-            if (sec < start) { av_packet_unref(pkt.p); continue; }
-            if (avcodec_send_packet(adec_ctx.p, pkt.p) >= 0) {
-                while (avcodec_receive_frame(adec_ctx.p, pcm.p) == 0) {
-                    if (!encode_audio_frame()) return false;
-                    av_frame_unref(pcm.p);
-                }
-            }
+    bool planning = true;
+    // A decoder-only planning pass finds actual frame boundaries. A second
+    // bounded-memory pass encodes video and copies all audio incrementally.
+    auto drain_encoder = [&]() {
+        int rc;
+        while ((rc = avcodec_receive_packet(enc.p, encoded.p)) >= 0) {
+            bool ok = write_packet(encoded.p, enc.p->time_base, 0, w, 0, out, err);
+            av_packet_unref(encoded.p);
+            if (!ok) return false;
         }
-        av_packet_unref(pkt.p);
-    }
-
-    // Drain the decoders' reorder queues so trailing frames (inputs with
-    // B-frames keep frames buffered at EOF) aren't truncated.
-    avcodec_send_packet(vdec_ctx.p, nullptr);
-    while (avcodec_receive_frame(vdec_ctx.p, dec.p) == 0) {
-        const double fsec = dec.p->pts == AV_NOPTS_VALUE
-            ? 0.0 : pts_seconds(dec.p->pts, vtb);
-        if (fsec < eff_end)
-            venc.push_frame(dec.p, frames++);
-        av_frame_unref(dec.p);
-    }
-    if (have_audio) {
-        const AVRational atb = tb_of(in.p->streams[aidx]);
-        avcodec_send_packet(adec_ctx.p, nullptr);
-        while (avcodec_receive_frame(adec_ctx.p, pcm.p) == 0) {
-            const double fsec = pcm.p->pts == AV_NOPTS_VALUE
-                ? 0.0 : pts_seconds(pcm.p->pts, atb);
-            if (fsec < eff_end && !encode_audio_frame()) return false;
-            av_frame_unref(pcm.p);
-        }
-    }
-
-    venc.flush();
-    if (have_audio) aenc.flush();
-
-    // Mux the re-encoded streams.
-    const std::string out_utf = wcs_to_utf8(out_path);
-    mux::StreamSet streams;
-    AVFormatContext* fmt = nullptr;
-    // Error paths free the raw context (not RAII) — close pb first, since
-    // avio_open may have succeeded while a later step failed.
-    const auto free_fmt = [](AVFormatContext* f) {
-        if (f) {
-            avio_closep(&f->pb);
-            avformat_free_context(f);
-        }
+        return rc == AVERROR(EAGAIN) || rc == AVERROR_EOF || fail(err, "video encode failed");
     };
-    const std::vector<AudioStreamParams> audio_params = have_audio
-        ? std::vector<AudioStreamParams>{aenc.stream_params()}
-        : std::vector<AudioStreamParams>{};
-    if (!mux::alloc_output(out_utf, muxer_for_path(out_path),
-                           venc.stream_params(), audio_params, &fmt, &streams))
-        return false;
-    if (!mux::open_file_and_write_header(fmt, out_utf, muxer_for_path(out_path))) {
-        free_fmt(fmt);
-        return false;
-    }
-    for (const auto& ep : vpkt) {
-        if (!mux::write_packet(fmt, streams.video, ep, 0, 0)) {
-            free_fmt(fmt);
-            return false;
+    auto drain_decoder = [&]() {
+        int rc;
+        while ((rc = avcodec_receive_frame(dec.p, frame.p)) >= 0) {
+            const int64_t pts = frame.p->best_effort_timestamp;
+            if (pts == AV_NOPTS_VALUE) return fail(err, "decoded frame has no timestamp");
+            const double t = seconds(pts, vs->time_base) - static_cast<double>(origin(in.p)) / AV_TIME_BASE;
+            if (t >= end) video_done = true;
+            if (t >= start && t < end) {
+                if (frame.p->format != enc.p->pix_fmt || frame.p->width != enc.p->width || frame.p->height != enc.p->height)
+                    return fail(err, "video format changed during trim");
+                if (w.anchor == AV_NOPTS_VALUE) { w.anchor = pts; w.source_start = t; }
+                frame.p->pts = pts; frame.p->pict_type = AV_PICTURE_TYPE_NONE;
+                const int64_t duration = frame.p->duration > 0 ? frame.p->duration :
+                    (vs->avg_frame_rate.num > 0 ? av_rescale_q(1, av_inv_q(vs->avg_frame_rate), vs->time_base) : 1);
+                w.extent = std::max(w.extent, seconds(pts - w.anchor + duration, vs->time_base));
+                if (!planning && (avcodec_send_frame(enc.p, frame.p) < 0 || !drain_encoder())) return fail(err, "video encode failed");
+            }
+            av_frame_unref(frame.p);
         }
+        return rc == AVERROR(EAGAIN) || rc == AVERROR_EOF || fail(err, "video decode failed");
+    };
+    int rc = 0;
+    while (!video_done && (rc = av_read_frame(in.p, input.p)) >= 0) {
+        if (input.p->size > kMaxPacketBytes) return fail(err, "packet exceeds trim limit");
+        // Feed ALL preroll packets. Only decoded, presentation-ordered frames
+        // are filtered, including frames emitted during decoder drain.
+        if (input.p->stream_index == order[0] &&
+            (avcodec_send_packet(dec.p, input.p) < 0 || !drain_decoder())) return fail(err, "video decode failed");
+        av_packet_unref(input.p);
     }
-    if (have_audio) {
-        for (const auto& ep : apkt) {
-            if (!mux::write_packet(fmt, streams.audio[1], ep, 0, 0)) {
-                free_fmt(fmt);
-                return false;
+    if (rc < 0 && rc != AVERROR_EOF) return fail(err, "input read failed");
+    if (avcodec_send_packet(dec.p, nullptr) < 0 || !drain_decoder()) return false;
+    if (w.anchor == AV_NOPTS_VALUE) return fail(err, "no video frames in trim window");
+    planning = false; video_done = false;
+    avcodec_flush_buffers(dec.p);
+    if (!seek(in.p, order[0], origin(in.p) + us(start), err)) return false;
+    std::vector<bool> done(order.size(), false);
+    while ((rc = av_read_frame(in.p, input.p)) >= 0) {
+        if (input.p->size > kMaxPacketBytes) return fail(err, "packet exceeds trim limit");
+        if (input.p->stream_index == order[0] && !video_done) {
+            if (avcodec_send_packet(dec.p, input.p) < 0 || !drain_decoder()) return fail(err, "video decode failed");
+            done[0] = video_done;
+        } else {
+            auto it = std::find(order.begin() + 1, order.end(), input.p->stream_index);
+            if (it != order.end()) {
+                const auto idx = static_cast<size_t>(it - order.begin());
+                const auto tb = in.p->streams[*it]->time_base;
+                if (input.p->pts == AV_NOPTS_VALUE) return fail(err, "audio packet has no timestamp");
+                const double t = seconds(input.p->pts, tb) - seconds(w.anchor, w.tb);
+                done[idx] = t >= w.extent;
+                if (t >= 0 && !done[idx] && !write_packet(input.p, tb, static_cast<int>(idx), w, 0, out, err)) return false;
             }
         }
+        av_packet_unref(input.p);
+        if (std::all_of(done.begin(), done.end(), [](bool v) { return v; })) break;
     }
-    if (!finalize_output(fmt, err)) {
-        free_fmt(fmt);
-        return false;
-    }
-    avformat_free_context(fmt);
-    return true;
+    if (rc < 0 && rc != AVERROR_EOF) return fail(err, "input read failed");
+    if (avcodec_send_packet(dec.p, nullptr) < 0 || !drain_decoder()) return false;
+    if (avcodec_send_frame(enc.p, nullptr) < 0 || !drain_encoder()) return false;
+    if (!finish(out, err)) return false;
+    return retained_result(out_path, w.source_start, result, err, out.p);
 }
 
-bool concat_clip_segments(const std::vector<ClipSegment>& segs,
-                          double start_seconds, double end_seconds,
-                          const std::wstring& out_path,
-                          std::string* err)
-{
-    if (segs.empty()) {
-        if (err) *err = "no segments to concatenate";
-        return false;
+bool concat_clip_segments(const std::vector<ClipSegment>& segs, double start, double end,
+                          const std::wstring& path, std::string* err, TrimResult* result,
+                          const std::atomic<bool>* cancel) {
+    if (result) *result = {};
+    if (!std::isfinite(start) || !std::isfinite(end) || start <= -1e9 || end >= 1e9 || end <= start || segs.empty() || segs.size() > 4096) return fail(err, "invalid segment window");
+    Input first; std::vector<int> first_order; Output out;
+    bool opened = false; double global_anchor = 0;
+    for (const auto& seg : segs) {
+        if (seg.end_seconds <= start || seg.start_seconds >= end) continue;
+        if (cancelled(cancel)) return fail(err, "save cancelled");
+        Input in; std::vector<int> order;
+        if (!open_input(seg.path, in, order, err, cancel)) return false;
+        const double local_start = std::max(0.0, start - seg.start_seconds) + seg.file_origin_seconds;
+        const double local_end = std::min(end, seg.end_seconds) - seg.start_seconds + seg.file_origin_seconds;
+        Window w;
+        if (!plan_window(in.p, order[0], local_start, local_end, w, err, cancel)) return false;
+        const double actual_start = seg.start_seconds + w.source_start - seg.file_origin_seconds;
+        const bool first_segment = !opened;
+        if (!opened) {
+            if (!open_input(seg.path, first, first_order, err, cancel) ||
+                !alloc_output(path, in.p, order, out, err, cancel) || !header(out, path, err)) return false;
+            opened = true; global_anchor = actual_start;
+        } else if (!same_layout(first.p, first_order, in.p, order)) return fail(err, "segments have incompatible stream parameters");
+        const double offset = actual_start - global_anchor;
+        // Segment ownership changes at video DTS, not its delayed presentation
+        // timestamp. Applying each key's PTS as a fresh audio trim drops AAC at
+        // every B-frame GOP boundary. Only the outer start uses the retained
+        // presentation anchor; internal audio uses the common source timeline.
+        const double local_origin = static_cast<double>(origin(in.p)) / AV_TIME_BASE;
+        const double audio_start = first_segment ? seconds(w.anchor, w.tb)
+            : seg.file_origin_seconds + local_origin;
+        const double audio_end = seg.end_seconds < end
+            ? seg.end_seconds - seg.start_seconds + seg.file_origin_seconds + local_origin
+            : seconds(w.anchor, w.tb) + w.extent;
+        if (!copy_window(in.p, order, w, us(offset), out, err, cancel,
+                         std::pair{audio_start, audio_end})) return false;
+
     }
-    if (start_seconds < 0.0 || end_seconds <= start_seconds) {
-        if (err) *err = "end must be after start";
-        return false;
-    }
-
-    // Layout comes from the first segment that actually overlaps the window.
-    size_t first = 0;
-    while (first < segs.size() && segs[first].end_seconds <= start_seconds) ++first;
-    if (first >= segs.size()) {
-        if (err) *err = "trim range is outside the recorded buffer";
-        return false;
-    }
-
-    FmtCtx probe;
-    std::vector<int> order;
-    if (!open_input(segs[first].path, &probe, &order, err)) return false;
-
-    const std::string out_utf = wcs_to_utf8(out_path);
-    OutFmt out;
-    std::vector<AVStream*> dst;
-    if (!alloc_copy_output(out_path, probe.p, order, &out, &dst, err)) return false;
-    if (!open_output(out.p, out_utf, err)) return false;
-
-    double acc_sec = 0.0;
-    for (size_t k = first; k < segs.size(); ++k) {
-        const auto& seg = segs[k];
-        const double local_start = std::max(0.0, start_seconds - seg.start_seconds);
-        const double local_end   = std::min(seg.end_seconds - seg.start_seconds,
-                                            end_seconds - seg.start_seconds);
-        if (local_end <= local_start) break; // past the end window
-
-        FmtCtx in;
-        std::vector<int> in_order;
-        if (!open_input(seg.path, &in, &in_order, err)) return false;
-        if (in_order.size() != order.size()) {
-            if (err) *err = "segments have inconsistent streams";
-            return false;
-        }
-        // Every segment is produced by the same buffer with the same stream
-        // layout (video first, then audio in order), so in_order[i] maps onto
-        // dst[i] directly.
-        if (!remux_window(in.p, in_order, local_start, local_end, acc_sec,
-                          out.p, dst, err))
-            return false;
-        acc_sec += (local_end - local_start);
-    }
-
-    return finalize_output(out.p, err);
+    if (!opened) return fail(err, "no segments in window");
+    if (!finish(out, err)) return false;
+    return retained_result(path, global_anchor, result, err, out.p, cancel);
 }
-
 } // namespace encoding

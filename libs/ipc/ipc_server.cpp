@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "ipc_server.h"
+#include "ipc_limits.h"
 
 #include <nlohmann/json.hpp>
 
@@ -17,7 +18,10 @@
 #include <cctype>
 #include <functional>
 #include <mutex>
+#include <memory>
+#include <chrono>
 #include <string>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -29,9 +33,7 @@ static constexpr UINT kCmdPauseResume    = 1004;
 // Matches WM_SETTINGS_RELOAD (WM_APP + 2) in main.cpp — kept in sync manually.
 static constexpr UINT kMsgSettingsReload = WM_APP + 2;
 
-// Reasonable ceiling for briefly-overlapping connections (UI + Stream Deck
-// plugin, plus a reconnect race); this is a local-only loopback service, not
-// internet-facing, so there is no need for anything larger.
+// Pending accept queue only; kMaxClients separately caps accepted workers.
 static constexpr int kListenBacklog = 8;
 
 namespace ipc {
@@ -47,21 +49,41 @@ AddBookmarkFn                   g_add_bookmark_fn;
 UpdateCloseUiFn                 g_update_close_ui_fn;
 std::thread                     g_accept_thread;
 
-std::mutex               g_clients_mutex;
-std::vector<SOCKET>      g_client_sockets;
-std::vector<std::thread> g_client_threads;
+// start/stop are serialized; the accept thread exclusively owns the worker
+// vector until joined. Socket shutdown/close share a lock to prevent handle reuse.
+std::mutex g_lifecycle_mutex;
+std::mutex g_clients_mutex;
+struct Client {
+    SOCKET socket = INVALID_SOCKET;
+    std::atomic<bool> done{false};
+    std::thread thread;
+};
+std::vector<std::unique_ptr<Client>> g_clients;
 
-void track_client(SOCKET s)
+int wait_socket(SOCKET socket, bool writing)
 {
-    std::lock_guard<std::mutex> lk(g_clients_mutex);
-    g_client_sockets.push_back(s);
+    fd_set ready;
+    FD_ZERO(&ready);
+    FD_SET(socket, &ready);
+    timeval timeout{0, detail::kPollMicroseconds};
+    return select(0, writing ? nullptr : &ready, writing ? &ready : nullptr, nullptr, &timeout);
 }
 
-void untrack_client(SOCKET s)
+bool send_response(SOCKET client, const std::string& response)
 {
-    std::lock_guard<std::mutex> lk(g_clients_mutex);
-    auto it = std::find(g_client_sockets.begin(), g_client_sockets.end(), s);
-    if (it != g_client_sockets.end()) g_client_sockets.erase(it);
+    const auto deadline = std::chrono::steady_clock::now() + detail::kSendTimeout;
+    return detail::send_all(response, [&](const char* data, size_t size) {
+        while (g_running && std::chrono::steady_clock::now() < deadline) {
+            const int ready = wait_socket(client, true);
+            if (ready < 0) return -1;
+            if (ready == 0) continue;
+            if (std::chrono::steady_clock::now() >= deadline) return -1;
+            const int n = send(client, data, static_cast<int>(std::min(size, size_t{65536})), 0);
+            if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) continue;
+            return n;
+        }
+        return -1;
+    });
 }
 
 std::string make_result(int id, const nlohmann::json& result)
@@ -86,18 +108,31 @@ std::string make_error(int id, int code, const char* msg)
 void handle_client(SOCKET client)
 {
     std::string buf;
-    char        tmp[4096];
+    char tmp[4096];
+    auto partial_started = std::chrono::steady_clock::now();
 
     while (g_running) {
-        int n = recv(client, tmp, static_cast<int>(sizeof(tmp)) - 1, 0);
-        if (n <= 0) break;
-        tmp[n] = '\0';
-        buf += tmp;
-
-        std::size_t nl;
-        while ((nl = buf.find('\n')) != std::string::npos) {
-            std::string line = buf.substr(0, nl);
-            buf.erase(0, nl + 1);
+        if (!buf.empty() && std::chrono::steady_clock::now() - partial_started >=
+            detail::kPartialRequestTimeout) return;
+        const int ready = wait_socket(client, false);
+        if (ready < 0) return;
+        if (ready == 0) continue;
+        if (!buf.empty() && std::chrono::steady_clock::now() - partial_started >=
+            detail::kPartialRequestTimeout) return;
+        const int n = recv(client, tmp, static_cast<int>(sizeof(tmp)), 0);
+        if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) continue;
+        if (n <= 0) return;
+        // Process bytes by explicit length: embedded NUL is invalid JSON, not
+        // a C-string terminator. Never accumulate an unbounded pipelined batch.
+        for (int i = 0; i < n && g_running; ++i) {
+            if (tmp[i] != '\n') {
+                if (buf.size() == detail::kMaxRequestBytes) return;
+                if (buf.empty()) partial_started = std::chrono::steady_clock::now();
+                buf.push_back(tmp[i]);
+                continue;
+            }
+            std::string line;
+            line.swap(buf);
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
 
@@ -105,7 +140,12 @@ void handle_client(SOCKET client)
             std::string response;
 
             try {
-                auto        req    = nlohmann::json::parse(line);
+                if (line.find('\0') != std::string::npos) throw std::invalid_argument("NUL in JSON");
+                auto req = nlohmann::json::parse(line, [](int depth, nlohmann::json::parse_event_t,
+                                                          nlohmann::json&) {
+                    if (depth > detail::kMaxJsonDepth) throw std::length_error("JSON nesting limit");
+                    return true;
+                });
                 req_id             = req.value("id", -1);
                 std::string method = req.value("method", "");
 
@@ -242,32 +282,61 @@ void handle_client(SOCKET client)
                 response = make_error(req_id, -32700, "Parse error");
             }
 
-            if (!response.empty()) {
-                send(client,
-                     response.c_str(),
-                     static_cast<int>(response.size()),
-                     0);
-            }
+            if (!response.empty() && !send_response(client, response)) return;
         }
     }
-
-    untrack_client(client);
-    closesocket(client);
 }
 
-void accept_loop()
+void accept_loop(SOCKET server)
 {
     while (g_running) {
-        SOCKET client = accept(g_server_socket, nullptr, nullptr);
-        if (client == INVALID_SOCKET) break; // closed by stop()
-        track_client(client);
-
-        std::lock_guard<std::mutex> lk(g_clients_mutex);
-        // One thread per accepted connection: this is a low-traffic local
-        // control-plane server (UI + Stream Deck plugin, at most a couple of
-        // clients), so per-connection threads are simpler than an event loop
-        // and are sufficient for this volume.
-        g_client_threads.emplace_back(handle_client, client);
+        // Poll even without new connections so the last completed worker is
+        // reclaimed promptly, not merely at the next accept or at shutdown.
+        for (auto it = g_clients.begin(); it != g_clients.end();) {
+            if ((*it)->done.load()) {
+                (*it)->thread.join();
+                it = g_clients.erase(it);
+            } else ++it;
+        }
+        const int ready = wait_socket(server, false);
+        if (ready < 0) break;
+        if (ready == 0) continue;
+        SOCKET socket = accept(server, nullptr, nullptr);
+        if (socket == INVALID_SOCKET) continue;
+        if (!g_running || g_clients.size() >= detail::kMaxClients) {
+            closesocket(socket);
+            continue;
+        }
+        u_long nonblocking = 1;
+        if (ioctlsocket(socket, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+            closesocket(socket);
+            continue;
+        }
+        // All allocating setup can fail; no unowned socket or joinable thread
+        // may escape. The vector owns Client before the worker can access it.
+        try {
+            auto client = std::make_unique<Client>();
+            client->socket = socket;
+            g_clients.push_back(std::move(client));
+        } catch (...) {
+            closesocket(socket);
+            continue;
+        }
+        Client* client = g_clients.back().get();
+        try {
+            client->thread = std::thread([client, socket] {
+                try { handle_client(socket); } catch (...) { /* close below */ }
+                {
+                    std::lock_guard lk(g_clients_mutex);
+                    closesocket(client->socket);
+                    client->socket = INVALID_SOCKET;
+                }
+                client->done.store(true);
+            });
+        } catch (...) {
+            closesocket(socket);
+            g_clients.pop_back();
+        }
     }
 }
 
@@ -280,6 +349,8 @@ void start(HWND hwnd,
            AddBookmarkFn add_bookmark_fn,
            UpdateCloseUiFn update_close_ui_fn)
 {
+    std::lock_guard lifecycle(g_lifecycle_mutex);
+    if (g_accept_thread.joinable()) return;
     g_hwnd                 = hwnd;
     g_status_fn            = std::move(status_fn);
     g_mutation_fn          = std::move(mutation_fn);
@@ -313,35 +384,40 @@ void start(HWND hwnd,
         return;
     }
 
+    u_long nonblocking = 1;
+    if (ioctlsocket(g_server_socket, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+        closesocket(g_server_socket);
+        g_server_socket = INVALID_SOCKET;
+        WSACleanup();
+        return;
+    }
     g_running = true;
-    g_accept_thread = std::thread(accept_loop);
+    try {
+        g_accept_thread = std::thread(accept_loop, g_server_socket);
+    } catch (...) {
+        g_running = false;
+        closesocket(g_server_socket);
+        g_server_socket = INVALID_SOCKET;
+        WSACleanup();
+    }
 }
 
 void stop()
 {
+    std::lock_guard lifecycle(g_lifecycle_mutex);
+    if (!g_accept_thread.joinable()) return;
     g_running = false;
-    if (g_server_socket != INVALID_SOCKET) {
-        shutdown(g_server_socket, SD_BOTH);
-        closesocket(g_server_socket);
-        g_server_socket = INVALID_SOCKET;
-    }
-    // Unblock every handle_client()'s recv() so each client thread (and the
-    // accept thread, via the closed listen socket above) can return.
+    // Nonblocking accept + bounded select: no close/reuse race on the listener.
+    g_accept_thread.join();
+    closesocket(g_server_socket);
+    g_server_socket = INVALID_SOCKET;
     {
-        std::lock_guard<std::mutex> lk(g_clients_mutex);
-        for (SOCKET s : g_client_sockets)
-            shutdown(s, SD_BOTH);
+        std::lock_guard lk(g_clients_mutex);
+        for (const auto& client : g_clients)
+            if (client->socket != INVALID_SOCKET) shutdown(client->socket, SD_BOTH);
     }
-    if (g_accept_thread.joinable()) g_accept_thread.join();
-
-    std::vector<std::thread> threads;
-    {
-        std::lock_guard<std::mutex> lk(g_clients_mutex);
-        threads.swap(g_client_threads);
-    }
-    for (auto& t : threads)
-        if (t.joinable()) t.join();
-
+    for (auto& client : g_clients) client->thread.join();
+    g_clients.clear();
     WSACleanup();
 }
 

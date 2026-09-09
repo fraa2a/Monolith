@@ -9,6 +9,7 @@
     "duration_seconds": 30,
     "save_container": "mkv",
     "storage": "ram",
+    "disk_budget_mb": 2048,
     "enabled": true
   },
   "recording": {

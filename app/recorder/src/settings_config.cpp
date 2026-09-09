@@ -1,4 +1,5 @@
 #include "settings_config.h"
+#include "replay_disk_settings.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -331,6 +332,7 @@ void write_runtime_fields(json& doc, const Config& config)
     doc["replay_buffer"]["duration_seconds"] = config.replay_duration_seconds;
     doc["replay_buffer"]["save_container"] = config.replay_clip_container;
     doc["replay_buffer"]["storage"] = config.replay_buffer_storage;
+    doc["replay_buffer"]["disk_budget_mb"] = disk_segments::validated_disk_budget_mb(config.replay_disk_budget_mb);
     // memory_budget_mb is fixed internally (512 MB); scrub any stale key.
     if (doc.contains("replay_buffer") && doc["replay_buffer"].is_object())
         doc["replay_buffer"].erase("memory_budget_mb");
@@ -418,6 +420,8 @@ Config config_from_json(
     config.replay_buffer_storage = utf8_at(doc, "replay_buffer", "storage", "ram");
     if (config.replay_buffer_storage != "ram" && config.replay_buffer_storage != "disk")
         config.replay_buffer_storage = "ram";
+
+    config.replay_disk_budget_mb = replay_disk_budget_mb_from_json(doc);
 
     config.recording_container = utf8_at(doc, "recording", "container", "mkv");
     if (config.recording_container != "mkv" && config.recording_container != "mp4")

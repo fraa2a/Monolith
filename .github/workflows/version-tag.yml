@@ -162,8 +162,6 @@ jobs:
             "build/app/recorder/Release/Monolith.exe",
             "build/app/recorder/Release/ui/Monolith.UI.exe",
             "build/app/recorder/Release/Updater.exe",
-            "build/app/recorder/Release/sqlite3.dll",
-            "build/app/recorder/Release/aom.dll",
             "plugins/stream-deck/dist/Monolith-StreamDeck-${{ steps.version.outputs.version }}.streamDeckPlugin"
           )) {
             if (-not (Test-Path $f)) {
@@ -172,13 +170,9 @@ jobs:
             }
           }
 
-          $runtimeDlls = Get-ChildItem "build/app/recorder/Release/*.dll" -File
-          if (-not $runtimeDlls) {
-            Write-Error "No native runtime DLLs found beside Monolith.exe"
-            exit 1
-          }
-          Write-Host "Runtime DLLs that will be packaged:"
-          $runtimeDlls.Name | Sort-Object | ForEach-Object { Write-Host "  $_" }
+          ./scripts/verify-runtime-dlls.ps1 `
+            -RuntimeDir "build/app/recorder/Release" `
+            -VcpkgBinDir "build/vcpkg_installed/x64-windows/bin"
 
       - name: Install Inno Setup
         shell: pwsh
@@ -257,6 +251,9 @@ jobs:
           Copy-Item "$rel/Monolith.exe" $eng
           Copy-Item "$rel/*.dll" $eng
           Copy-Item "config/default-config.json" "$eng/config/"
+          ./scripts/verify-runtime-dlls.ps1 `
+            -RuntimeDir $eng `
+            -VcpkgBinDir "build/vcpkg_installed/x64-windows/bin"
           Compress-Archive -Path "$eng/*" -DestinationPath "monolith-engine-${{ steps.compvars.outputs.engine }}.zip"
 
           # ui: the whole ui\ subtree.

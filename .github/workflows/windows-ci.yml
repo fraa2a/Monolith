@@ -148,9 +148,7 @@ jobs:
           foreach ($f in @(
             "build/app/recorder/Release/Monolith.exe",
             "build/app/recorder/Release/ui/Monolith.UI.exe",
-            "build/app/recorder/Release/Updater.exe",
-            "build/app/recorder/Release/sqlite3.dll",
-            "build/app/recorder/Release/aom.dll"
+            "build/app/recorder/Release/Updater.exe"
           )) {
             if (-not (Test-Path $f)) {
               Write-Error "Build output not found: $f"
@@ -158,13 +156,9 @@ jobs:
             }
           }
 
-          $runtimeDlls = Get-ChildItem "build/app/recorder/Release/*.dll" -File
-          if (-not $runtimeDlls) {
-            Write-Error "No native runtime DLLs found beside Monolith.exe"
-            exit 1
-          }
-          Write-Host "Native runtime DLLs:"
-          $runtimeDlls.Name | Sort-Object | ForEach-Object { Write-Host "  $_" }
+          ./scripts/verify-runtime-dlls.ps1 `
+            -RuntimeDir "build/app/recorder/Release" `
+            -VcpkgBinDir "build/vcpkg_installed/x64-windows/bin"
 
           $plugin = Get-ChildItem "plugins/stream-deck/dist/*.streamDeckPlugin" -ErrorAction SilentlyContinue
           if (-not $plugin) {

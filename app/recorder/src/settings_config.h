@@ -42,6 +42,7 @@ struct Config {
     std::wstring clips_directory;
     std::wstring recordings_directory;
     std::wstring temp_directory;      // managed internally; not user-configurable
+    int replay_disk_budget_mb = 2048; // persisted replay_buffer.disk_budget_mb; UI control deferred to phase 5
     int replay_duration_seconds = 30; // presets 15/30/60/120, or custom 5–600
     std::string replay_clip_container = "mkv"; // "mkv" | "mp4"
     std::string replay_buffer_storage = "ram"; // "ram" (memory) | "disk" (segments on disk)

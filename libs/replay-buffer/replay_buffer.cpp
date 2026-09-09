@@ -1,4 +1,5 @@
 #include "replay_buffer.h"
+#include "packet_ring.h"
 
 #include <disk-segments/disk_segments.h>
 #include <encoding/mux_common.h>
@@ -23,6 +24,7 @@ extern "C" {
 #include <atomic>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -33,15 +35,8 @@ namespace mux = encoding::mux;
 
 // ── Impl ──────────────────────────────────────────────────────────────────────
 
-struct ReplayBuffer::Impl {
+struct ReplayBuffer::Impl : detail::PacketRing {
     mutable std::mutex              mutex;
-    std::deque<encoding::EncodedPacket> ring;
-
-    // Tracked buffer state (OBS-style).
-    size_t                          total_bytes = 0;
-    int64_t                         cur_time    = 0;  // dts_usec of oldest pkt
-    int                             keyframes   = 0;  // KF count in ring
-
     Config                          cfg;
     encoding::VideoStreamParams     vsp;
     std::vector<encoding::AudioStreamParams> audio_params;
@@ -54,44 +49,6 @@ struct ReplayBuffer::Impl {
 
     std::atomic<bool>               saving{false};
     std::thread                     save_thread;
-
-    bool can_purge() const
-    {
-        return ring.size() >= 2 && keyframes > 2;
-    }
-
-    bool pop_front_packet()
-    {
-        if (ring.empty()) return false;
-
-        encoding::EncodedPacket pkt = std::move(ring.front());
-        ring.pop_front();
-
-        const size_t pkt_size = pkt.size();
-        total_bytes = (pkt_size <= total_bytes) ? (total_bytes - pkt_size) : 0;
-
-        const bool was_video_keyframe = pkt.stream_index == 0 && pkt.is_keyframe;
-        if (was_video_keyframe && keyframes > 0)
-            keyframes--;
-
-        cur_time = ring.empty() ? 0 : ring.front().dts_usec;
-        return was_video_keyframe;
-    }
-
-    void purge_one_gop()
-    {
-        if (!can_purge()) return;
-
-        const bool removed_keyframe = pop_front_packet();
-        if (!removed_keyframe) return;
-
-        while (!ring.empty() && can_purge()) {
-            const auto& front = ring.front();
-            if (front.stream_index == 0 && front.is_keyframe)
-                break;
-            pop_front_packet();
-        }
-    }
 };
 
 // ── ReplayBuffer ──────────────────────────────────────────────────────────────
@@ -108,16 +65,14 @@ void ReplayBuffer::configure(Config const& cfg)
 {
     std::lock_guard lk(impl_->mutex);
     impl_->cfg = cfg;
+    impl_->configure_limits(cfg.memory_cap_mb, cfg.duration_sec);
     const bool want_disk = (cfg.storage == "disk");
     if (want_disk && !impl_->disk) {
         // Switching ram → disk: drop the ring, spin up the segment buffer.
-        impl_->ring.clear();
-        impl_->total_bytes = 0;
-        impl_->cur_time    = 0;
-        impl_->keyframes   = 0;
+        impl_->clear_ring();
         impl_->disk = std::make_unique<disk_segments::DiskSegmentBuffer>();
         impl_->disk->configure(disk_segments::DiskSegmentBuffer::Config{
-            cfg.duration_sec, cfg.segment_dir, cfg.container });
+            cfg.duration_sec, cfg.segment_dir, cfg.container, cfg.disk_budget_mb });
         // Forward already-known stream params (settings reload path).
         if (impl_->vsp_set) impl_->disk->set_video_params(impl_->vsp);
         if (!impl_->audio_params.empty()) impl_->disk->set_audio_params(impl_->audio_params);
@@ -127,7 +82,7 @@ void ReplayBuffer::configure(Config const& cfg)
         impl_->disk.reset();
     } else if (want_disk && impl_->disk) {
         impl_->disk->configure(disk_segments::DiskSegmentBuffer::Config{
-            cfg.duration_sec, cfg.segment_dir, cfg.container });
+            cfg.duration_sec, cfg.segment_dir, cfg.container, cfg.disk_budget_mb });
     }
 }
 
@@ -135,10 +90,7 @@ void ReplayBuffer::clear()
 {
     std::lock_guard lk(impl_->mutex);
     if (impl_->disk) { impl_->disk->clear(); return; }
-    impl_->ring.clear();
-    impl_->total_bytes = 0;
-    impl_->cur_time    = 0;
-    impl_->keyframes   = 0;
+    impl_->clear_ring();
 }
 
 void ReplayBuffer::set_video_params(encoding::VideoStreamParams const& p)
@@ -166,7 +118,7 @@ void ReplayBuffer::set_audio_params(std::vector<encoding::AudioStreamParams> con
     if (impl_->disk) impl_->disk->set_audio_params(impl_->audio_params);
 }
 
-// ── OBS-style purge: before push, maintain memory + time caps with ≥2 KF ─────
+// Hard RAM retention limits are independent of keyframe availability.
 
 void ReplayBuffer::push(encoding::EncodedPacket pkt)
 {
@@ -176,28 +128,14 @@ void ReplayBuffer::push(encoding::EncodedPacket pkt)
         return;
     }
 
-    const size_t max_bytes = static_cast<size_t>(impl_->cfg.memory_cap_mb) * 1024 * 1024;
-    const int64_t max_time = static_cast<int64_t>(impl_->cfg.duration_sec) * 1000000;
-
-    while (impl_->can_purge() && impl_->total_bytes + pkt.size() > max_bytes)
-        impl_->purge_one_gop();
-
-    while (impl_->can_purge() && !impl_->ring.empty() &&
-           pkt.dts_usec - impl_->cur_time > max_time)
-        impl_->purge_one_gop();
-
-    if (pkt.stream_index == 0 && pkt.is_keyframe)
-        impl_->keyframes++;
-    if (impl_->ring.empty())
-        impl_->cur_time = pkt.dts_usec;
-    impl_->total_bytes += pkt.size();
-    impl_->ring.push_back(std::move(pkt));
+    impl_->push_packet(std::move(pkt));
 }
 
 size_t ReplayBuffer::packet_count() const
 {
     std::lock_guard lk(impl_->mutex);
     if (impl_->disk) return impl_->disk->stats().segment_count;
+    impl_->trim();
     return impl_->ring.size();
 }
 
@@ -205,6 +143,7 @@ size_t ReplayBuffer::memory_bytes() const
 {
     std::lock_guard lk(impl_->mutex);
     if (impl_->disk) return static_cast<size_t>(impl_->disk->stats().disk_bytes);
+    impl_->trim();
     return impl_->total_bytes;
 }
 
@@ -215,54 +154,25 @@ ReplayBufferStats ReplayBuffer::stats() const
     if (impl_->disk) {
         const auto ds = impl_->disk->stats();
         s.packet_count  = ds.segment_count;
-        s.logical_bytes = static_cast<size_t>(ds.disk_bytes);
+        s.logical_bytes = static_cast<size_t>(ds.logical_bytes);
+        s.disk_dropped_packets = ds.dropped_packets;
+        s.disk_delete_failures = ds.delete_failures;
+        s.disk_pressure = ds.pressure;
         s.keyframes     = static_cast<int>(ds.segment_count);
         s.saving        = ds.saving;
         return s;
     }
+    impl_->trim();
     s.packet_count = impl_->ring.size();
     s.logical_bytes = impl_->total_bytes;
     s.keyframes = impl_->keyframes;
-    s.oldest_dts_usec = impl_->ring.empty() ? 0 : impl_->ring.front().dts_usec;
-    s.newest_dts_usec = impl_->ring.empty() ? 0 : impl_->ring.back().dts_usec;
+    s.oldest_dts_usec = impl_->oldest_dts();
+    s.newest_dts_usec = impl_->newest_dts();
     s.saving = impl_->saving.load();
     return s;
 }
 
 // ── Clip save internals ───────────────────────────────────────────────────────
-
-// OBS-style: walk forward from ring start, track the last video keyframe
-// seen, stop when dts_usec >= cutoff (newest - duration_sec), and return
-// that keyframe index.  If no keyframe exists before cutoff, return the
-// first keyframe in the ring (or ring.size() if the ring is empty).
-static size_t find_clip_start(
-    const std::deque<encoding::EncodedPacket>& ring,
-    int duration_sec)
-{
-    if (ring.empty()) return ring.size();
-
-    int64_t cutoff = ring.back().dts_usec
-                   - static_cast<int64_t>(duration_sec) * 1000000;
-
-    size_t best = ring.size(); // last KF encountered
-    for (size_t i = 0; i < ring.size(); ++i) {
-        const auto& p = ring[i];
-        if (p.stream_index == 0 && p.is_keyframe)
-            best = i;
-        if (p.dts_usec >= cutoff)
-            break;
-    }
-
-    // Fallback: no KF at or before cutoff → use first KF in ring.
-    if (best == ring.size()) {
-        for (size_t i = 0; i < ring.size(); ++i) {
-            if (ring[i].stream_index == 0 && ring[i].is_keyframe)
-                return i;
-        }
-    }
-
-    return best;
-}
 
 static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec,
                                        const std::string& container)
@@ -308,18 +218,10 @@ static std::wstring write_clip(
         return {};
     }
 
-    // ── Compute PTS/DTS offsets so the clip starts at 0 ──────────────────────
-    // One-shot snapshot mode: each stream's anchor is just the first packet
-    // seen for it in this already-sorted batch (no pause tracking needed).
-    std::array<mux::TimingAnchor, 7> anchors{};
-    for (const auto& ep : pkts) {
-        if (ep.stream_index == 0) {
-            anchors[0].observe(ep.pts, ep.dts);
-        } else if (ep.stream_index >= 1 && ep.stream_index <= 6 &&
-                   audio_streams[ep.stream_index]) {
-            anchors[ep.stream_index].observe(ep.pts, ep.dts);
-        }
-    }
+    // One presentation origin for every stream, preserving A/V offsets and
+    // video composition delay. The snapshot starts at a video key in DTS order.
+    const auto& key = pkts.front();
+    const AVRational anchor_tb{key.tb_num, key.tb_den};
 
     // ── Write packets (already in DTS order) ─────────────────────────────────
     for (const auto& ep : pkts) {
@@ -330,13 +232,24 @@ static std::wstring write_clip(
             dst_stream = audio_streams[ep.stream_index];
         if (!dst_stream) continue;
 
-        const mux::TimingAnchor& anchor = anchors[ep.stream_index];
-        mux::write_packet(fmt, dst_stream, ep, anchor.pts, anchor.dts);
+        const int64_t anchor = av_rescale_q(key.pts, anchor_tb, AVRational{ep.tb_num, ep.tb_den});
+        if (!mux::write_packet(fmt, dst_stream, ep, anchor, anchor)) {
+            avio_closep(&fmt->pb);
+            avformat_free_context(fmt);
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            return {};
+        }
     }
 
-    av_write_trailer(fmt);
-    avio_closep(&fmt->pb);
+    const bool finalized = av_write_trailer(fmt) >= 0;
+    const bool closed = avio_closep(&fmt->pb) >= 0;
     avformat_free_context(fmt);
+    if (!finalized || !closed) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        return {};
+    }
     return path;
 }
 
@@ -386,12 +299,8 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
         audio_params = impl_->audio_params;
         vsp_set = impl_->vsp_set;
 
-        size_t start = find_clip_start(impl_->ring, impl_->cfg.duration_sec);
-        if (start < impl_->ring.size()) {
-            snapshot.reserve(impl_->ring.size() - start);
-            for (size_t i = start; i < impl_->ring.size(); ++i)
-                snapshot.push_back(impl_->ring[i]);
-        }
+        impl_->trim();
+        snapshot = impl_->snapshot(impl_->cfg.duration_sec);
     }
 
     if (impl_->save_thread.joinable())

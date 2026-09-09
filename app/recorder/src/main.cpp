@@ -730,6 +730,7 @@ static void apply_runtime_settings()
     // keyframe-aligned segments under the temp dir (see disk-segments lib).
     rbcfg.storage       = g_settings.replay_buffer_storage;
     rbcfg.segment_dir   = g_settings.temp_directory;
+    rbcfg.disk_budget_mb = g_settings.replay_disk_budget_mb;
     g_replay.configure(rbcfg);
 
     g_recordings_dir = g_settings.recordings_directory;
@@ -975,9 +976,10 @@ static std::string trim_clip(storage::ClipDb* db,
     if (stem.empty()) stem = L"clip";
     const std::wstring tmp_path = folder + L"\\" + stem + L".trimming" + ext;
 
-    bool ok = encoding::trim_clip_lossless(video_path, start, eff_end, tmp_path, &err);
+    encoding::TrimResult retained;
+    bool ok = encoding::trim_clip_lossless(video_path, start, eff_end, tmp_path, &err, &retained);
     if (!ok)
-        ok = encoding::trim_clip_reencode(video_path, start, eff_end, tmp_path, &err);
+        ok = encoding::trim_clip_reencode(video_path, start, eff_end, tmp_path, &err, &retained);
     if (!ok) {
         std::error_code ec;
         std::filesystem::remove(tmp_path, ec);
@@ -993,20 +995,21 @@ static std::string trim_clip(storage::ClipDb* db,
         return "trim failed: could not replace clip file";
     }
 
-    const double new_duration = eff_end - start;
+    const double new_duration = retained.duration_seconds;
     if (!db->set_duration(id, new_duration, &err))
         return "trim succeeded but duration update failed: " + err;
 
-    // Retime bookmarks into the trimmed timeline; drop bookmarks outside it.
+    // Retime from the actual retained presentation anchor, not the requested
+    // non-keyframe cut. Filesystem/DB durability is phase 2B; report failures.
     std::vector<storage::ClipDb::BookmarkRow> bookmarks;
-    if (db->list_bookmarks(id, bookmarks, &err)) {
-        for (const auto& bm : bookmarks) {
-            if (bm.time_seconds >= start && bm.time_seconds <= eff_end) {
-                db->set_bookmark_time(id, bm.seq, bm.time_seconds - start, &err);
-            } else {
-                db->remove_bookmark(id, bm.seq, &err);
-            }
-        }
+    if (!db->list_bookmarks(id, bookmarks, &err))
+        return "trim succeeded but bookmark read failed: " + err;
+    for (const auto& bm : bookmarks) {
+        const auto shifted = retained.retime_bookmark(bm.time_seconds);
+        const bool updated = shifted
+            ? db->set_bookmark_time(id, bm.seq, *shifted, &err)
+            : db->remove_bookmark(id, bm.seq, &err);
+        if (!updated) return "trim succeeded but bookmark update failed: " + err;
     }
 
     // Thumbnail now shows the wrong frame; regenerate it (best effort) and
@@ -1032,6 +1035,8 @@ static std::string handle_clip_mutation(const ipc::ClipMutation& m)
         std::lock_guard lk(g_dirs_mutex);
         folder = (m.source == "manual") ? g_recs_dir_snapshot : g_clips_dir_snapshot;
     }
+    if (m.source != "replay" && m.source != "manual")
+        return "invalid clip source";
     if (folder.empty()) return "output folder unknown";
 
     std::string err;
@@ -2439,6 +2444,18 @@ static void media_start(HWND hwnd)
                     stats.saving ? "true" : "false",
                     static_cast<double>(raw_capacity) / 1048576.0);
                 log_msg("capture", buf);
+                static uint64_t last_disk_drops = 0, last_disk_delete_failures = 0;
+                static bool last_disk_pressure = false;
+                if (stats.disk_dropped_packets != last_disk_drops || stats.disk_delete_failures != last_disk_delete_failures ||
+                    stats.disk_pressure != last_disk_pressure) {
+                    snprintf(buf, sizeof(buf), "disk replay: dropped=%llu delete_failures=%llu pressure=%s",
+                        static_cast<unsigned long long>(stats.disk_dropped_packets),
+                        static_cast<unsigned long long>(stats.disk_delete_failures), stats.disk_pressure ? "true" : "false");
+                    log_error("replay", buf);
+                    last_disk_drops = stats.disk_dropped_packets;
+                    last_disk_delete_failures = stats.disk_delete_failures;
+                    last_disk_pressure = stats.disk_pressure;
+                }
 
                 static capture::CaptureStats last_capture_stats{};
                 static uint64_t last_pacer_submitted = 0;

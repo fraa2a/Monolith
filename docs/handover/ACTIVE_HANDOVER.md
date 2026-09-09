@@ -1,6 +1,128 @@
 # Active Handover
 
-Updated: 2026-08-11
+Updated: 2026-09-08
+
+## Publication version bump
+
+After the focused U6 test and final Terra-medium review passed, the modified components were bumped for publication: engine `1.6.2`, desktop UI `1.4.1`; updater remains unchanged. Windows CI and runtime validation remain required after push.
+
+## Audit phase 2A — media timeline and disk retention (review pending)
+
+Parent accepted phase 1 after independent review; its historical entry below is
+preserved. Implemented this stage: **R2/R3/R4/T1/T2/T3/T4**, plus the specifically
+approved backend-only disk-budget setting. Quota-interrupted partial edits were
+inspected and continued; no model/tooling workaround, install, commit, push,
+release or version bump. Existing DLL/phase-1 work and intentional file removals
+were preserved.
+
+- RAM snapshot selection is temporal before copying/mux; min/max stats no longer
+  use deque endpoints; one common anchor preserves video composition/A/V offsets.
+- Disk opens only on video keys, including after save; snapshots pin only their
+  inputs, retention continues during slow save, and pins release after readers
+  close but before callbacks. Exact owned files are deleted; failed unlink stays
+  charged/retryable and blocks admission; cancel/clear/teardown join readers.
+- **`replay_buffer.disk_budget_mb`** persists through native settings/default seed
+  and live reload: integer **512..65536 MiB**, default **2048**, invalid/legacy
+  values default safely. The **Settings UI control remains phase-5 work** by
+  user decision. No frontend edits. Budget changes do not restart recording;
+  physical eviction is on next admission/snapshot, not new message-loop I/O.
+- Budget counts live+pinned encoded payload; 256 MiB/segment, 4096 records,
+  512 MiB producer free-space reserve. Mux/index/allocator overhead and save
+  output are extra. A pinned old snapshot can exceed a reduced budget temporarily.
+  Drops/pressure/deletion failures have stats and explicit recorder logging.
+- Trim rescales PTS/DTS/duration after header, preserves a common exact source
+  anchor, and concatenates from actual original positions. `TrimResult` reports
+  actual start/probed duration; recorder catalog/bookmarks use it and surface DB
+  errors. Lossless remains keyframe-aware, NOT exact: reference-frame end
+  extension and packet-boundary audio precision are documented in `report.md`.
+- Fallback decodes preroll, filters/drains decoded frames, preserves fractional/
+  VFR timestamps, incrementally muxes same-codec video and ALL original audio.
+  Unsupported compatibility fails before replacing the original. Missing leading
+  Matroska DTS use bounded lookahead from known input DTS/durations, not clamps.
+
+Executed Linux commands (existing FFmpeg n9.0.1/dev libs, GCC 16.2.1):
+
+```sh
+cmake -S tests/phase2 -B /tmp/monolith-phase2-build -DCMAKE_BUILD_TYPE=Debug
+cmake --build /tmp/monolith-phase2-build --parallel
+ctest --test-dir /tmp/monolith-phase2-build --output-on-failure
+cmake -S tests/phase2 -B /tmp/monolith-phase2-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+cmake --build /tmp/monolith-phase2-asan --parallel
+ctest --test-dir /tmp/monolith-phase2-asan --output-on-failure
+cmake --build /tmp/monolith-phase1-build --parallel
+ctest --test-dir /tmp/monolith-phase1-build --output-on-failure
+```
+
+Final results: phase 2 normal **2/2 PASS, 8.30s**; ASan/UBSan **2/2 PASS, 8.89s**
+(no diagnostics); reused phase 1 **2/2 PASS, 67.35s**. `tests/phase2/README.md`
+distinguishes the small Win32 path shim from real FFmpeg integration. Sixteen
+trim combinations have independent ffprobe/frame-hash/audio-payload/offset
+checks; additional coverage includes slow pinned save/cancellation/failed unlink,
+non-key disk restart, budget parsing, and a 60-second >50 MiB CBR reencode.
+
+Required next: independent retained reviewer, then Windows/MSVC/native settings
+reload + file-locking/real-device tests. No Windows execution or performance
+improvement is claimed. Full-budget saturation, HEVC/AV1 matrix and allocation/
+thread-failure injection remain unexecuted. Filesystem replacement/temp-path and
+DB/bookmark transaction/crash durability are **phase 2B**, not silently fixed.
+R5 synchronous disk/encode work also remains. Pending audit IDs: V1–V8, R5–R12,
+U1–U6, I3, A1–A7; do not start the next phase without parent authorization.
+
+## Audit phase 1 — bounded replay and IPC (review pending)
+
+Implemented only R1/I1/I2; original audit remains in `report.md` with a separate
+phase-1 evidence appendix. Previous DLL changes and pre-existing roadmap deletion
+were preserved; no commit/push/release or version bump. All other report IDs
+(V1–V8, R2–R12, T1–T4, U1–U6, I3, A1–A7) remain pending.
+
+- RAM replay: hard logical payload and 262144-packet caps; whole-GOP eviction,
+  no audio/dependent frames before a key, rejection of oversized packets,
+  steady-clock residence and minimum-DTS/watermark age enforcement. Invalid
+  limits fail closed. A missing/oversized video packet invalidates the chain.
+  Expiration is lazy on push/configure/stats/save, not a timer. Empty stats/save
+  expose temporary replay unavailability. Clock skew can shorten replay; R2
+  selection/reordering is still open.
+- The 512 MiB setting bounds current-ring **payload**, not process RAM: a slow
+  single-flight snapshot can pin another old cap, plus metadata/allocator/mux
+  and unrelated engine memory. No Windows memory measurements were performed.
+- IPC: 16 workers, 64 KiB lines, JSON depth 64, 30s first-byte partial-line and
+  total send deadlines; **no idle timeout**, compatible with Stream Deck's 5s
+  poll. Bounded accept polling reaps completed threads; lifecycle/vector/socket
+  ownership prevents late registration/close-reuse races during shutdown.
+  Thread creation failure cleanup is coded but not fault-injected. Callbacks
+  remain synchronous and can delay stop; this is not a callback timeout fix.
+
+Commands executed on Linux (GCC 16.2.1; existing nlohmann-json 3.12.0):
+
+```sh
+cmake -S tests/phase1 -B /tmp/monolith-phase1-build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS='-Wall -Wextra -Wpedantic -Werror'
+cmake --build /tmp/monolith-phase1-build --parallel
+ctest --test-dir /tmp/monolith-phase1-build -V
+cmake -S tests/phase1 -B /tmp/monolith-phase1-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS='-Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer'
+cmake --build /tmp/monolith-phase1-asan --parallel
+ctest --test-dir /tmp/monolith-phase1-asan --output-on-failure
+```
+
+Both suites **2/2 PASS** (normal 67.34s, ASan/UBSan 69.67s, no sanitizer
+findings). Initial strict build found a missing test initializer, corrected.
+See `tests/phase1/README.md` for coverage and the Linux socket adapter limitation;
+port 45991 must be free. No heavy dependencies installed.
+
+Required before acceptance/release: independent parent review; MSVC Windows
+build; actual Winsock shutdown/churn/short-send tests, Stream Deck + UI smoke,
+Windows handle/private-byte soak, keyframe-starvation/oversize replay and slow
+snapshot save with FFmpeg decode. Linux tests do not establish these Windows
+results. Do not begin phase 2 without parent authorization.
+
+## Session 2026-09-08 — native runtime DLL packaging fix
+
+Hardened packaging against Windows startup failures caused by native dependencies (reported as missing `aom.dll`) being present in the CMake/vcpkg build output but omitted from shipped packages. The old installer and component-update rules selected DLLs by filename prefixes (`av*`, `sw*`, `lib*`, plus `sqlite3.dll`), which excluded dependencies whose names did not match that list.
+
+- The incoming HEAD (`6232dc2`) already corrected `installer/monolith.iss` to package every `*.dll` emitted beside `Monolith.exe`, and the release workflow to copy every build-output `*.dll` into the engine component zip. These wildcard rules were verified, not introduced by this session.
+- `scripts/verify-runtime-dlls.ps1` inspects the EXE/DLL files directly inside the supplied runtime directory and follows their transitive imports with `dumpbin /DEPENDENTS`, requiring imported vcpkg DLLs to be colocated while allowing system/API-set DLLs available on the CI host. Both Windows CI workflows run it on the root native payload; release CI runs it again on the staged engine component. This is dependency-name agnostic rather than an `aom.dll`-only assertion. It does not scan subdirectories: the separate `ui/` sidecar and dynamically loaded dependencies are outside this check; a clean-Windows smoke test remains required.
+- No capture, encoding, or other performance behavior changed.
+
+Static validation was run on Linux (`git diff --check` plus source assertions for wildcard packaging and workflow verifier calls). PowerShell, MSVC/vcpkg Windows build output, Inno Setup, and Windows runtime were unavailable here. Before release, require Windows CI green and smoke both a fresh installer and an engine component update on a clean Windows 11 machine.
 
 ## Session 2026-08-11 — Vice feature fusion: quick trim, bookmarks, replay storage RAM|Disk, AV1, collections
 
@@ -267,3 +389,49 @@ Build verified this session: `npm run build` (Vite) + `cargo build --release --m
 Not done: manual runtime smoke test of these specific changes (build machine only) — verify card layout, detail-view name-click/fullscreen button, settings popup fixed sizing across all category pages, and audio track layout toggle actually changing recorded track assignment, before shipping.
 
 No git commit/push made — awaiting explicit user confirmation per standing instruction.
+Phase-2A accounting clarification: incremental mux bounds application packet
+queues, not all library-owned MP4 indexes/Matroska cues; those metadata can grow
+with output length. System FFmpeg libraries were not rebuilt with sanitizers.
+
+## Phase 2B entry — concat continuity checkpoint (independent review pending)
+
+Phase2A's prior acceptance was reopened by the requested continuous-clock test:
+real AAC loss at a disk-segment B-frame boundary (source DTS5.952s skipped; next
+output DTS6.016s), not just intentional repeated-fixture timestamp resets.
+Fixed concat-only audio boundaries in `libs/encoding/trim.cpp`: internal ownership
+uses common source segment timeline rather than a new video PTS trim per segment.
+Standalone trim, actual TrimResult and multitrack/video-reference behavior remain.
+New 21s fractional/VFR two-audio fixture asserts contiguous source payloads,
+strict DTS, <=2ms interval/intertrack-offset rounding and bounded tail omission;
+also exercises mid-GOP save and next-key restart after clearing retained history.
+
+Final commands: build + ctest in `/tmp/monolith-phase2-build` (2/2,11.71s),
+`/tmp/monolith-phase2-asan` (2/2,11.34s, no diagnostics), and
+`/tmp/monolith-phase1-build` (2/2,67.51s). Linux only; no Windows/Rust build.
+See append-only report.md checkpoint for exact commands and initial failure.
+
+Supervisor explicitly stopped expansion here pending LOW re-review. R7/R8/U6
+remain unimplemented. Approved subsequent architecture: engine-only delete/rename
+RPC (engine-off reads allowed, mutations actionable failure), engine-owned
+recovery journal, bounded owned recording control/completion worker and durable
+per-session bookmarks/drain. Inspect all Rust writer/reconcile bypasses first.
+No partial journal/worker/routing changes introduced. Full mux writer/backpressure
+remains R5 phase3; requested 2B failure/restart tests remain pending. Preserve
+existing DLL work and intentional deletions. Phase5 disk-budget UI still pending
+(default persisted budget 2048MiB). No commits/releases/version bumps.
+
+## Phase 2B U6 — in progress, not ready for review
+
+Delete/rename Tauri commands have been routed to engine RPC, preserving offline
+read-only browsing and returning the connection failure rather than a direct
+Rust fallback. `storage.cpp` has an operation-specific journal/quarantine
+attempt with startup recovery. Do **not** accept it yet: no production fault
+tests or Windows build were run and durable file identity checks are incomplete.
+The old `file_mutation.h` remains an unused scaffold. R7, R8 and trim atomic
+replacement are still open.
+
+## U6 pragmatic durability (current session)
+
+Delete/rename UI calls now require the running recorder and route over existing JSON-RPC; no UI SQLite fallback exists. Storage uses a validated operation journal and no-overwrite moves, delete quarantine, startup recovery, and a catalog-keyed Windows mutex. Focused Linux storage shim coverage exercised normal mutation, prepared delete/rename recovery, committed delete cleanup, ambiguous state rejection, and invalid journal rejection; phase2 tests and offline Cargo check also passed.
+
+Residual work: this does not prove filesystem/SQLite atomicity, stable file identity, reparse safety, Windows runtime/cross-process behavior, or a comprehensive fault matrix. R7/R8 remain pending.

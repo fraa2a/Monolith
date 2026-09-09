@@ -62,6 +62,11 @@ using SelectGameFn = std::function<void(const std::string& exe, uint32_t pid)>;
 using UpdateCloseUiFn = std::function<void()>;
 
 // Start the JSON-RPC TCP server on 127.0.0.1:45991.
+// Bounded at 16 clients, 64 KiB per line (excluding LF), JSON depth 64.
+// Excess clients/oversized lines are disconnected. Partial lines and response
+// sends have 30s total deadlines; idle persistent clients have NO idle timeout.
+// start/stop serialize lifecycle; callbacks must not call start/stop themselves.
+// stop interrupts socket I/O but still waits for in-flight callbacks to return.
 // Recording commands (save_replay, recording_start/stop, pause_resume) are
 // dispatched via PostMessage to hwnd. `status_fn` answers get_status and
 // `mutation_fn` performs clip_* mutations; both may be called concurrently
