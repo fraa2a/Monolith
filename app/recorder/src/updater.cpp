@@ -65,7 +65,7 @@ void launch(bool auto_mode)
 
     std::wstring working_dir = exe.parent_path().wstring();
 
-    // Detached: the updater outlives this process by design — it asks the
+    // Detached: the updater outlives this process by design - it asks the
     // engine to exit (update_engine_exit over IPC) when it replaces it.
     PROCESS_INFORMATION process_info{};
     BOOL started = CreateProcessW(
@@ -117,7 +117,7 @@ void post_update_cleanup()
     if (base.empty()) return;
 
     // *.old files parked by the updater's swap dance (a replaced engine exe
-    // or DLL cannot be deleted while loaded — deletion is retried here).
+    // or DLL cannot be deleted while loaded - deletion is retried here).
     const std::filesystem::path dirs[] = { base, base / "ui" };
     std::error_code ec;
     for (const auto& dir : dirs) {

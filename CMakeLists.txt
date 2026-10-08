@@ -10,7 +10,7 @@ endif()
 
 project(monolith VERSION 1.6.2 LANGUAGES CXX)
 
-# Engine version — the engine component of the component updater (the ui and
+# Engine version - the engine component of the component updater (the ui and
 # updater components carry their own versions in their tauri.conf.json).
 # Bump it when the engine changes; local builds fall back to project(VERSION).
 set(MONOLITH_VERSION "${PROJECT_VERSION}" CACHE STRING "Monolith engine version (X.Y.Z)")

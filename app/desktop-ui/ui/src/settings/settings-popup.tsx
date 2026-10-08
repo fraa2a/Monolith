@@ -27,7 +27,7 @@ type Page =
   | "game";
 
 // Grouped so the nav reads as sections (like Windows Settings), not a flat
-// list — each group heading is real structure (recording pipeline vs. where
+// list - each group heading is real structure (recording pipeline vs. where
 // files land vs. power-user knobs), not decoration.
 const PAGE_GROUPS: { label: string; pages: { id: Page; label: string; icon: string }[] }[] = [
   {
@@ -138,7 +138,7 @@ export function SettingsPopup({ onClose }: Props) {
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(null));
     // Engine component version via the engine's get_status (independent from
-    // the interface version — the component updater versions them separately).
+    // the interface version - the component updater versions them separately).
     fetchEngineStatus().then((st) => setEngineVersion(st.version ?? null)).catch(() => {});
   }, []);
 
@@ -165,7 +165,7 @@ export function SettingsPopup({ onClose }: Props) {
   }, []);
 
   // Runtime status (audio sessions, active game, devices, monitors) is a live
-  // snapshot the engine keeps refreshing on its own cadence — re-poll it while
+  // snapshot the engine keeps refreshing on its own cadence - re-poll it while
   // the popup is open so e.g. "Other sources" reflects apps that start/stop
   // playing audio without the user having to close and reopen Settings.
   useEffect(() => {
@@ -277,7 +277,7 @@ function ReplayDurationSection(
     >
       <Field
         label="Duration"
-        help="Choose a preset, or Custom to enter your own length (5–600s)."
+        help="Choose a preset, or Custom to enter your own length (5-600s)."
         control={
           <div class="duration-row">
             <Select
@@ -362,7 +362,7 @@ function Pages({ page, cfg, rs, update, appVersion, engineVersion, onCheckUpdate
               help="Interface and engine are versioned independently."
               control={
                 <span class="set-field-static">
-                  interface {appVersion ?? "—"} · engine {engineVersion ?? "—"}
+                  interface {appVersion ?? "-"} · engine {engineVersion ?? "-"}
                 </span>
               }
             />

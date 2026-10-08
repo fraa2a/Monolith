@@ -5,7 +5,7 @@ import { SaveReplay } from './actions/save-replay.js';
 import { RecordingToggle } from './actions/recording-toggle.js';
 import { PauseResume } from './actions/pause-resume.js';
 
-// Shared IPC client — actions import this directly.
+// Shared IPC client - actions import this directly.
 export const ipc = new IpcClient();
 ipc.connect();
 
@@ -29,7 +29,7 @@ setInterval(async () => {
                 await action.setTitle(status.paused ? '▶ Resume' : '⏸ Pause');
             }
         } catch {
-            // action may have disappeared — skip
+            // action may have disappeared - skip
         }
     }
 }, 5000);

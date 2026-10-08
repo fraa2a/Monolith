@@ -56,7 +56,7 @@ export class IpcClient {
         });
 
         s.on('error', () => {
-            // handled by 'close' — suppress unhandled error event
+            // handled by 'close' - suppress unhandled error event
         });
     }
 
@@ -82,7 +82,7 @@ export class IpcClient {
                 handlers[0](msg.result);
             }
         } catch {
-            // malformed response — ignore
+            // malformed response - ignore
         }
     }
 

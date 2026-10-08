@@ -29,7 +29,7 @@ void check_silent();
 // at startup; files still locked are retried on the next launch.
 void post_update_cleanup();
 
-// Kept for WM_DESTROY symmetry — nothing to shut down anymore.
+// Kept for WM_DESTROY symmetry - nothing to shut down anymore.
 void shutdown();
 
 } // namespace updater

@@ -103,7 +103,7 @@ struct VideoEncoderPerfStats {
     uint64_t encode_time_us_total = 0;
 };
 
-// H.264 encoder.  Not thread-safe — drive from a single thread (or serialise).
+// H.264 encoder.  Not thread-safe - drive from a single thread (or serialise).
 class VideoEncoder {
 public:
      VideoEncoder();
@@ -151,7 +151,7 @@ public:
 
     // Encode one decoded frame directly (e.g. YUV420P from a demuxer).  When
     // the frame already matches the encoder's pixel format and output size
-    // the planes are shared — no BGRA round-trip, no extra quality loss.
+    // the planes are shared - no BGRA round-trip, no extra quality loss.
     // Otherwise the frame is converted/scaled like push_bgra would.
     // pts semantics as in push_bgra.
     void push_frame(const AVFrame* frame, int64_t pts = -1);
@@ -234,7 +234,7 @@ public:
     bool open(int out_sample_rate, int out_channels, Sink sink);
 
     // Registers a source and returns its id (>= 0), or -1 if not open.
-    // Thread-safe. Optional linear gain (0.0–1.0+) applied to this source's
+    // Thread-safe. Optional linear gain (0.0-1.0+) applied to this source's
     // samples before they are summed into the mix.
     int add_source(float gain = 1.0f);
 

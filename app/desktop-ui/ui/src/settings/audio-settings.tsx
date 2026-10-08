@@ -38,7 +38,7 @@ export function AudioSettings({ cfg, rs, update }: Props) {
 
   // Custom mode uses the explicit source list, so it must always contain the two
   // baseline sources (Game Audio → track 1, Microphone → track 2) that the
-  // default mode implies — otherwise editing one would silently drop the other.
+  // default mode implies - otherwise editing one would silently drop the other.
   const withBaseline = (list: Source[]): Source[] => {
     const out = list.slice();
     if (!out.some((s) => s.type === "desktop")) {
@@ -97,7 +97,7 @@ export function AudioSettings({ cfg, rs, update }: Props) {
   const processFor = (procName: string): Source | undefined =>
     find((s) => s.type === "process" && s.process_name?.toLowerCase() === procName.toLowerCase());
 
-  // Track layout: the microphone always gets its own track (track 2) — that's
+  // Track layout: the microphone always gets its own track (track 2) - that's
   // never up for debate since a mixed-in mic can't be un-mixed later. Every
   // *other* audio source (game desktop audio + each other app) either all
   // share the game's track (single track) or each gets its own free track

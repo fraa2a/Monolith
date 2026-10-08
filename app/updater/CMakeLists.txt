@@ -1,5 +1,5 @@
 # Monolith Updater (Tauri v2 / WebView2). `cargo build --release` produces a
-# single self-contained exe (src-tauri/target/release/updater.exe) — the
+# single self-contained exe (src-tauri/target/release/updater.exe) - the
 # component self-updater that fetches update-manifest.json, downloads only
 # the changed components (engine / ui / updater), verifies Ed25519
 # signatures and swaps the files on disk. It is copied to
@@ -21,7 +21,7 @@ if(NPM_EXECUTABLE AND CARGO_EXECUTABLE)
         # 1. Install frontend deps and bundle the Preact frontend into dist/
         #    (embedded into the exe at compile time, so dist/ must exist
         #    before cargo runs; npm run build's postbuild step also invokes
-        #    cargo — the explicit cargo step below is idempotent).
+        #    cargo - the explicit cargo step below is idempotent).
         COMMAND "${NPM_EXECUTABLE}" install
         COMMAND "${NPM_EXECUTABLE}" run build
         # 2. Compile the Tauri host. Plain `cargo build --release` (not

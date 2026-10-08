@@ -21,7 +21,7 @@ if(NPM_EXECUTABLE AND CARGO_EXECUTABLE)
         COMMAND "${NPM_EXECUTABLE}" install
         COMMAND "${NPM_EXECUTABLE}" run build
         # 2. Compile the Tauri host. Plain `cargo build --release` is used (not
-        #    `cargo tauri build`) so the tauri-cli is not required — bundling is
+        #    `cargo tauri build`) so the tauri-cli is not required - bundling is
         #    disabled (tauri.conf.json bundle.active=false) and we ship the bare exe.
         #    --features custom-protocol is REQUIRED: without it tauri's build
         #    script sets cfg(dev)=true and the shipped exe loads build.devUrl

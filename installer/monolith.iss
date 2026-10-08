@@ -1,11 +1,11 @@
-; Monolith — per-user Inno Setup installer.
+; Monolith - per-user Inno Setup installer.
 ;
 ; Build:  iscc /DMonolithVersion=X.Y.Z monolith.iss
 ; CI passes MonolithVersion from the git tag (.github/workflows/version-tag.yml).
 ; The payload is native Monolith.exe plus all native runtime DLLs at the root
 ; and the self-contained Tauri UI (Monolith.UI.exe) under .\ui. The only
 ; external runtime dependency is the Edge WebView2 runtime, which ships with
-; Windows 11 and recent Windows 10 — no other prerequisites on the target
+; Windows 11 and recent Windows 10 - no other prerequisites on the target
 ; machine.
 ;
 ; Per-user by design: installs under {localappdata}\Programs\Monolith with
@@ -78,7 +78,7 @@ Name: "{userprograms}\{#MonolithName}"; Filename: "{app}\{#MonolithExe}"
 Name: "{userdesktop}\{#MonolithName}"; Filename: "{app}\{#MonolithExe}"; Tasks: desktopicon
 
 [Registry]
-; Per-user autostart (HKCU — no elevation needed); removed on uninstall.
+; Per-user autostart (HKCU - no elevation needed); removed on uninstall.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     ValueType: string; ValueName: "{#MonolithName}"; ValueData: """{app}\{#MonolithExe}"""; \
     Flags: uninsdeletevalue; Tasks: startupicon
@@ -88,4 +88,4 @@ Filename: "{app}\{#MonolithExe}"; Description: "{cm:LaunchProgram,{#MonolithName
     Flags: nowait postinstall skipifsilent
 
 ; User data (config.json, logs) lives under {localappdata}\Monolith and is
-; intentionally NOT touched by uninstall — settings survive reinstalls.
+; intentionally NOT touched by uninstall - settings survive reinstalls.

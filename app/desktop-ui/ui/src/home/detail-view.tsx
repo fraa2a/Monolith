@@ -16,7 +16,7 @@ interface Props {
   onClipUpdate: (clip: Clip) => void;
   onDelete: (clip: Clip) => void;
   /** Opens the collection picker for this clip (grid path wires it; collection
-   *  detail leaves it unset — clips there are already in a collection). */
+   *  detail leaves it unset - clips there are already in a collection). */
   onAddToCollection?: (clip: Clip) => void;
 }
 
@@ -143,7 +143,7 @@ function BookmarkMarkers(
           <button
             class="bm-marker"
             key={bm.seq}
-            title={`${bm.label} — ${formatDuration(bm.time_seconds)}`}
+            title={`${bm.label} - ${formatDuration(bm.time_seconds)}`}
             style={{ left: `${pct}%`, background: bm.color }}
             onClick={() => onSeek(bm.time_seconds)}
           />
@@ -283,7 +283,7 @@ export function DetailView(
     return () => { cancelled = true; };
   }, [clip?.id, clip?.source]);
 
-  // Fullscreen reuses this same <video> element in place (see render below) —
+  // Fullscreen reuses this same <video> element in place (see render below) -
   // only the surrounding chrome/layout changes, so playback never restarts.
   useEffect(() => {
     if (!fsMode) return;
@@ -591,7 +591,7 @@ export function DetailView(
                     ? (
                       <span class="trim-readout">
                         <span class="trim-range">
-                          {formatDuration(trimStart)} – {formatDuration(trimEnd)}
+                          {formatDuration(trimStart)} - {formatDuration(trimEnd)}
                         </span>
                         <button class="btn btn-primary" disabled={trimBusy} onClick={applyTrim}>
                           Apply
@@ -740,7 +740,7 @@ export function DetailView(
             {bookmarks.length === 0
               ? (
                 <p class="bm-empty">
-                  No bookmarks — press Ctrl+Shift+F12 while recording to add one.
+                  No bookmarks - press Ctrl+Shift+F12 while recording to add one.
                 </p>
               )
               : (

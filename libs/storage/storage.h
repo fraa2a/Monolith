@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-// libs/storage — SQLite-backed clip catalog co-located with each output folder.
+// libs/storage - SQLite-backed clip catalog co-located with each output folder.
 //
 // Layout (auto-contained per output folder chosen in Settings > Output):
 //   <folder>\clips.db   (source "replay")   or   <folder>\recs.db (source "manual")
@@ -29,13 +29,13 @@ std::string now_iso8601_utc();
 //
 // Replaces the old config.json file (ADR-0009 rewrite). Lives at
 // <app_data_dir>\settings.db in WAL mode. A generic string KV table; the caller
-// (settings_config.cpp) owns the schema meaning of keys — this layer stays
+// (settings_config.cpp) owns the schema meaning of keys - this layer stays
 // JSON-agnostic. The UI process reads/writes the same table for the settings popup;
 // writes are user-driven and infrequent, so single-writer contention is a
 // non-issue in practice, and WAL keeps reads non-blocking either way.
 
 // Reads all (key,value) rows. Returns true on success (out may be empty when the
-// DB is new/absent — treated as "no saved settings yet", not an error).
+// DB is new/absent - treated as "no saved settings yet", not an error).
 bool settings_get_all(const std::wstring& app_data_dir,
                       std::vector<std::pair<std::string, std::string>>& out,
                       std::string* error);
@@ -77,7 +77,7 @@ public:
     // Opens (creating if absent) the DB for a self-contained output folder.
     //   source "replay" -> <folder>\clips.db ; source "manual" -> <folder>\recs.db
     // Returns nullptr (and sets *error) if the folder is empty, or if a file is
-    // present but is NOT a valid Monolith clip DB — it is never overwritten.
+    // present but is NOT a valid Monolith clip DB - it is never overwritten.
     static std::unique_ptr<ClipDb> open(const std::wstring& folder,
                                         const std::string& source,
                                         std::string* error);
@@ -132,7 +132,7 @@ public:
                         std::string* error) const;
 
     // Updates the clip's display title only. Does NOT touch the video file on
-    // disk — title is independent of the filename. Empty title becomes "Untitled".
+    // disk - title is independent of the filename. Empty title becomes "Untitled".
     bool set_title(int64_t id, const std::string& title, std::string* error);
 
     bool add_hashtag(int64_t id, const std::string& tag, std::string* error);
@@ -148,7 +148,7 @@ public:
     // <new_stem> + original extension (in place, same folder/.thumbs) and updates
     // the row. new_stem is a base name with no path/extension; invalid or
     // colliding names fail without touching disk. This is a distinct, optional
-    // action from set_title — the on-screen name is the title, not the filename.
+    // action from set_title - the on-screen name is the title, not the filename.
     // Returns false + *error on any failure.
     bool rename_clip(int64_t id, const std::wstring& new_stem, std::string* error);
 

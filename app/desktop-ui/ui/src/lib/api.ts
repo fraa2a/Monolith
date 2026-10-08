@@ -253,7 +253,7 @@ export interface EngineStatus {
   replay_enabled?: boolean;
   recording_enabled?: boolean;
   clip_generation?: number;
-  // Engine component version (the interface version is separate — the two
+  // Engine component version (the interface version is separate - the two
   // are versioned independently by the component updater).
   version?: string;
   connected?: boolean;

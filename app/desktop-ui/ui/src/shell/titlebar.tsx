@@ -84,7 +84,7 @@ export function Titlebar({ view }: Props) {
     };
   }, [open]);
 
-  // Dismiss the capture popover on Escape or a click/mousedown outside it — the
+  // Dismiss the capture popover on Escape or a click/mousedown outside it - the
   // same affordance the rest of the UI uses. Without this the popover could only
   // be closed by clicking the feed button again.
   useEffect(() => {
@@ -108,7 +108,7 @@ export function Titlebar({ view }: Props) {
   const gameProcess = activeGame?.process_id ? activeGame.process_name : "";
   const exePath = activeGame?.process_id ? (activeGame.executable_path ?? "") : "";
   // Detected games are DB-gated, so display_name is always the game-list name
-  // (e.g. "AURA Gamers gioco") — show it verbatim, no prettify transform. Only
+  // (e.g. "AURA Gamers gioco") - show it verbatim, no prettify transform. Only
   // fall back to appLabel for the rare case the engine emits a raw exe name.
   useEffect(() => {
     let alive = true;

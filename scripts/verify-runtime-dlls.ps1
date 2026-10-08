@@ -16,22 +16,18 @@ if (-not (Test-Path -LiteralPath $VcpkgBinDir -PathType Container)) {
     throw "vcpkg runtime directory does not exist: $VcpkgBinDir"
 }
 
-# Scope: EXE/DLL files directly in RuntimeDir and their transitive imports.
-# Sidecars in subdirectories (such as ui/) and LoadLibrary-only dependencies
-# are not validated here. This does not replace a clean-Windows smoke test.
-$dumpbin = (Get-Command dumpbin.exe -ErrorAction Stop).Source
+# Each executable directory must carry its own non-system import closure.
+$dumpbin = (Get-Command dumpbin.exe -ErrorAction Stop).Name
 $windowsSystem = Join-Path $env:WINDIR "System32"
-$runtimeFiles = @(Get-ChildItem -LiteralPath $RuntimeDir -File | Where-Object {
+$runtimeFiles = @(Get-ChildItem -LiteralPath $RuntimeDir -File -Recurse | Where-Object {
     $_.Extension -ieq ".exe" -or $_.Extension -ieq ".dll"
 })
 if ($runtimeFiles.Count -eq 0) {
     throw "No native runtime binaries found in: $RuntimeDir"
 }
 
-$runtimeByName = @{}
 $pending = [System.Collections.Generic.Queue[string]]::new()
 foreach ($file in $runtimeFiles) {
-    $runtimeByName[$file.Name.ToLowerInvariant()] = $file.FullName
     $pending.Enqueue($file.FullName)
 }
 
@@ -58,15 +54,15 @@ while ($pending.Count -ne 0) {
         }
 
         $dependency = $match.Groups[1].Value
-        $key = $dependency.ToLowerInvariant()
-        if ($runtimeByName.ContainsKey($key)) {
-            $pending.Enqueue($runtimeByName[$key])
+        $local = Join-Path ([IO.Path]::GetDirectoryName($binary)) $dependency
+        if (Test-Path -LiteralPath $local -PathType Leaf) {
+            $pending.Enqueue($local)
             continue
         }
 
-        # Prefer the vcpkg copy over anything coincidentally installed on the
-        # CI host. API-set DLLs and Windows-owned DLLs remain OS dependencies.
-        if (Test-Path -LiteralPath (Join-Path $VcpkgBinDir $dependency) -PathType Leaf) {
+        # CI hosts have the VC runtime installed; clean Windows may not.
+        if ($dependency -match '^(vcruntime|msvcp|msvcr|concrt|vcomp)\d.*\.dll$' -or
+            (Test-Path -LiteralPath (Join-Path $VcpkgBinDir $dependency) -PathType Leaf)) {
             $missing.Add("$dependency (imported by $([IO.Path]::GetFileName($binary)))")
             continue
         }
@@ -85,7 +81,7 @@ if ($missing.Count -ne 0) {
     throw "Native runtime dependency closure is incomplete: $details"
 }
 
-Write-Host "Verified static import closure for $($visited.Count) root-level native binary/binaries in $RuntimeDir (subdirectories excluded)"
+Write-Host "Verified static import closure for $($visited.Count) binaries in $RuntimeDir (including sidecars)"
 (Get-ChildItem -LiteralPath $RuntimeDir -Filter "*.dll" -File).Name |
     Sort-Object |
     ForEach-Object { Write-Host "  $_" }

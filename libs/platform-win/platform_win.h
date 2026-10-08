@@ -11,7 +11,7 @@
 #include <string>
 
 // Shared Win32 utility primitives used across the recorder, storage, encoding
-// and audio libraries. Pure extraction of previously duplicated code — no
+// and audio libraries. Pure extraction of previously duplicated code - no
 // behavior changes vs. the original per-file copies.
 namespace platform_win {
 
@@ -32,7 +32,7 @@ struct ProcessInfo {
 ProcessInfo process_info(uint32_t pid);
 
 // True if `hwnd` looks like a real, user-facing top-level window (visible,
-// not a tool window, not disabled, has window text) — i.e. a reasonable
+// not a tool window, not disabled, has window text) - i.e. a reasonable
 // candidate for "this is a window belonging to a running application/game".
 bool is_capture_candidate_window(HWND hwnd);
 

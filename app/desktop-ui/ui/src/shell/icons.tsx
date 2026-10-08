@@ -1,6 +1,6 @@
 import type { JSX } from "preact";
 
-// Lucide icons (https://lucide.dev, ISC license) — inlined as SVG path data so
+// Lucide icons (https://lucide.dev, ISC license) - inlined as SVG path data so
 // the app stays offline / CSP-clean (no icon-font or network fetch). Stroke-based
 // 24×24, matching Lucide's default rendering.
 const PATHS: Record<string, JSX.Element> = {

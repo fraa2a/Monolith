@@ -41,7 +41,7 @@ fn read_components_json() -> Option<Installed> {
 }
 
 /// Reads the Win32 VERSIONINFO FileVersion ("major.minor.patch[.build]") via
-/// the fixed, translation-independent block — no StringFileInfo lookup
+/// the fixed, translation-independent block - no StringFileInfo lookup
 /// needed. Returns None when the file is missing or carries no version
 /// resource.
 fn file_version(path: &Path) -> Option<String> {

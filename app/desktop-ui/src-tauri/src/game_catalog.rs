@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Discord is only ever used to enrich the display (name/icon/cover) of a game
-// the C++ recorder's local heuristic already detected — never to decide which
+// the C++ recorder's local heuristic already detected - never to decide which
 // process is active. All reads used by the clip grid go through
 // resolve_artwork_cached (below), which never makes a network call; artwork
 // is populated/refreshed only by the scheduled background job in main.rs

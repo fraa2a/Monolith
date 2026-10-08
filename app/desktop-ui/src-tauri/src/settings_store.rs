@@ -75,7 +75,7 @@ pub fn read_runtime_status() -> Value {
 // output_dirs() is on the hot path of every catalog command (db_path +
 // media_folder each call it). Reading settings.db + parsing the full JSON
 // each time showed up with large libraries, so cache the result keyed by the
-// settings.db mtime+size — a stat() instead of a DB round-trip, and still
+// settings.db mtime+size - a stat() instead of a DB round-trip, and still
 // correct when the engine (or anything else) rewrites the file.
 static DIRS_CACHE: Mutex<Option<(Option<SystemTime>, u64, paths::OutputDirs)>> = Mutex::new(None);
 

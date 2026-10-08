@@ -45,7 +45,7 @@ void set_log_sink(std::function<void(const char* tag, const char* msg)> sink);
 void init(const std::wstring& app_data_dir);
 
 // O(1), lock-free-for-readers snapshot of the current map. Never blocks on disk
-// or network — this is what the detection poll calls every tick. May be empty
+// or network - this is what the detection poll calls every tick. May be empty
 // before the first successful sync.
 std::shared_ptr<const GameMap> snapshot();
 

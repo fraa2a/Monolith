@@ -126,8 +126,8 @@ void log_error(const char* tag, const char* msg)
         st.wHour, st.wMinute, st.wSecond,
         tag, msg);
 
-    // Always surfaced: to the debugger, and to the log file — opened on demand
-    // even when verbose logging is disabled — so failures aren't silent.
+    // Always surfaced: to the debugger, and to the log file - opened on demand
+    // even when verbose logging is disabled - so failures aren't silent.
     OutputDebugStringA(buf);
     if (!g_file) open_locked();
     if (g_file) { fputs(buf, g_file); fflush(g_file); }

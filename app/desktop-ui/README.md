@@ -44,7 +44,7 @@ Rust modules:
   (favorite/title/hashtags/rename/delete).
 - `engine_rpc.rs`: JSON-RPC client to `Monolith.exe` (recorder control,
   `clip_regen_thumb`, `reload_settings`, status). Unchanged by the IPC
-  migration — also used by `plugins/stream-deck`.
+  migration - also used by `plugins/stream-deck`.
 - `game_catalog.rs`: game metadata lookup.
 - `exe_icon.rs`: native exe icon extraction.
 - `paths.rs`: Monolith runtime paths.

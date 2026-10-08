@@ -296,7 +296,7 @@ bool http_get(std::string* body)
 
 std::string basename_lower(const std::string& name)
 {
-    // Discord marks some executables with a leading '>' — the game runs as a
+    // Discord marks some executables with a leading '>' - the game runs as a
     // child/launched process rather than the top-level exe (e.g. Minecraft is
     // listed as ">javaw.exe"). Strip that marker so the key is the real process
     // basename we can match against a running process.

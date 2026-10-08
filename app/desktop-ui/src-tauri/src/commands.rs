@@ -8,7 +8,7 @@
 //
 // IMPORTANT: every command here is `async fn`. Tauri v2 runs plain
 // (non-async) commands inline on the main thread, which is also the WebView2
-// message-pump thread — a synchronous SQLite query or engine_rpc TCP call
+// message-pump thread - a synchronous SQLite query or engine_rpc TCP call
 // there freezes the whole window. `async fn` commands are dispatched via
 // `async_runtime::spawn`, and the blocking bodies below run on
 // `spawn_blocking` so the UI thread never waits on disk/network I/O.
@@ -202,7 +202,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     .await
 }
 
-// Spawns the component updater (Updater.exe) with its window visible — the
+// Spawns the component updater (Updater.exe) with its window visible - the
 // Settings "Check for updates" action. Resolution mirrors the engine's
 // resolve_tauri_ui() (settings_window.cpp): installed exe next to the app
 // root, then the CMake build output, then a dev cargo tree. The updater has
@@ -400,7 +400,7 @@ pub async fn get_settings() -> Value {
 
 // Rejects a config document that assigns the same normalized hotkey chord to
 // more than one action. Defense-in-depth mirror of the check the engine's
-// `settings::save()` also runs before persisting — this one catches it before
+// `settings::save()` also runs before persisting - this one catches it before
 // the write even happens. "NONE" (hotkey disabled) never collides with itself.
 fn find_hotkey_collision(config: &Value) -> Option<String> {
     let hotkeys = config.get("hotkeys")?.as_object()?;
@@ -447,7 +447,7 @@ pub async fn save_settings(app: tauri::AppHandle, config: Value) -> Result<(), S
     blocking_result(move || settings_store::write_config(&config).map_err(|err| err.to_string())).await?;
     if let Err(err) = blocking(engine_rpc::reload_settings).await {
         // Settings are saved; the engine just couldn't reload them right now
-        // (it may not be running — it reads the new values at next start).
+        // (it may not be running - it reads the new values at next start).
         eprintln!("engine settings reload failed: {err}");
     }
     // Output folders may have changed: re-scope the asset protocol so

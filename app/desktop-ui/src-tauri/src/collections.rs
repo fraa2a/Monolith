@@ -1,6 +1,6 @@
 // Collections ("albums"): user-curated groupings of clips that span both
 // sources (replay + manual). Stored in a single global collections.db under
-// %LocalAppData%\Monolith — deliberately not per-catalog, because a collection
+// %LocalAppData%\Monolith - deliberately not per-catalog, because a collection
 // mixes clips from clips.db and recs.db. Rows referencing clips that have
 // since been deleted are pruned on read.
 

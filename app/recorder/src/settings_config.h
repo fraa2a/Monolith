@@ -17,18 +17,18 @@ struct AudioSourceConfig {
     std::wstring window_title;
     std::wstring window_class;
     bool enabled = true;
-    float volume = 1.0f;            // linear gain 0.0–1.0, applied to the recording
+    float volume = 1.0f;            // linear gain 0.0-1.0, applied to the recording
     std::vector<int> tracks;
 };
 
 // Configuration for the dynamic Active Game detection subsystem.
 struct ActiveGameSettings {
     bool detection_enabled         = true;
-    int  poll_interval_ms          = 3000;   // clamped 3000–30000
-    int  switch_debounce_ms        = 3000;   // clamped 1000–15000
-    int  min_confidence            = 50;     // clamped 0–100
+    int  poll_interval_ms          = 3000;   // clamped 3000-30000
+    int  switch_debounce_ms        = 3000;   // clamped 1000-15000
+    int  min_confidence            = 50;     // clamped 0-100
     bool fast_scan_enabled         = true;
-    int  fast_scan_min_interval_ms = 1000;   // clamped 500–5000
+    int  fast_scan_min_interval_ms = 1000;   // clamped 500-5000
 
     // Exe names (UTF-8, compared case-insensitively) to reject or boost.
     std::vector<std::string> blacklist_processes;
@@ -43,7 +43,7 @@ struct Config {
     std::wstring recordings_directory;
     std::wstring temp_directory;      // managed internally; not user-configurable
     int replay_disk_budget_mb = 2048; // persisted replay_buffer.disk_budget_mb; UI control deferred to phase 5
-    int replay_duration_seconds = 30; // presets 15/30/60/120, or custom 5–600
+    int replay_duration_seconds = 30; // presets 15/30/60/120, or custom 5-600
     std::string replay_clip_container = "mkv"; // "mkv" | "mp4"
     std::string replay_buffer_storage = "ram"; // "ram" (memory) | "disk" (segments on disk)
     bool replay_buffer_enabled = true;
@@ -62,7 +62,7 @@ struct Config {
     // it after idle_timeout_seconds with no detected game and restarts on detect.
     // Never stops an active manual recording.
     std::string capture_mode = "always"; // "always" | "game_only"
-    int capture_idle_timeout_seconds = 300; // clamped 30–3600
+    int capture_idle_timeout_seconds = 300; // clamped 30-3600
     bool capture_auto_record = false;
     // When true, the replay buffer stays active even with no detected game: in
     // game_only mode it falls back to full-screen capture until a game appears.
@@ -84,7 +84,7 @@ struct Config {
     // control is always CBR with the configured bitrate.
     std::string encoder_device = "gpu";   // "gpu" | "cpu"
     std::string encoder_codec  = "h264";  // "h264" | "h265" | "av1"
-    int video_bitrate_kbps = 20000;       // CBR target, clamped 1000–200000
+    int video_bitrate_kbps = 20000;       // CBR target, clamped 1000-200000
     int video_fps = 60;                   // presets 24/30/60/120/144
     std::string scaling_filter = "bilinear"; // fixed to bilinear (UI selector removed)
     std::string extra_ffmpeg_options;     // "key=value:key=value" AVOptions

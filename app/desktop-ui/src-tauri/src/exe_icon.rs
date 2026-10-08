@@ -3,8 +3,8 @@
 // bar capture status pattern) instead of remote artwork or a raw process name.
 // Windows-only by definition (SHDefExtractIconW).
 //
-// Cached in game_catalog.db keyed by process name (not install path) — see
-// game_catalog::cached_exe_icon/store_exe_icon — so the same game keeps its
+// Cached in game_catalog.db keyed by process name (not install path) - see
+// game_catalog::cached_exe_icon/store_exe_icon - so the same game keeps its
 // icon across reinstalls, relocations, or different machines instead of
 // re-extracting (and never sharing a cache entry) whenever the exe's on-disk
 // path differs.

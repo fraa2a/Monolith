@@ -52,7 +52,7 @@ target_compile_definitions(monolith
 )
 
 # Auto-update is delegated to the dedicated Updater.exe (app/updater),
-# launched by src/updater.cpp — no WinSparkle dependency anymore.
+# launched by src/updater.cpp - no WinSparkle dependency anymore.
 
 target_link_libraries(monolith
     PRIVATE
@@ -78,6 +78,16 @@ target_link_libraries(monolith
 )
 
 if(MSVC)
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    if(NOT CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        message(FATAL_ERROR "MSVC redistributable libraries were not found")
+    endif()
+    add_custom_command(TARGET monolith POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} "$<TARGET_FILE_DIR:monolith>"
+        COMMAND_EXPAND_LISTS
+        VERBATIM)
     target_compile_options(monolith PRIVATE /W4 /permissive-)
     target_link_options(monolith PRIVATE
         /MANIFEST:EMBED

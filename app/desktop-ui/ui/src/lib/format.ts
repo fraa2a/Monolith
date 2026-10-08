@@ -1,7 +1,7 @@
 // Display formatting helpers (deno.md §2.1).
 
 export function formatSize(bytes: number): string {
-  if (!bytes || bytes <= 0) return "—";
+  if (!bytes || bytes <= 0) return "-";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let v = bytes;
   let i = 0;
@@ -43,7 +43,7 @@ export function appLabel(displayName?: string | null, processName?: string | nul
 
 // Same as appLabel, but for clips specifically: when no game was detected,
 // the label depends on how the clip was captured rather than falling back to
-// the generic "Desktop" — a manual recording with no game is a screen
+// the generic "Desktop" - a manual recording with no game is a screen
 // recording, while a replay-buffer save with no game genuinely has none.
 export function clipSourceLabel(
   clip: { source: "replay" | "manual"; game_display_name?: string | null; game_process_name?: string | null },
@@ -83,7 +83,7 @@ export function formatDate(iso: string): string {
   return `${month} ${d.getDate()}, ${d.getFullYear()} ${time}`;
 }
 
-// Windows device paths ("\\.\DISPLAY2") are never user-facing copy — derive
+// Windows device paths ("\\.\DISPLAY2") are never user-facing copy - derive
 // a friendly "Display N" label from the trailing device number instead.
 export function monitorDisplayName(
   mon: { device?: string | null },

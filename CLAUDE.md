@@ -7,7 +7,7 @@ Dis file = work guide for agents and maintainers in repo.
 Monolith = Windows-only, recorder-first screen capture + replay-buffer app.
 Target Windows 11 x64. Built on native C++23 recording engine, Win32 tray/message-loop host, Tauri v2/WebView2 desktop UI sidecar, Elgato Stream Deck controller plugin.
 
-Component versions (independent — bump only what changed): engine = root
+Component versions (independent - bump only what changed): engine = root
 `CMakeLists.txt` `project(VERSION)`, ui = `app/desktop-ui/src-tauri/tauri.conf.json`,
 updater = `app/updater/src-tauri/tauri.conf.json`. The git tag only names a
 release and versions the full installer (see docs/RELEASING.md, ADR-0018).

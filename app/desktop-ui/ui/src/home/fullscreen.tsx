@@ -22,7 +22,7 @@ function fmtTime(seconds: number): string {
 
 // Custom YouTube-style fullscreen chrome (not the native <video controls>),
 // driven by an externally-owned <video> element rather than one it renders
-// itself — this lets a caller that already has a playing element (e.g. the
+// itself - this lets a caller that already has a playing element (e.g. the
 // detail view) reuse it in place instead of restarting playback on a new one.
 export function FullscreenChrome(
   { videoEl, multitrack, onClose }: {
@@ -125,7 +125,7 @@ export function FullscreenChrome(
   }, [onClose, videoEl, muted]);
 
   // Document-level (not a wrapping div's onMouseMove) so the autohide timer
-  // resets no matter which sibling element the pointer is over — the chrome
+  // resets no matter which sibling element the pointer is over - the chrome
   // here only renders fixed-position overlays, not a full-viewport container.
   useEffect(() => {
     document.addEventListener("mousemove", wake);

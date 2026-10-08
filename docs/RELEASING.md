@@ -3,12 +3,12 @@
 ## Distribution Model
 
 - Code + releases: `fraa2a/Monolith` (single repo; releases are public
-  assets on tag pushes — no separate releases repo).
+  assets on tag pushes - no separate releases repo).
 - Published artifacts per release:
-  - `MonolithSetup-X.Y.Z.exe` — full per-user installer (fresh installs).
+  - `MonolithSetup-X.Y.Z.exe` - full per-user installer (fresh installs).
   - `update-manifest.json` + `monolith-engine-*.zip` / `monolith-ui-*.zip` /
-    `monolith-updater-*.zip` — component update payload for Updater.exe.
-  - `appcast.xml` — legacy WinSparkle feed (migration only, see below).
+    `monolith-updater-*.zip` - component update payload for Updater.exe.
+  - `appcast.xml` - legacy WinSparkle feed (migration only, see below).
   - `monolith-src-X.Y.Z.zip` (GPLv3 corresponding source), Stream Deck plugin.
 - Install path: `%LocalAppData%\Programs\Monolith`.
 - User data path: `%LocalAppData%\Monolith`.
@@ -45,7 +45,7 @@ updates signed by a new key.
 
 ## Versioning (independent components)
 
-Each component carries its own version — bump only what changed:
+Each component carries its own version - bump only what changed:
 
 | Component | Source of truth | Used by |
 |---|---|---|
@@ -54,7 +54,7 @@ Each component carries its own version — bump only what changed:
 | updater | `version` in `app/updater/src-tauri/tauri.conf.json` | `Updater.exe` FileVersion, update-manifest |
 
 The git tag `vX.Y.Z` only names the release and versions the full installer
-(`MonolithSetup-X.Y.Z.exe`). A UI-only release bumps just the ui version —
+(`MonolithSetup-X.Y.Z.exe`). A UI-only release bumps just the ui version -
 clients never re-download the engine. CI warns if the tag sorts below any
 component version it ships.
 
@@ -77,7 +77,7 @@ component version it ships.
 Installs still on WinSparkle read `appcast.xml` (still generated every
 release, pointing at the full installer). They update once through the old
 full-installer path and land on the component-updater build; from there
-`update-manifest.json` takes over. Keep generating the appcast indefinitely —
+`update-manifest.json` takes over. Keep generating the appcast indefinitely -
 it costs nothing and there is no cutoff to coordinate.
 
 ## Release Command
@@ -90,7 +90,7 @@ git push origin vX.Y.Z
 CI then:
 
 1. Extract the version from the tag (installer version only).
-2. Configure CMake with pinned vcpkg baseline (no version injection — the
+2. Configure CMake with pinned vcpkg baseline (no version injection - the
    engine version comes from `project(VERSION)`).
 3. Build `Monolith.exe` + `ui\Monolith.UI.exe` + `Updater.exe`.
 4. Compile `installer/monolith.iss` into `MonolithSetup-X.Y.Z.exe`.
@@ -115,7 +115,7 @@ Use numeric `X.Y.Z` version for `VersionInfoVersion`.
   `$env:MONOLITH_UPDATE_MANIFEST = "http://127.0.0.1:PORT/update-manifest.json"`
   (serve the manifest + zips with any static server; URLs in the manifest
   point at the same server).
-- `Updater.exe --force` reinstalls even when versions match — the way to
+- `Updater.exe --force` reinstalls even when versions match - the way to
   exercise the download/apply path without publishing anything.
 - `MONOLITH_APP_DIR` overrides the app directory the updater operates on.
 

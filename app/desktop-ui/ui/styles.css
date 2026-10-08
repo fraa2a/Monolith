@@ -1,18 +1,18 @@
 /* ============================================================================
-   MONOLITH — desktop shell
+   MONOLITH - desktop shell
    A native-feeling capture app: custom title bar, sidebar rail, internal-scroll
    content panel. Monochrome gray base:
-     #000000  page background — content area, settings bg   (--dark)
-     #161616  elevated surfaces — cards, menus, dropdowns    (--mid / --card)
+     #000000  page background - content area, settings bg   (--dark)
+     #161616  elevated surfaces - cards, menus, dropdowns    (--mid / --card)
      #161616  main sidebar rail                              (--sidebar)
      #1F1F1F  settings popup's own sidebar rail              (--settings-rail)
-     #343434  highlights — hover, active, borders            (--light)
+     #343434  highlights - hover, active, borders            (--light)
      #4E4E4E  brighter hover step                             (--light-hi)
    Fonts are Windows-native (Bahnschrift / Consolas) so the app is offline and
    CSP-clean. Two chromatic accents, each with exactly one meaning, used
    nowhere else: red (--danger) = recording/destructive; gold (#f5c542) =
    favorited. A third, --accent (desaturated lavender-ice), means
-   interactive/active/selected — see --accent below.
+   interactive/active/selected - see --accent below.
    ============================================================================ */
 
 :root {
@@ -35,7 +35,7 @@
   --danger: #e5544b;   /* destructive actions only */
 
   /* One accent, one meaning: interactive / active / selected. Desaturated
-     lavender-ice — reads as "precise, native" rather than a brand color, and
+     lavender-ice - reads as "precise, native" rather than a brand color, and
      never used for recording (stays red) or favorites (stays gold). */
   --accent:      #9db4d1;
   --accent-hi:   #b9cbe3;
@@ -101,7 +101,7 @@ body {
   align-items: center;
   gap: 9px;
   padding-left: 16px;
-  /* Sized to content, not stretched — the status chip sits immediately after
+  /* Sized to content, not stretched - the status chip sits immediately after
      it, anchored to the left like Windows app chrome, instead of floating in
      whatever space a flex-grow split happens to leave. */
   flex: none;
@@ -166,7 +166,7 @@ body {
 .connect-toast-close:hover { opacity: 1; }
 
 /* Status cluster: the capture feed. Anchored directly after the brand (like a
-   hotkey/status pill next to a logo) as a self-contained chip — always has a
+   hotkey/status pill next to a logo) as a self-contained chip - always has a
    visible container, even when idle/disconnected, instead of reading as bare
    text floating in the bar. */
 .tb-status {
@@ -426,13 +426,13 @@ body {
   background: var(--accent);
   border-radius: 0 3px 3px 0;
 }
-/* Favorites keeps gold, not the accent — gold means "favorited" everywhere
+/* Favorites keeps gold, not the accent - gold means "favorited" everywhere
    else in the app (card star, detail-view star); the nav item follows suit. */
 .side-item.active.fav-active svg { color: #f5c542; }
 .side-item.active.fav-active::before { background: #f5c542; }
 .side-spacer { flex: 1; }
 
-/* Content is its own scroll panel — a dark well inset into the medium chrome */
+/* Content is its own scroll panel - a dark well inset into the medium chrome */
 .content {
   flex: 1;
   min-width: 0;
@@ -478,7 +478,7 @@ body {
 
 /* Search field and the filter selects share one fixed height so they line up
    exactly (native <input> and <select> differ by a couple of px otherwise).
-   Only vertical padding is zeroed — horizontal padding (search icon, select
+   Only vertical padding is zeroed - horizontal padding (search icon, select
    arrow) is preserved. */
 .toolbar .input,
 .toolbar .select {
@@ -676,7 +676,7 @@ body {
 }
 
 /* Favorite toggle: hover-reveal like the other overlay buttons, but stays
-   visible once the clip is favorited — color is the only signal, matching
+   visible once the clip is favorited - color is the only signal, matching
    the existing "gold = favorited" rule used everywhere else in the app. */
 .fav-toggle {
   position: absolute;
@@ -966,7 +966,7 @@ body {
 }
 .name-text:hover { text-decoration: underline; }
 
-/* Detail header actions — icon-only, no chrome until hover. Colour is the whole
+/* Detail header actions - icon-only, no chrome until hover. Colour is the whole
    affordance: neutral for rename, gold when a clip is favourited. */
 .detail-name-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 .act-btn {
@@ -1033,7 +1033,7 @@ body {
 }
 
 /* Fullscreen toggled from the detail view reuses the same <video> element in
-   place (see detail-view.tsx) — this just strips the windowed chrome so the
+   place (see detail-view.tsx) - this just strips the windowed chrome so the
    player fills the screen, instead of mounting a second player/element. */
 .detail-backdrop.fs-active { background: #000; backdrop-filter: none; gap: 0; }
 .detail-backdrop.fs-active .detail {
@@ -1122,7 +1122,7 @@ body {
   grid-template-columns: 210px 1fr;
   grid-template-rows: 1fr;
   width: min(880px, 94vw);
-  /* Fixed height regardless of which page is showing — switching between a
+  /* Fixed height regardless of which page is showing - switching between a
      dense page (Advanced) and a sparse one (Clip) used to resize the whole
      window, which was jarring. .settings-body scrolls internally instead;
      a sparse page just leaves empty space below its fields. */
@@ -1187,7 +1187,7 @@ body {
 .settings-tab.active svg { opacity: 1; color: var(--accent-hi); }
 .settings-group { display: flex; flex-direction: column; gap: 3px; }
 .settings-group + .settings-group { margin-top: 14px; }
-/* Section label — now only used inside the settings popup (the main sidebar is
+/* Section label - now only used inside the settings popup (the main sidebar is
    icon-only). Kept here since the base .side-section rule was removed with the
    main sidebar's text labels. */
 .side-section {
@@ -1311,7 +1311,7 @@ body {
 .duration-row > .input[type="number"] { min-width: 90px; width: 90px; text-align: right; }
 .duration-row > .input[type="number"]:disabled { opacity: .4; cursor: not-allowed; }
 .set-field-static { font-family: var(--mono); font-size: 13px; color: var(--text-dim); }
-/* Small inline action button (e.g. "Check now" in About) — same accent
+/* Small inline action button (e.g. "Check now" in About) - same accent
    treatment as the updater window's primary button. */
 .set-action {
   height: 30px; padding: 0 14px;

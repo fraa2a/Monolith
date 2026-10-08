@@ -1,7 +1,7 @@
 // Minimal WinHTTP client: manifest fetch + streaming download with progress.
 //
 // WinHTTP (not a Rust TLS stack) on purpose: the updater inherits the system
-// proxy configuration — the same behavior the WinSparkle era had — and stays
+// proxy configuration - the same behavior the WinSparkle era had - and stays
 // free of C dependencies, which also allows `cargo check --target
 // x86_64-pc-windows-msvc` from any host. Redirects (GitHub's
 // releases/latest/download → objects.githubusercontent.com) are followed by
@@ -48,7 +48,7 @@ fn crack_url(url: &str) -> Result<Parts, String> {
     let mut comps = URL_COMPONENTS::default();
     comps.dwStructSize = std::mem::size_of::<URL_COMPONENTS>() as u32;
     // 0xFFFFFFFF = return pointers/lengths of substrings inside the input
-    // URL — no side buffers needed.
+    // URL - no side buffers needed.
     comps.dwHostNameLength = 0xFFFF_FFFF;
     comps.dwUrlPathLength = 0xFFFF_FFFF;
     comps.dwExtraInfoLength = 0xFFFF_FFFF;

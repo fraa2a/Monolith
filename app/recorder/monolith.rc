@@ -5,7 +5,7 @@
 // Lowest-ID icon doubles as the executable's shell icon.
 IDI_MONOLITH ICON "../assets/icon.ico"
 
-// File version resource — read by Explorer, installers, and WinSparkle
+// File version resource - read by Explorer, installers, and WinSparkle
 // (update comparison uses the FileVersion of the running executable).
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION     MONOLITH_VERSION_MAJOR,MONOLITH_VERSION_MINOR,MONOLITH_VERSION_PATCH,0

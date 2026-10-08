@@ -467,7 +467,7 @@ static bool window_fills_monitor(HWND hwnd)
 }
 
 // Per-pid window facts gathered in one EnumWindows pass. The "best" window per
-// process is the largest visible unowned top-level window — the capture target.
+// process is the largest visible unowned top-level window - the capture target.
 struct WindowFacts {
     HWND         hwnd       = nullptr;
     int64_t      area       = 0;

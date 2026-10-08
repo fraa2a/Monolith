@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-// Public half of the Monolith Ed25519 signing key — the same pair WinSparkle
+// Public half of the Monolith Ed25519 signing key - the same pair WinSparkle
 // used. The private half lives in the CI secret WINSPARKLE_ED_PRIVATE_KEY and
 // signs each component zip (openssl pkeyutl -sign -rawin, Sparkle format);
 // scripts/generate-update-manifest.ps1 emits the signatures we verify here.
@@ -37,14 +37,14 @@ pub fn download(
     if expected_size > 0 && downloaded != expected_size {
         let _ = std::fs::remove_file(dest);
         return Err(format!(
-            "size mismatch — expected {expected_size} bytes, got {downloaded}"
+            "size mismatch - expected {expected_size} bytes, got {downloaded}"
         ));
     }
     if !expected_sha256.is_empty() {
         let digest = sha256_file(dest)?;
         if !digest.eq_ignore_ascii_case(expected_sha256) {
             let _ = std::fs::remove_file(dest);
-            return Err("checksum mismatch — the download is corrupt".to_string());
+            return Err("checksum mismatch - the download is corrupt".to_string());
         }
     }
     if !ed_signature_b64.is_empty() {

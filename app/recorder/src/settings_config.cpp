@@ -405,7 +405,7 @@ Config config_from_json(
     config.replay_duration_seconds = int_at(
         doc, "replay_buffer", "duration_seconds", 30);
 
-    // Presets are 15/30/60/120; a custom value is still accepted within 5–600.
+    // Presets are 15/30/60/120; a custom value is still accepted within 5-600.
     if (config.replay_duration_seconds < 5 || config.replay_duration_seconds > 600)
         config.replay_duration_seconds = 30;
 
@@ -415,7 +415,7 @@ Config config_from_json(
     config.replay_buffer_enabled = bool_at(doc, "replay_buffer", "enabled", true);
 
     // Where the rolling replay buffer lives: "ram" (in-memory, current
-    // behavior) or "disk" (keyframe-aligned segments on disk — survives
+    // behavior) or "disk" (keyframe-aligned segments on disk - survives
     // longer durations with bounded memory). Anything else falls back to ram.
     config.replay_buffer_storage = utf8_at(doc, "replay_buffer", "storage", "ram");
     if (config.replay_buffer_storage != "ram" && config.replay_buffer_storage != "disk")

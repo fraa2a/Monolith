@@ -101,7 +101,7 @@ export function CollectionPicker({ clip, onClose, onChanged }: {
           {loading
             ? <span class="loading-dots"><i /><i /><i /></span>
             : collections.length === 0
-            ? <p class="modal-msg">No collections yet — create one below.</p>
+            ? <p class="modal-msg">No collections yet - create one below.</p>
             : collections.map((c) => {
               const inCol = membership.has(c.id);
               return (

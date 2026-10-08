@@ -164,7 +164,7 @@ export function Segmented(
   );
 }
 
-// A slider bound to a 0–100 percentage, showing the live value.
+// A slider bound to a 0-100 percentage, showing the live value.
 export function VolumeSlider(
   { value, onChange, disabled }: {
     value: number; // 0..1
@@ -206,7 +206,7 @@ function keyLabel(e: KeyboardEvent): string | null {
   if (k === " ") return "Space";
   if (k.startsWith("Arrow")) return k.slice(5); // Left/Right/Up/Down
   if (k.length === 1) return k.toUpperCase();
-  // Named keys (F1–F24, Enter, Escape, Tab, Delete, Home, …) pass through as-is.
+  // Named keys (F1-F24, Enter, Escape, Tab, Delete, Home, …) pass through as-is.
   return k.charAt(0).toUpperCase() + k.slice(1);
 }
 
@@ -230,7 +230,7 @@ export function HotkeyCapture(
         return;
       }
       const main = keyLabel(e);
-      if (!main) return; // modifier alone — wait for a real key
+      if (!main) return; // modifier alone - wait for a real key
       const parts: string[] = [];
       if (e.ctrlKey) parts.push(MOD_LABEL.Control);
       if (e.shiftKey) parts.push(MOD_LABEL.Shift);

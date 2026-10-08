@@ -91,19 +91,19 @@ static void init()
 {
     if (!g_wav_start.empty()) return;
 
-    // Start: C5 → G5 ascending — "recording on"
+    // Start: C5 → G5 ascending - "recording on"
     g_wav_start = make_wav({
         {523.25, 65.0,  0.40},
         {783.99, 105.0, 0.48},
     });
 
-    // Stop: G5 → C5 descending — "recording off"
+    // Stop: G5 → C5 descending - "recording off"
     g_wav_stop = make_wav({
         {783.99, 65.0,  0.48},
         {523.25, 105.0, 0.38},
     });
 
-    // Clip saved: C5 → E5 → G5 arpeggio — "saved!"
+    // Clip saved: C5 → E5 → G5 arpeggio - "saved!"
     g_wav_clip = make_wav({
         {523.25, 50.0, 0.38},
         {659.25, 50.0, 0.42},
