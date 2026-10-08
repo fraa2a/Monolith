@@ -9,7 +9,7 @@ Updated: 2026-10-08
 - `feat/ui-redesign` implements the user's screenshot reference for Library, Favorites, Collections and full-page Settings, shared Preact shadcn-style button variants, GLOW SVG icons and bundled Inter. UI component version is 1.5.0; engine/updater versions and contracts are unchanged.
 - Recorder title-bar actions use existing commands. Navigation exits collections/settings; thumbnail actions are keyboard accessible; confirmation Cancel no longer triggers deletion on Enter. Capture shortcuts refresh after Settings closes.
 - TypeScript, Vite production build, browser interaction regression and 12 responsive layouts pass locally. GLOW/Inter licenses are included in the bundle. A dedicated UI CI job is added. Actual Windows/WebView2/media/device/window behavior remains unverified locally.
-- English implementation report and fixture previews: `docs/ui/2026-10-08-redesign.md`. Existing O07 pending settings writes and O12 membership/fullscreen/error feedback remain open. Publish a dedicated English PR; this request does not ask to merge it.
+- English implementation report and fixture previews: `docs/ui/2026-10-08-redesign.md`. Existing O07 pending settings writes and O12 membership/fullscreen/error feedback remain open. Published PR #7: https://github.com/fraa2a/Monolith/pull/7. Remote code tree matched the tested local tree. GitHub Core regression tests started; Windows CI was queued. This request does not ask to merge the redesign PR.
 
 
 
