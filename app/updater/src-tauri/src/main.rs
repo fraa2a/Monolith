@@ -7,6 +7,7 @@ mod archive;
 mod download;
 mod engine_rpc;
 mod http;
+mod install;
 mod manifest;
 mod paths;
 mod state;
@@ -42,7 +43,6 @@ fn fail(app: &AppHandle, message: &str) {
     emit_state(app);
 }
 
-
 #[tauri::command]
 fn updater_state() -> serde_json::Value {
     core().snapshot()
@@ -75,13 +75,19 @@ fn updater_retry(app: AppHandle) {
     });
 }
 
-
 /// Use the first three Windows FileVersion fields for semver comparison.
 fn three_part(v: &str) -> String {
     v.split('.').take(3).collect::<Vec<_>>().join(".")
 }
 
 fn run_check(app: &AppHandle, auto: bool) {
+    if let Err(e) = recover_update(&paths::app_dir()) {
+        fail(app, &format!("recovering interrupted update: {e}"));
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.show();
+        }
+        return;
+    }
     apply::sweep_old(&paths::app_dir());
     *core().manifest.lock().unwrap() = None;
     set_phase(app, Phase::Checking);
@@ -102,7 +108,9 @@ fn run_check(app: &AppHandle, auto: bool) {
     let force = FORCE.load(Ordering::Relaxed);
     let mut comps: Vec<ComponentState> = Vec::new();
     for key in ["engine", "ui", "updater"] {
-        let Some(info) = m.components.get(key) else { continue };
+        let Some(info) = m.components.get(key) else {
+            continue;
+        };
         let from = match key {
             "engine" => installed.engine.clone(),
             "ui" => installed.ui.clone(),
@@ -191,7 +199,6 @@ fn spawn_recording_watch(app: &AppHandle) {
     });
 }
 
-
 fn set_comp(key: &str, mutate: impl FnOnce(&mut ComponentState)) {
     let mut s = core().state.lock().unwrap();
     for c in s.components.iter_mut() {
@@ -232,7 +239,9 @@ fn run_pipeline(app: &AppHandle) {
 
     // 1. Download + verify each changed component into staging.
     for key in &keys {
-        let Some(info) = m.components.get(key.as_str()) else { continue };
+        let Some(info) = m.components.get(key.as_str()) else {
+            continue;
+        };
         set_comp(key, |c| {
             c.status = CompStatus::Downloading;
             c.downloaded = 0;
@@ -303,65 +312,15 @@ fn run_pipeline(app: &AppHandle) {
         emit_state(app);
     }
 
-    // 2. Apply. UI first (its process must close), engine next (its process
-    //    must exit), then relaunch the engine, then self-update last.
     core().state.lock().unwrap().speed_bps = 0;
     if engine_rpc::recording() {
         fail(app, "a recording is in progress - stop it and retry");
         return;
     }
     set_phase(app, Phase::Applying);
-
     let has = |k: &str| keys.iter().any(|x| x == k);
     let engine_was_running = engine_rpc::engine_running();
-
-    if has("ui") {
-        if engine_was_running {
-            if let Err(e) = engine_rpc::close_ui() {
-                fail(app, &format!("closing the interface failed: {e}"));
-                return;
-            }
-        }
-        let src = staging.join("ui");
-        if let Err(e) = archive::extract_zip(&staging.join("ui.zip"), &src)
-            .and_then(|_| apply::place_tree(&src, &app_dir.join("ui")))
-        {
-            fail(app, &format!("applying interface: {e}"));
-            return;
-        }
-    }
-
-    if has("engine") {
-        if engine_was_running {
-            engine_rpc::request_engine_exit();
-            if !engine_rpc::wait_engine_exit(Duration::from_secs(20)) {
-                fail(app, "the engine did not exit in time - close Monolith and retry");
-                return;
-            }
-        }
-        let src = staging.join("engine");
-        if let Err(e) = archive::extract_zip(&staging.join("engine.zip"), &src)
-            .and_then(|_| apply::place_tree(&src, &app_dir))
-        {
-            fail(app, &format!("applying engine: {e}"));
-            return;
-        }
-    }
-
-    // Relaunch before replacing the running updater image.
-    if has("engine") && engine_was_running {
-        use std::process::{Command, Stdio};
-        let _ = Command::new(app_dir.join("Monolith.exe"))
-            .current_dir(&app_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    }
-
-    // Record the applied versions (exe resources are the live source; this
-    // file is the fallback) before anything else can go wrong.
-    {
+    let installed = {
         let s = core().state.lock().unwrap();
         let mut v = s.installed.clone().unwrap_or(versions::Installed {
             engine: "0.0.0".into(),
@@ -376,15 +335,75 @@ fn run_pipeline(app: &AppHandle) {
                 _ => {}
             }
         }
-        versions::write_components_json(&v);
+        v
+    };
+    let tx = match prepare_update(&keys, &staging, &app_dir, &installed) {
+        Ok(tx) => tx,
+        Err(e) => {
+            fail(app, &format!("preparing update: {e}"));
+            return;
+        }
+    };
+    if engine_rpc::recording() {
+        let error = tx
+            .abort()
+            .err()
+            .map(|e| format!("; recovery: {e}"))
+            .unwrap_or_default();
+        fail(
+            app,
+            &format!("a recording started while preparing the update{error}"),
+        );
+        return;
     }
-
-    if has("updater") {
-        let src = staging.join("updater");
-        if let Err(e) = archive::extract_zip(&staging.join("updater.zip"), &src)
-            .and_then(|_| apply::self_swap(&src.join("Updater.exe")))
+    if has("ui") && engine_was_running {
+        if let Err(e) = engine_rpc::close_ui() {
+            let restore = tx
+                .abort()
+                .err()
+                .map(|e| format!("; recovery: {e}"))
+                .unwrap_or_default();
+            fail(app, &format!("closing the interface: {e}{restore}"));
+            return;
+        }
+    }
+    if has("engine") && engine_was_running {
+        engine_rpc::request_engine_exit();
+        if !engine_rpc::wait_engine_exit(Duration::from_secs(20)) {
+            let restore = tx
+                .abort()
+                .err()
+                .map(|e| format!("; recovery: {e}"))
+                .unwrap_or_default();
+            fail(
+                app,
+                &format!("the engine did not exit in time - close Monolith and retry{restore}"),
+            );
+            return;
+        }
+    }
+    if let Err(e) = tx.install() {
+        let restart = if has("engine")
+            && engine_was_running
+            && matches!(install::pending(&app_dir), Ok(false))
         {
-            fail(app, &format!("applying updater: {e}"));
+            restart_engine(&app_dir)
+                .err()
+                .map(|e| format!("; restarting restored engine: {e}"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        fail(app, &format!("applying update: {e}{restart}"));
+        return;
+    }
+    core().state.lock().unwrap().installed = Some(installed);
+    if has("engine") && engine_was_running {
+        if let Err(e) = restart_engine(&app_dir) {
+            fail(
+                app,
+                &format!("update applied, but the engine could not restart: {e}"),
+            );
             return;
         }
     }
@@ -393,6 +412,66 @@ fn run_pipeline(app: &AppHandle) {
     set_phase(app, Phase::Done);
 }
 
+fn recover_update(app_dir: &std::path::Path) -> Result<(), String> {
+    let interrupted = install::pending(app_dir)?;
+    let running = interrupted && engine_rpc::engine_running();
+    if running {
+        if engine_rpc::recording() {
+            return Err("stop the recording before recovering the update".into());
+        }
+        engine_rpc::close_ui()?;
+        engine_rpc::request_engine_exit();
+        if !engine_rpc::wait_engine_exit(Duration::from_secs(20)) {
+            return Err("close Monolith before recovering the update".into());
+        }
+    }
+    install::recover(app_dir)?;
+    if running {
+        restart_engine(app_dir)?;
+    }
+    Ok(())
+}
+
+fn prepare_update(
+    keys: &[String],
+    staging: &std::path::Path,
+    app_dir: &std::path::Path,
+    installed: &versions::Installed,
+) -> Result<install::Transaction, String> {
+    let mut files = Vec::new();
+    for key in keys {
+        let src = staging.join(key);
+        archive::extract_zip(&staging.join(format!("{key}.zip")), &src)?;
+        let prefix = if key == "ui" {
+            std::path::Path::new("ui")
+        } else {
+            std::path::Path::new("")
+        };
+        let component = install::files(&src, prefix)?;
+        if key == "updater"
+            && (component.len() != 1 || component[0].1 != std::path::Path::new("Updater.exe"))
+        {
+            return Err("updater payload must contain only Updater.exe".into());
+        }
+        files.extend(component);
+    }
+    let metadata = staging.join("components.json");
+    versions::stage_components_json(installed, &metadata)?;
+    files.push((metadata, "components.json".into()));
+    install::Transaction::prepare(app_dir, &files)
+}
+
+fn restart_engine(app_dir: &std::path::Path) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    Command::new(app_dir.join("Monolith.exe"))
+        .current_dir(app_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 fn focus_existing_instance() -> bool {
     use windows::core::HSTRING;
