@@ -5,6 +5,8 @@ Updated: 2026-10-08
 
 ## Current checkpoint: screenshot-based desktop UI redesign
 
+- Screenshot fidelity follow-up: the content panel now has the reference's 8 px top-left curve, including Library, Collections and Settings. Removed the horizontal title-bar separator so the header and navigation rail join continuously. Refreshed the three fixture previews; Vite production build, the existing 12-layout browser regression, text policy and whitespace checks pass. Native Windows window-frame rendering is not verified locally.
+
 - Updater follow-up PR #6 was merged. Redesign baseline is main `3cff095825edd5ace5e65c168c3ed3863e727f63`.
 - `feat/ui-redesign` implements the user's screenshot reference for Library, Favorites, Collections and full-page Settings, shared Preact shadcn-style button variants, GLOW SVG icons and bundled Inter. UI component version is 1.5.0; engine/updater versions and contracts are unchanged.
 - Recorder title-bar actions use existing commands. Navigation exits collections/settings; thumbnail actions are keyboard accessible; confirmation Cancel no longer triggers deletion on Enter. Capture shortcuts refresh after Settings closes.

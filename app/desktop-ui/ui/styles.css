@@ -77,7 +77,6 @@ body {
   display: flex;
   align-items: stretch;
   background: var(--sidebar);
-  border-bottom: 1px solid #1f1f1f;
 }
 .tb-brand {
   display: grid;
@@ -414,6 +413,7 @@ body {
   flex: 1;
   min-width: 0;
   background: var(--dark);
+  border-top-left-radius: var(--r-lg);
   overflow: hidden auto;
   padding: 0 16px 28px;
 }
