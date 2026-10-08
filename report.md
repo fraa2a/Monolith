@@ -874,3 +874,7 @@ not evidence of recovery. R7/R8/trim replacement remain open.
 U6 routes UI delete/rename exclusively through recorder JSON-RPC; offline engine returns its RPC error. `storage` now journals leaf-only delete/rename operations before no-overwrite moves, uses `.monolith-mutations` quarantine for deletes, commits catalog/tag/bookmark changes with journal stage, and recovers prepared/committed records at open. Ambiguous paths and invalid journal records fail closed. Reconcile removes a missing-video row transactionally. A named per-catalog Windows mutex plus recursive in-process lock guards recovery and mutations.
 
 Executed: Linux production-storage shim test (`tests/u6`), phase2 media tests, `cargo check --offline`, and `git diff --check`. This is not a filesystem/SQLite atomicity proof. Later hardening still needs stable file identity, reparse-point policy, Windows runtime validation, cross-process behavior validation, and broader crash/fault coverage. R7/R8 remain pending.
+
+## 2026-10-08 repository audit checkpoint
+
+See `docs/audit/2026-10-08.md` for current changes, concrete validation, three-PR scope and unresolved findings. `docs/audit/file-inventory.md` provides the file-by-file inventory. This checkpoint does not re-certify or close all historical findings above. The user authorized autonomous PR publication; no merge or release is part of the task.

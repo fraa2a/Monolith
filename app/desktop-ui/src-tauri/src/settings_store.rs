@@ -20,7 +20,9 @@ pub fn read_config() -> Option<Value> {
     let _ = conn.busy_timeout(std::time::Duration::from_millis(4000));
     let mut stmt = conn.prepare("SELECT key, value FROM settings").ok()?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .ok()?;
 
     let mut config = Map::new();
@@ -61,7 +63,11 @@ pub fn write_config(config: &Value) -> rusqlite::Result<()> {
             stmt.execute(params![key, value.to_string()])?;
         }
     }
-    tx.commit()
+    tx.commit()?;
+    if let Ok(mut cache) = DIRS_CACHE.lock() {
+        *cache = None;
+    }
+    Ok(())
 }
 
 pub fn read_runtime_status() -> Value {
@@ -77,26 +83,36 @@ pub fn read_runtime_status() -> Value {
 // each time showed up with large libraries, so cache the result keyed by the
 // settings.db mtime+size - a stat() instead of a DB round-trip, and still
 // correct when the engine (or anything else) rewrites the file.
-static DIRS_CACHE: Mutex<Option<(Option<SystemTime>, u64, paths::OutputDirs)>> = Mutex::new(None);
+struct DirCache {
+    path: PathBuf,
+    stamps: [(Option<SystemTime>, u64); 2],
+    dirs: paths::OutputDirs,
+}
+
+static DIRS_CACHE: Mutex<Option<DirCache>> = Mutex::new(None);
 
 pub fn output_dirs() -> paths::OutputDirs {
-    let defaults = paths::default_output_dirs();
-    let meta = fs::metadata(settings_db_path()).ok();
-    let mtime = meta.as_ref().and_then(|m| m.modified().ok());
-    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-
-    if let Ok(guard) = DIRS_CACHE.lock() {
-        if let Some((c_mtime, c_size, dirs)) = guard.as_ref() {
-            if *c_mtime == mtime && *c_size == size {
-                return dirs.clone();
-            }
+    let path = settings_db_path();
+    let wal = path.with_file_name("settings.db-wal");
+    let stamps = [path.as_path(), wal.as_path()].map(|p| {
+        let meta = fs::metadata(p).ok();
+        (
+            meta.as_ref().and_then(|m| m.modified().ok()),
+            meta.map(|m| m.len()).unwrap_or(0),
+        )
+    });
+    let mut cache = DIRS_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(hit) = cache.as_ref() {
+        if hit.path == path && hit.stamps == stamps {
+            return hit.dirs.clone();
         }
     }
-
-    let dirs = compute_output_dirs(defaults);
-    if let Ok(mut guard) = DIRS_CACHE.lock() {
-        *guard = Some((mtime, size, dirs.clone()));
-    }
+    let dirs = compute_output_dirs(paths::default_output_dirs());
+    *cache = Some(DirCache {
+        path,
+        stamps,
+        dirs: dirs.clone(),
+    });
     dirs
 }
 

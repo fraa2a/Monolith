@@ -58,6 +58,7 @@ ReplayBuffer::~ReplayBuffer()
 {
     if (impl_->save_thread.joinable())
         impl_->save_thread.join();
+    impl_->disk.reset();
     delete impl_;
 }
 
@@ -262,6 +263,7 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
     if (!impl_->saving.compare_exchange_strong(expected, true))
         return;
 
+    try {
     // Disk mode: hand off to the segment buffer (it owns its own save
     // thread); the facade's saving flag mirrors it so stats() stays honest.
     // Read cfg/disk under the lock - configure() can swap storage modes and
@@ -276,7 +278,8 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
                     // Run the completion callback before clearing the flag so
                     // a follow-up save cannot join this thread while its
                     // callback (catalog/thumbnail work) is still running.
-                    if (cb) cb(std::move(path));
+                    try { if (cb) cb(std::move(path)); }
+                    catch (...) { OutputDebugStringA("[replay] save callback failed\n"); }
                     impl_->saving.store(false);
                 });
             // The segment buffer dropped the request (its own save still
@@ -312,15 +315,20 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
          cb = std::move(cb)]() mutable
         {
             std::wstring result;
-            if (!snapshot.empty() && vsp_set) {
-                result = write_clip(std::move(snapshot), vsp, audio_params,
-                                    cfg.output_dir, cfg.duration_sec,
-                                    cfg.container);
-            }
-            // Callback first, flag after: see the disk branch above.
-            if (cb) cb(result);
+            try {
+                if (!snapshot.empty() && vsp_set) {
+                    result = write_clip(std::move(snapshot), vsp, audio_params,
+                                        cfg.output_dir, cfg.duration_sec, cfg.container);
+                }
+            } catch (...) { OutputDebugStringA("[replay] save worker failed\n"); }
+            try { if (cb) cb(result); }
+            catch (...) { OutputDebugStringA("[replay] save callback failed\n"); }
             impl_->saving.store(false);
         });
+    } catch (...) {
+        impl_->saving.store(false);
+        OutputDebugStringA("[replay] could not start save\n");
+    }
 }
 
 } // namespace replay_buffer

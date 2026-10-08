@@ -29,6 +29,7 @@ public:
     bool start(std::wstring output_dir, std::string container);
     bool pause();
     bool resume();
+    // output_path is empty if no packets were written or finalization failed.
     bool stop(std::wstring* output_path = nullptr);
 
     void push(encoding::EncodedPacket pkt);

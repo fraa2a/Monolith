@@ -34,3 +34,5 @@ template<class... Args> int swprintf_s(wchar_t* dst, size_t size, const wchar_t*
 inline bool CreateDirectoryW(const wchar_t* path, void*) {
     std::error_code ec; std::filesystem::create_directories(path, ec); return !ec;
 }
+
+inline void OutputDebugStringA(const char*) {}

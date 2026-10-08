@@ -3,6 +3,14 @@
 Updated: 2026-10-08
 
 
+## Continuation checkpoint 2026-10-08: status verification
+
+- Published packaging PR: https://github.com/fraa2a/Monolith/pull/3. Remote head verified as `8ba6db2`; Windows CI run `37710318411` failed during Configure because `overlay-ports` was in `vcpkg.json` instead of `vcpkg-configuration.json`. The earlier x264 archive/hash issue prompted the pinned Git overlay.
+- Local packaging follow-up `15c498a` moves overlay configuration into its correct file and tracks it in git. Local branch also contains the updater version/capability follow-up. Publishing was rejected by automatic authorization review, which treated the latest user turn as a status request. Do not bypass that rejection; obtain explicit authorization before another remote write.
+- Audit work remains uncommitted on `fix/code-audit`. Re-ran the portable Rust production-module harness: 5/5 tests passed, Windows updater module cross-check passed, and unused imports were removed. This is not a full Tauri host build or Windows execution.
+- Both frontends passed TypeScript checks and Vite production builds. Stream Deck build and the socket regression passed (UTF-8 splits, disconnect cleanup, bounded responses/pending requests, destroy).
+- Full native Windows build and clean-machine installation remain unverified. Audit and comment PRs and the final file-by-file report have not yet been published. Do not report them as complete.
+
 ## Session 2026-10-08: Windows runtime packaging and text policy
 
 - Copy MSVC redistributable libraries into the native runtime output via CMake.
@@ -445,3 +453,11 @@ replacement are still open.
 Delete/rename UI calls now require the running recorder and route over existing JSON-RPC; no UI SQLite fallback exists. Storage uses a validated operation journal and no-overwrite moves, delete quarantine, startup recovery, and a catalog-keyed Windows mutex. Focused Linux storage shim coverage exercised normal mutation, prepared delete/rename recovery, committed delete cleanup, ambiguous state rejection, and invalid journal rejection; phase2 tests and offline Cargo check also passed.
 
 Residual work: this does not prove filesystem/SQLite atomicity, stable file identity, reparse safety, Windows runtime/cross-process behavior, or a comprehensive fault matrix. R7/R8 remain pending.
+
+## Repository audit - 2026-10-08
+
+The user authorized autonomous publication of all three English PRs after checks. Earlier status-only approval blocks are superseded. Packaging PR #3 is published; native runtime staging, Rust static CRT, recursive runtime verifier, pinned x264 Git overlay, updater version and fullscreen permissions are included. Windows CI is compiling dependencies. No merge/release is authorized by this task.
+
+Technical audit changes and local regression evidence are in `docs/audit/2026-10-08.md`; `file-inventory.md` inventories every tracked/new file. PCM/mixer/recording/media, Rust catalogs/RPC/integrity, storage, frontends, plugin and packaging verifier checks passed. Windows native/Tauri runtime and clean installer launch are not certified. O01-O14 explicitly preserve unresolved architectural/runtime findings. Historical report findings must not all be marked closed.
+
+Comment cleanup follows on a separate branch based on the technical PR. Review stack: packaging, technical audit, comment cleanup.

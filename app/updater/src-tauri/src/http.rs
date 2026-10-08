@@ -14,9 +14,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Networking::WinHttp::{
     WinHttpCloseHandle, WinHttpConnect, WinHttpCrackUrl, WinHttpOpen, WinHttpOpenRequest,
     WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
-    WinHttpSetTimeouts, URL_COMPONENTS, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-    WINHTTP_FLAG_SECURE, WINHTTP_INTERNET_SCHEME_HTTPS, WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_QUERY_STATUS_CODE,
+    WinHttpSetTimeouts, URL_COMPONENTS, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE,
+    WINHTTP_INTERNET_SCHEME_HTTPS, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
 };
 
 const USER_AGENT: &str = "Monolith-Updater";
@@ -44,6 +43,9 @@ struct Parts {
 }
 
 fn crack_url(url: &str) -> Result<Parts, String> {
+    if url.contains('\0') || !url.starts_with("https://") {
+        return Err("URL must use HTTPS and contain no NUL characters".into());
+    }
     let wide_url: Vec<u16> = url.encode_utf16().collect();
     let mut comps = URL_COMPONENTS::default();
     comps.dwStructSize = std::mem::size_of::<URL_COMPONENTS>() as u32;
@@ -53,25 +55,34 @@ fn crack_url(url: &str) -> Result<Parts, String> {
     comps.dwUrlPathLength = 0xFFFF_FFFF;
     comps.dwExtraInfoLength = 0xFFFF_FFFF;
     unsafe {
-        WinHttpCrackUrl(&wide_url, 0, &mut comps)
-            .map_err(|_| format!("invalid URL: {url}"))?;
+        WinHttpCrackUrl(&wide_url, 0, &mut comps).map_err(|_| format!("invalid URL: {url}"))?;
     }
-    let host = unsafe {
+    if comps.nScheme != WINHTTP_INTERNET_SCHEME_HTTPS
+        || comps.dwHostNameLength == 0
+        || comps.lpszHostName.0.is_null()
+    {
+        return Err("invalid HTTPS host".into());
+    }
+    let mut host = unsafe {
         std::slice::from_raw_parts(comps.lpszHostName.0, comps.dwHostNameLength as usize)
     }
     .to_vec();
-    let mut path = unsafe {
-        std::slice::from_raw_parts(comps.lpszUrlPath.0, comps.dwUrlPathLength as usize)
-    }
-    .to_vec();
+    host.push(0);
+    let mut path = if comps.dwUrlPathLength == 0 {
+        vec![b'/' as u16]
+    } else {
+        if comps.lpszUrlPath.0.is_null() {
+            return Err("invalid URL path".into());
+        }
+        unsafe { std::slice::from_raw_parts(comps.lpszUrlPath.0, comps.dwUrlPathLength as usize) }
+            .to_vec()
+    };
     if !comps.lpszExtraInfo.0.is_null() && comps.dwExtraInfoLength > 0 {
         path.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                comps.lpszExtraInfo.0,
-                comps.dwExtraInfoLength as usize,
-            )
+            std::slice::from_raw_parts(comps.lpszExtraInfo.0, comps.dwExtraInfoLength as usize)
         });
     }
+    path.push(0);
     Ok(Parts {
         host,
         path,
@@ -104,8 +115,7 @@ where
             .map_err(|e| format!("WinHttpSetTimeouts failed: {e}"))?;
 
         let port = if parts.port != 0 { parts.port } else { 443 };
-        let connect_raw =
-            WinHttpConnect(session.0, PCWSTR(parts.host.as_ptr()), port, 0);
+        let connect_raw = WinHttpConnect(session.0, PCWSTR(parts.host.as_ptr()), port, 0);
         if connect_raw.is_null() {
             return Err("WinHttpConnect failed".to_string());
         }
@@ -174,6 +184,9 @@ where
 pub fn get_to_string(url: &str) -> Result<String, String> {
     let mut body = Vec::new();
     get(url, |chunk| {
+        if chunk.len() > 1024 * 1024 - body.len() {
+            return Err("manifest exceeds 1 MiB".into());
+        }
         body.extend_from_slice(chunk);
         Ok(())
     })?;
@@ -186,6 +199,7 @@ pub fn get_to_string(url: &str) -> Result<String, String> {
 pub fn get_to_file(
     url: &str,
     dest: &Path,
+    max_bytes: u64,
     cancel: &AtomicBool,
     on_progress: &dyn Fn(u64),
 ) -> Result<u64, String> {
@@ -198,11 +212,16 @@ pub fn get_to_file(
         if cancel.load(Ordering::Relaxed) {
             return Err("__cancelled".to_string());
         }
-        file.write_all(chunk).map_err(|e| format!("staging write failed: {e}"))?;
+        if chunk.len() as u64 > max_bytes.saturating_sub(total) {
+            return Err("download exceeds declared component size".into());
+        }
+        file.write_all(chunk)
+            .map_err(|e| format!("staging write failed: {e}"))?;
         total += chunk.len() as u64;
         on_progress(total);
         Ok(())
     });
+    drop(file);
     match result {
         Ok(()) => Ok(total),
         Err(e) => {

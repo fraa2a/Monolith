@@ -10,7 +10,9 @@ pub struct OutputDirs {
 pub fn local_app_data() -> PathBuf {
     env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData").join("Local")))
+        .or_else(|| {
+            env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData").join("Local"))
+        })
         .unwrap_or_default()
 }
 

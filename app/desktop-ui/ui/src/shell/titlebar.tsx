@@ -32,6 +32,8 @@ export function Titlebar({ view }: Props) {
   const [open, setOpen] = useState(false);
   const [showConnectToast, setShowConnectToast] = useState(false);
   const hasCheckedOnce = useRef(false);
+  const saving = useRef(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Runtime + engine status are read-only and safe to poll live.
   useEffect(() => {
@@ -162,12 +164,21 @@ export function Titlebar({ view }: Props) {
   const patternIcon = exeIcon ?? art.icon ?? null;
 
   const persist = async (mutate: (draft: Config) => void) => {
-    const draft = cloneConfig(config);
+    if (saving.current || !config) return;
+    saving.current = true;
+    const previous = config;
+    const draft = cloneConfig(previous);
     draft.capture_mode ??= {};
     draft.capture ??= {};
     mutate(draft);
+    setSaveError(null);
     setConfig(draft);
-    await saveConfig(draft);
+    const result = await saveConfig(draft);
+    if (!result.ok) {
+      setConfig(previous);
+      setSaveError(result.error ?? "Settings could not be saved");
+    }
+    saving.current = false;
   };
 
   const setMode = (next: "always" | "game_only") => {
@@ -209,6 +220,12 @@ export function Titlebar({ view }: Props) {
 
   return (
     <>
+      {saveError && (
+        <div class="connect-toast">
+          <span>{saveError}</span>
+          <button class="connect-toast-close" onClick={() => setSaveError(null)} title="Dismiss">×</button>
+        </div>
+      )}
       {showConnectToast && (
         <div class="connect-toast">
           <span>Couldn't reach the Monolith engine, is it running?</span>

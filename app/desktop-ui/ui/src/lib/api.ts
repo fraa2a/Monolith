@@ -156,7 +156,7 @@ export function subscribeClips(onChange: () => void): () => void {
     } else {
       unlisten = fn;
     }
-  });
+  }).catch((err) => console.error("Clip subscription failed", err));
   return () => {
     cancelled = true;
     unlisten?.();
@@ -241,7 +241,15 @@ export function exeIconUrl(executablePath: string, processName: string): Promise
   let request = exeIconRequests.get(key);
   if (!request) {
     request = invoke<string | null>("exe_icon", { path: executablePath, process: processName })
-      .catch(() => null);
+      .catch(() => null)
+      .then((icon) => {
+        if (icon === null) exeIconRequests.delete(key);
+        return icon;
+      });
+    if (exeIconRequests.size >= 128) {
+      const oldest = exeIconRequests.keys().next().value;
+      if (oldest !== undefined) exeIconRequests.delete(oldest);
+    }
     exeIconRequests.set(key, request);
   }
   return request;

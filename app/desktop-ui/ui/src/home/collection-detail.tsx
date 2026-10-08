@@ -35,21 +35,26 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
   const [confirmDeleteCol, setConfirmDeleteCol] = useState(false);
   const [busy, setBusy] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const loadId = useRef(0);
 
   const refetch = useCallback(async (silent = false) => {
+    const id = ++loadId.current;
     if (!silent) setLoading(true);
     try {
-      setClips(await collectionsApi.clips(collection.id));
+      const items = await collectionsApi.clips(collection.id);
+      if (id !== loadId.current) return;
+      setClips(items);
       setError(null);
     } catch (err) {
-      setError(String(err));
+      if (id === loadId.current) setError(String(err));
     } finally {
-      setLoading(false);
+      if (id === loadId.current) setLoading(false);
     }
   }, [collection.id]);
 
   useEffect(() => {
     refetch();
+    return () => { ++loadId.current; };
   }, [refetch]);
 
   const updateClip = (next: Clip) => {

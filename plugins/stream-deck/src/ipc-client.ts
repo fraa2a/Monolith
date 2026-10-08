@@ -12,47 +12,54 @@ export interface RecordingStatus {
     recording_enabled: boolean;
 }
 
-type Resolver = [(value: unknown) => void, (reason: unknown) => void];
+type Resolver = [(value: unknown) => void, (reason: unknown) => void, ReturnType<typeof setTimeout>];
 
 export class IpcClient {
     private socket: net.Socket | null = null;
-    private buf = '';
+    private connected = false;
     private pending = new Map<number, Resolver>();
     private nextId = 1;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private destroyed = false;
 
     connect(): void {
-        this._connect();
+        this.openSocket();
     }
 
-    private _connect(): void {
-        if (this.destroyed) return;
+    private openSocket(): void {
+        if (this.destroyed || this.socket) return;
 
         const s = new net.Socket();
-        s.setTimeout(0);
+        this.socket = s;
+        s.setEncoding('utf8');
+        let buf = '';
 
         s.connect(IPC_PORT, IPC_HOST, () => {
-            this.socket = s;
+            this.connected = true;
             if (this.reconnectTimer !== null) {
                 clearTimeout(this.reconnectTimer);
                 this.reconnectTimer = null;
             }
         });
 
-        s.on('data', (chunk: Buffer) => {
-            this.buf += chunk.toString('utf8');
+        s.on('data', (chunk: string) => {
+            buf += chunk;
             let nl: number;
-            while ((nl = this.buf.indexOf('\n')) !== -1) {
-                const line = this.buf.slice(0, nl);
-                this.buf = this.buf.slice(nl + 1);
-                this._onLine(line.trim());
+            while ((nl = buf.indexOf('\n')) !== -1) {
+                const line = buf.slice(0, nl);
+                buf = buf.slice(nl + 1);
+                if (Buffer.byteLength(line) > 64 * 1024) { s.destroy(); return; }
+                this.onLine(line.trim());
             }
+            if (Buffer.byteLength(buf) > 64 * 1024) s.destroy();
         });
 
         s.on('close', () => {
+            if (this.socket !== s) return;
             this.socket = null;
-            this._scheduleReconnect();
+            this.connected = false;
+            this.rejectPending(new Error('IPC: disconnected'));
+            this.scheduleReconnect();
         });
 
         s.on('error', () => {
@@ -60,22 +67,23 @@ export class IpcClient {
         });
     }
 
-    private _scheduleReconnect(): void {
+    private scheduleReconnect(): void {
         if (this.destroyed || this.reconnectTimer !== null) return;
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
-            this._connect();
+            this.openSocket();
         }, RECONNECT_MS);
     }
 
-    private _onLine(line: string): void {
+    private onLine(line: string): void {
         if (!line) return;
         try {
             const msg = JSON.parse(line) as { id?: number; result?: unknown; error?: unknown };
-            if (typeof msg.id !== 'number') return;
+            if (!msg || typeof msg.id !== 'number') return;
             const handlers = this.pending.get(msg.id);
             if (!handlers) return;
             this.pending.delete(msg.id);
+            clearTimeout(handlers[2]);
             if (msg.error !== undefined) {
                 handlers[1](msg.error);
             } else {
@@ -88,21 +96,23 @@ export class IpcClient {
 
     request(method: string): Promise<unknown> {
         return new Promise<unknown>((resolve, reject) => {
-            if (!this.socket) {
+            if (!this.connected || !this.socket) {
                 reject(new Error('IPC: not connected'));
                 return;
             }
+            if (this.pending.size >= 64) {
+                reject(new Error('IPC: too many pending requests'));
+                return;
+            }
             const id = this.nextId++;
-            this.pending.set(id, [resolve, reject]);
+            const timer = setTimeout(() => {
+                if (this.pending.delete(id)) reject(new Error(`IPC: timeout waiting for ${method}`));
+            }, REQUEST_TIMEOUT_MS);
+            this.pending.set(id, [resolve, reject, timer]);
 
             const payload = JSON.stringify({ jsonrpc: '2.0', id, method }) + '\n';
             this.socket.write(payload, 'utf8');
 
-            setTimeout(() => {
-                if (this.pending.delete(id)) {
-                    reject(new Error(`IPC: timeout waiting for ${method}`));
-                }
-            }, REQUEST_TIMEOUT_MS);
         });
     }
 
@@ -115,7 +125,15 @@ export class IpcClient {
     }
 
     isConnected(): boolean {
-        return this.socket !== null;
+        return this.connected;
+    }
+
+    private rejectPending(error: Error): void {
+        for (const handlers of this.pending.values()) {
+            clearTimeout(handlers[2]);
+            handlers[1](error);
+        }
+        this.pending.clear();
     }
 
     destroy(): void {
@@ -126,5 +144,7 @@ export class IpcClient {
         }
         this.socket?.destroy();
         this.socket = null;
+        this.connected = false;
+        this.rejectPending(new Error('IPC: client destroyed'));
     }
 }

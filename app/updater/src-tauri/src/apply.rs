@@ -3,35 +3,6 @@ use std::path::Path;
 use windows::core::PCWSTR;
 use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
 
-/// Extracts a component zip into dest, rejecting entries that escape dest
-/// (zip-slip).
-pub fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
-    let file = fs::File::open(zip_path).map_err(|e| format!("open zip: {e}"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {e}"))?;
-    fs::create_dir_all(dest).map_err(|e| format!("staging dir: {e}"))?;
-    for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| format!("zip entry {i}: {e}"))?;
-        let Some(rel) = entry.enclosed_name() else {
-            return Err(format!("unsafe path in zip: {}", entry.name()));
-        };
-        let out = dest.join(rel);
-        if entry.is_dir() {
-            fs::create_dir_all(&out).map_err(|e| format!("mkdir {}: {e}", out.display()))?;
-            continue;
-        }
-        if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
-        }
-        let mut w =
-            fs::File::create(&out).map_err(|e| format!("extract {}: {e}", out.display()))?;
-        std::io::copy(&mut entry, &mut w)
-            .map_err(|e| format!("extract {}: {e}", out.display()))?;
-    }
-    Ok(())
-}
-
 fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str()
         .to_string_lossy()
@@ -43,9 +14,7 @@ fn wide(path: &Path) -> Vec<u16> {
 fn to_old(path: &Path) -> Result<(), String> {
     // Renaming a running image or a loaded DLL is legal on Windows; deleting
     // is not. Park replaced files as *.old - swept on the next launch.
-    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-    name.push(".old");
-    let old = path.with_file_name(name);
+    let old = old_path(path);
     unsafe {
         MoveFileExW(
             PCWSTR(wide(path).as_ptr()),
@@ -57,19 +26,47 @@ fn to_old(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn old_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".old");
+    path.with_file_name(name)
+}
+
 fn place_file(staged: &Path, target: &Path) -> Result<(), String> {
-    if target.exists() {
-        to_old(target)?;
-    }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+    }
+    let replaced = target.exists();
+    if replaced {
+        to_old(target)?;
     }
     if fs::rename(staged, target).is_err() {
         // Same-volume rename should always work (staging lives inside the
         // app dir); the copy+delete fallback covers exotic setups.
-        fs::copy(staged, target)
-            .and_then(|_| fs::remove_file(staged))
-            .map_err(|e| format!("place {}: {e}", target.display()))?;
+        if let Err(error) = fs::copy(staged, target) {
+            if replaced {
+                unsafe {
+                    MoveFileExW(
+                        PCWSTR(wide(&old_path(target)).as_ptr()),
+                        PCWSTR(wide(target).as_ptr()),
+                        MOVEFILE_REPLACE_EXISTING,
+                    )
+                    .map_err(|restore| {
+                        format!(
+                            "place {}: {error}; restore failed: {restore}",
+                            target.display()
+                        )
+                    })?;
+                }
+            } else {
+                let _ = fs::remove_file(target);
+            }
+            return Err(format!("place {}: {error}", target.display()));
+        }
+        let _ = fs::remove_file(staged);
     }
     Ok(())
 }
@@ -101,10 +98,7 @@ fn place_tree_rec(root: &Path, src: &Path, dest: &Path) -> Result<(), String> {
 /// safe mid-flight; the parked image is swept on the next launch.
 pub fn self_swap(new_exe: &Path) -> Result<(), String> {
     let current = std::env::current_exe().map_err(|e| format!("self path: {e}"))?;
-    to_old(&current)?;
-    fs::copy(new_exe, &current)
-        .map(|_| ())
-        .map_err(|e| format!("self swap: {e}"))
+    place_file(new_exe, &current)
 }
 
 /// Deletes *.old leftovers from previous applies (app root + ui\). A failure
@@ -114,7 +108,9 @@ pub fn self_swap(new_exe: &Path) -> Result<(), String> {
 pub fn sweep_old(app_dir: &Path) {
     let dirs = [app_dir.to_path_buf(), app_dir.join("ui")];
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let p = entry.path();
             if p.extension().map(|e| e == "old").unwrap_or(false) {

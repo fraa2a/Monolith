@@ -56,3 +56,15 @@ for row in (root / 'results.tsv').read_text().splitlines():
             assert abs(expected - float(packet['pts_time'])) < 0.0021, ('audio offset', output_name, index, expected, packet['pts_time'])
             pos += 1
 print('PASS timeline: 16 trims, lossless frame hashes, fractional/VFR frame PTS/count, audio codec/payload/offsets, actual duration')
+
+manual = Path((root / 'manual-path.txt').read_text())
+assert hashes(manual) == hashes(root / 'input.mp4'), 'manual recording dropped or changed frames'
+for index in (1, 2):
+    src = probe(root / 'input.mp4', '-select_streams', str(index), '-show_packets', '-show_data_hash', 'sha256')['packets']
+    dst = probe(manual, '-select_streams', str(index), '-show_packets', '-show_data_hash', 'sha256')['packets']
+    by_hash = {p['data_hash']: p for p in src}
+    assert dst, 'missing manual audio'
+    for packet in dst:
+        original = by_hash[packet['data_hash']]
+        assert abs(float(original['pts_time']) - float(packet['pts_time'])) < 0.0021, 'manual A/V origin'
+print('PASS manual recording: all video frame hashes and both audio track offsets preserved')

@@ -309,3 +309,13 @@ Date: 2026-10-08
 The native recorder and vcpkg dependencies retain dynamic MSVC linkage. CMake copies the redistributable runtime beside the engine. Rust UI and updater binaries use a static CRT, matching their independent single-executable component payloads.
 
 The verifier scans the root and sidecars, requires imports beside each binary and never treats VC runtime DLLs installed on a CI host as Windows prerequisites. All component staging directories are checked before packaging. Dynamically loaded driver/WebView2 dependencies and actual loader behavior require a clean Windows 11 smoke test.
+
+## ADR-0020: Audit bounds and error propagation
+
+Date: 2026-10-08
+
+Collection hydration distinguishes unavailable catalogs from absent clips, loads IDs in batches, and prunes only after all required catalogs are readable. Bookmark sequence allocation uses an immediate transaction. Existing direct UI metadata writes remain a documented single-writer violation.
+
+Both Rust engine clients require bounded JSON-RPC response envelopes tied to the request ID. Updater components require validated size, SHA256 and Ed25519 metadata; unsigned components have no bypass. Archive extraction is a separate module with Windows path/link/resource limits. Per-file replacement restoration does not provide component-wide rollback.
+
+Manual recording uses one presentation origin across all streams to preserve composition and intertrack offsets. Failed packet/finalization output is not returned for cataloging. Synchronous recording I/O and pause/resume continuity remain follow-up work.
