@@ -10,12 +10,7 @@ struct AVFrame;
 
 namespace encoding {
 
-// Decodes the first frame of an existing video file and writes it as a PNG
-// thumbnail. The frame is scaled so its longest side is at most max_dim
-// (aspect ratio preserved). Returns true on success. Thread-safe: opens its
-// own demuxer/decoder/scaler and touches no shared state, so it is safe to
-// call from the async clip-save thread or a background reconcile thread.
-// Never call it from the UI/tray message loop (it does blocking decode I/O).
+// Blocking decode/PNG I/O: call off the UI thread. max_dim bounds the longest side.
 bool generate_thumbnail(const std::wstring& video_path,
                         const std::wstring& thumb_path,
                         int max_dim = 480);
@@ -86,12 +81,8 @@ std::string probe_video_encoder(int width, int height);
 // in probe order.  Used to populate the Settings UI encoder list.
 std::vector<std::string> available_video_encoders(int width, int height);
 
-// Resolves the user-facing choice (device: "gpu"/"cpu", codec: "h264"/"h265"/"av1")
-// to a concrete FFmpeg encoder name the current machine can actually open at
-// the given dimensions. GPU tries the vendor HW encoders (NVENC → AMF → QSV)
-// for the codec; CPU uses libx264/libx265/libaom-av1. If the preferred device
-// yields no working encoder, falls back to the other device for the same
-// codec. Returns "" if nothing opens.
+// Try the requested device, then the other device within the same codec family.
+// Return an empty name if no encoder opens.
 std::string resolve_video_encoder(const std::string& device,
                                    const std::string& codec,
                                    int width, int height);
@@ -103,7 +94,7 @@ struct VideoEncoderPerfStats {
     uint64_t encode_time_us_total = 0;
 };
 
-// H.264 encoder.  Not thread-safe - drive from a single thread (or serialise).
+// Serialize calls to the video encoder.
 class VideoEncoder {
 public:
      VideoEncoder();
@@ -116,20 +107,15 @@ public:
         int     height = 0;          // output (encoded) height
         VideoCodec codec = VideoCodec::H264;
         int     fps     = 60;
-        // Rate control is always CBR at this target bitrate (bits per second).
-        // quality is retained only for probe/back-compat and is unused by the
-        // recorder path.
+        // bitrate is in bits per second; positive quality selects the legacy quality mode.
         int64_t bitrate = 20'000'000; // CBR target, bits/s
         int     quality = 0;          // 0 = CBR (default); >0 = legacy CQP/CRF
-        // Scaling filter (OBS-style): "bilinear", "bicubic", "lanczos".
-        // Used by sws_scale when capture and output resolutions differ.
         std::string scaling_filter = "bilinear";
         // "" or "auto" → probe NVENC → AMF → QSV → libx264.
         // Otherwise this encoder is tried first, then the probe order.
         std::string preferred_encoder;
-        // Extra AVOptions passed to avcodec_open2, "key=value:key=value"
-        // (also accepts ',' or ' ' between pairs).  If the encoder rejects
-        // them, open() retries without and extra_options_rejected() is set.
+        // Extra AVOptions use key=value pairs separated by colon, comma or space.
+        // Rejected options trigger a retry without extras and set extra_options_rejected.
         std::string extra_options;
         // Live capture keeps zerolatency tuning (no B-frames, fast presets).
         // Offline re-encode (quick trim) clears this for better quality per
@@ -140,21 +126,13 @@ public:
     // Open codec.  sink receives encoded packets (called synchronously).
     bool open(Config const& cfg, PacketSink sink);
 
-    // Encode one BGRA frame.  bgra must be valid for the duration of the call.
-    // stride = bytes per row (>= width*4 after GPU-alignment).
-    // Frames are scaled to the configured output width/height when the
-    // source dimensions differ.
-    // pts: frame index in the encoder timebase (1/fps).  Must be supplied by
-    // a clock-locked CFR pacer so playback speed matches wall-clock.  Pass -1
-    // to fall back to the internal auto-increment counter (legacy behaviour).
+    // BGRA storage must remain valid during the call; stride includes row padding.
+    // PTS is a frame index in 1/fps; -1 selects internal incrementing timestamps.
     void push_bgra(const uint8_t* bgra, int stride, int width, int height,
                    int64_t pts = -1);
 
-    // Encode one decoded frame directly (e.g. YUV420P from a demuxer).  When
-    // the frame already matches the encoder's pixel format and output size
-    // the planes are shared - no BGRA round-trip, no extra quality loss.
-    // Otherwise the frame is converted/scaled like push_bgra would.
-    // pts semantics as in push_bgra.
+    // Matching format/size shares the decoded planes; other input is converted.
+    // PTS follows push_bgra semantics.
     void push_frame(const AVFrame* frame, int64_t pts = -1);
 
     void flush();
@@ -210,18 +188,11 @@ private:
     Impl* impl_;
 };
 
-// Mixes PCM from multiple capture sources into a single output stream for one
-// audio track. Each source is resampled to a canonical format and buffered;
-// an internal wall-clock-paced thread sums all sources (with clipping) and
-// emits a steady output stream through the sink, so the downstream encoder
-// timeline advances at real-time rate regardless of per-source bursts/gaps.
-//
-// Used only when two or more sources are routed to the same track; a single
-// source still feeds its encoder directly without going through the mixer.
+// Resample sources to one track and emit wall-clock-paced float PCM.
+// Use direct encoder input when a track has only one source.
 class TrackMixer {
 public:
-    // Sink receives mixed PCM in the canonical format (interleaved float).
-    // Signature mirrors AudioEncoder::push_pcm so it can forward directly.
+    // Sink PCM is interleaved float in the configured output format.
     using Sink = std::function<void(const uint8_t* data, int bytes,
                                     int sample_rate, int channels,
                                     int bit_depth, bool is_float)>;
@@ -234,22 +205,17 @@ public:
     // Starts the mix thread. out_channels is the canonical channel count.
     bool open(int out_sample_rate, int out_channels, Sink sink);
 
-    // Registers a source and returns its id (>= 0), or -1 if not open.
-    // Thread-safe. Optional linear gain (0.0-1.0+) applied to this source's
-    // samples before they are summed into the mix.
+    // Gain is linear; negative/nonfinite input is muted. Return -1 when registration fails.
     int add_source(float gain = 1.0f);
 
-    // Updates a source's linear gain. Thread-safe; no-op for unknown ids.
     void set_source_gain(int source_id, float gain);
 
-    // Removes a previously added source. Thread-safe.
     void remove_source(int source_id);
 
     // Number of currently registered sources.
     int source_count() const;
 
-    // Feeds PCM for one source. Converts to the canonical format and buffers it.
-    // Safe to call from that source's capture thread; data need not outlive call.
+    // Copy/convert PCM during the call; the caller retains input ownership.
     void push(int source_id, const uint8_t* data, int bytes,
               int sample_rate, int channels, int bit_depth, bool is_float);
 

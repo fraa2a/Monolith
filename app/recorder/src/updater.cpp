@@ -116,8 +116,7 @@ void post_update_cleanup()
     const std::filesystem::path base = module_dir();
     if (base.empty()) return;
 
-    // *.old files parked by the updater's swap dance (a replaced engine exe
-    // or DLL cannot be deleted while loaded - deletion is retried here).
+    // Retry removal of parked .old files after the loaded binaries exit.
     const std::filesystem::path dirs[] = { base, base / "ui" };
     std::error_code ec;
     for (const auto& dir : dirs) {

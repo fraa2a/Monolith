@@ -31,9 +31,7 @@ struct PacketInfo {
 
 using PacketCallback = std::function<void(const PacketInfo&)>;
 
-// Optional diagnostic log sink (tag, message). The host wires this to its own
-// logger so audio-library diagnostics (e.g. process-loopback HRESULT failures)
-// land in the app log. Pass nullptr to disable. Set once at startup.
+// Set the diagnostic sink once before starting capture.
 void set_log_sink(std::function<void(const char* tag, const char* msg)> sink);
 
 struct DeviceInfo {
@@ -59,17 +57,13 @@ std::vector<ProcessAudioSessionInfo> enumerate_render_sessions();
 ProcessInfo active_foreground_process();
 
 // Config passed to detect_active_game() to drive blacklist/whitelist/confidence.
-// All exe names in blacklist/whitelist/manual_games are compared case-insensitively.
+// Blacklist names are matched case-insensitively; legacy whitelist fields are inert.
 struct DetectConfig {
     std::vector<std::wstring> blacklist;    // processes to reject unconditionally
-    std::vector<std::wstring> whitelist;    // processes that receive a strong bonus
-    std::vector<std::wstring> manual_games; // user-explicitly-chosen games (strong bonus)
-    int min_confidence = 50;               // 0-100; candidates below this are discarded
-    // When Monolith's own window (recorder or Settings) is in the foreground,
-    // the real game loses its foreground bonus and may drop below
-    // min_confidence - invalidating detection while Settings is open.  Set this
-    // to the currently-tracked game pid so its foreground bonus stays "sticky"
-    // while a Monolith window holds focus.  0 = no sticky fallback.
+    std::vector<std::wstring> whitelist;    // legacy input, ignored by database detection
+    std::vector<std::wstring> manual_games; // legacy input, ignored by database detection
+    int min_confidence = 50;               // legacy input, ignored by database detection
+    // Retain the tracked game foreground bonus while Monolith has focus; 0 disables it.
     uint32_t sticky_foreground_pid = 0;
 };
 
@@ -84,11 +78,8 @@ struct ActiveGameResult {
     bool fullscreen  = false;
 };
 
-// One running process whose executable is present in the local game-list DB.
-// Detection is DB-gated: only DB-matched processes ever become candidates. The
-// window facts (foreground/fullscreen/capture_window) only order candidates and
-// select the capture target - they never gate membership. display_name /
-// discord_app_id come from the DB (UTF-8).
+// Candidates require local database membership. Window facts rank them;
+// display names and app IDs come from the database as UTF-8.
 struct GameCandidateInfo {
     ProcessInfo process;
     std::string display_name;
@@ -97,24 +88,15 @@ struct GameCandidateInfo {
     bool     fullscreen = false;
     bool     has_session = false;    // has an active audio render session
     HWND     capture_window = nullptr; // main window to capture, if any
-    // True when several games share this executable (e.g. many Java games use
-    // javaw.exe) AND the main-window title matched one of them, so display_name/
-    // discord_app_id below were resolved to that specific game rather than an
-    // arbitrary same-exe sibling. Purely informational.
+    // Marks shared-executable identity resolved through a window-title match.
     bool     title_matches_db = false;
 };
 
-// DB-gated detection: returns every running process whose exe basename is in the
-// game-list DB (minus the user blacklist and built-in shell/self processes).
-// Selection among candidates is the caller's job. Empty when nothing matches or
-// the DB hasn't synced yet.
+// Return database-matched processes minus blacklist/self/shell entries; callers select the target.
 std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg);
 
-// Config-driven active-game detection, now DB-gated: returns the single best
-// candidate from detect_game_candidates (foreground > fullscreen > audio session
-// > window area). process_id == 0 when nothing qualifies. The blacklist and
-// sticky_foreground_pid in cfg are honored; whitelist/manual_games/min_confidence
-// are inert (detection is purely DB membership now).
+// Rank database candidates by foreground, fullscreen, audio and area.
+// A zero process_id means no target; legacy confidence/whitelist fields are inert.
 ActiveGameResult detect_active_game(const DetectConfig& cfg);
 
 // Convenience overload: built-in defaults (shell/Monolith excluded). Returns the
@@ -140,7 +122,7 @@ public:
     WasapiCapture& operator=(const WasapiCapture&) = delete;
 
     // COM must be initialized on the calling thread before start().
-    // cb is invoked from the internal capture thread - must be thread-safe.
+    // cb runs on the capture thread; synchronize its shared state.
     bool start(Mode mode, PacketCallback cb);
     bool start_device(Mode mode, const std::wstring& device_id, PacketCallback cb);
     bool start_process_loopback(uint32_t process_id, PacketCallback cb);

@@ -12,9 +12,6 @@ interface Props {
   format?: (o: string) => string; // display transform (e.g. "#" + tag)
 }
 
-// White-icon filter trigger that opens a custom dropdown: a type-to-search box
-// plus the filterable option list. Replaces the native <select> so games and
-// hashtags can be searched, not just scrolled.
 export function FilterMenu(
   { icon, title, placeholder, allLabel, options, value, onChange, format }: Props,
 ) {

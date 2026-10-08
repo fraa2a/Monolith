@@ -1,17 +1,4 @@
-// Monolith Updater (Updater.exe) - component self-updater.
-//
-// Owns the whole update flow: fetch update-manifest.json from the releases
-// page, compare per-component versions (engine / ui / updater are versioned
-// independently - a UI-only release never touches the engine), download ONLY
-// the components whose version changed, verify sha256 + Ed25519 (same key
-// pair WinSparkle used), stage and swap files on disk (rename-to-.old dance),
-// and relaunch the engine. The recorder spawns this exe with --auto at
-// startup (silent unless an update exists) and from the tray "Check for
-// Updates…" (window immediately).
-//
-// The Preact frontend is a pure projection of "update-state" events plus a
-// few commands (start / cancel / retry). Layout on disk (installed):
-//   {app}\Monolith.exe  {app}\Updater.exe  {app}\ui\Monolith.UI.exe
+// Component updater host; publish state to the frontend over update-state events.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -32,7 +19,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 static CORE: OnceLock<Core> = OnceLock::new();
-// --force: reinstall even when versions match (testing / repair path).
 static FORCE: AtomicBool = AtomicBool::new(false);
 
 fn core() -> &'static Core {
@@ -56,7 +42,6 @@ fn fail(app: &AppHandle, message: &str) {
     emit_state(app);
 }
 
-// ── Commands (frontend) ─────────────────────────────────────────────────────
 
 #[tauri::command]
 fn updater_state() -> serde_json::Value {
@@ -90,10 +75,8 @@ fn updater_retry(app: AppHandle) {
     });
 }
 
-// ── Check ───────────────────────────────────────────────────────────────────
 
-/// Truncate to the first three numeric groups so semver can parse 4-part
-/// Windows FileVersions ("1.2.3.4" → "1.2.3").
+/// Use the first three Windows FileVersion fields for semver comparison.
 fn three_part(v: &str) -> String {
     v.split('.').take(3).collect::<Vec<_>>().join(".")
 }
@@ -106,7 +89,7 @@ fn run_check(app: &AppHandle, auto: bool) {
     let m = match manifest::fetch() {
         Ok(m) => m,
         Err(e) => {
-            // A failed background check must never nag the user.
+            // Silent startup checks suppress their error window.
             if auto {
                 std::process::exit(0);
             }
@@ -131,8 +114,7 @@ fn run_check(app: &AppHandle, auto: bool) {
             semver::Version::parse(&to),
         ) {
             (Ok(a), Ok(b)) => b > a,
-            // Unparseable version: fall back to inequality so the component
-            // still heals itself through a reinstall.
+            // Compare unparseable versions as strings to allow replacement.
             _ => from != to,
         };
         if force || newer {
@@ -186,9 +168,7 @@ fn run_check(app: &AppHandle, auto: bool) {
     spawn_recording_watch(app);
 }
 
-/// While the user decides (Available), mirror the engine's recording state
-/// so Update-now can be disabled during a recording (the engine restarts to
-/// apply engine updates - that would kill an active clip).
+/// Refresh recording state while awaiting user action; engine updates require recording to stop.
 fn spawn_recording_watch(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || loop {
@@ -211,7 +191,6 @@ fn spawn_recording_watch(app: &AppHandle) {
     });
 }
 
-// ── Download + apply pipeline ───────────────────────────────────────────────
 
 fn set_comp(key: &str, mutate: impl FnOnce(&mut ComponentState)) {
     let mut s = core().state.lock().unwrap();
@@ -369,8 +348,7 @@ fn run_pipeline(app: &AppHandle) {
         }
     }
 
-    // Relaunch the engine before self-swapping so the new engine is already
-    // running even if this process dies right after the swap.
+    // Relaunch before replacing the running updater image.
     if has("engine") && engine_was_running {
         use std::process::{Command, Stdio};
         let _ = Command::new(app_dir.join("Monolith.exe"))
@@ -415,7 +393,6 @@ fn run_pipeline(app: &AppHandle) {
     set_phase(app, Phase::Done);
 }
 
-// ── Single instance ─────────────────────────────────────────────────────────
 
 fn focus_existing_instance() -> bool {
     use windows::core::HSTRING;

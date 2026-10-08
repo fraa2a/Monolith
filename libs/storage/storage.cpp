@@ -165,8 +165,6 @@ std::string now_iso8601_utc() {
   return buf;
 }
 
-// ── Settings KV store
-// ──────────────────────────────────────────────────────────
 
 namespace {
 
@@ -275,10 +273,8 @@ bool settings_replace_all(
   return ok;
 }
 
-// ── Durable file mutations ─────────────────────────────────────────────────
-// SQLite and filesystem renames cannot share one atomic transaction.  The
-// journal records only leaf names and exact quarantine names so recovery can
-// compensate a prepared operation without guessing at arbitrary paths.
+// Filesystem moves and SQLite cannot share one transaction. Journal exact
+// leaf/quarantine names for recovery compensation.
 namespace {
 struct Mutation {
   std::string token, op, stage;
@@ -479,8 +475,6 @@ bool delete_clip_rows(sqlite3 *db, int64_t id, std::string *error) {
 }
 } // namespace
 
-// ── Impl
-// ───────────────────────────────────────────────────────────────────────
 
 struct ClipDb::Impl {
   sqlite3 *db = nullptr;

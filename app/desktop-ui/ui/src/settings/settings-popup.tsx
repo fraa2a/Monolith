@@ -26,9 +26,6 @@ type Page =
   | "advanced"
   | "game";
 
-// Grouped so the nav reads as sections (like Windows Settings), not a flat
-// list - each group heading is real structure (recording pipeline vs. where
-// files land vs. power-user knobs), not decoration.
 const PAGE_GROUPS: { label: string; pages: { id: Page; label: string; icon: string }[] }[] = [
   {
     label: "Recording",
@@ -55,8 +52,7 @@ const PAGE_GROUPS: { label: string; pages: { id: Page; label: string; icon: stri
   },
 ];
 
-// Bitrate presets (Mbps). The heaviest two are flagged so the UI can warn about
-// disk usage.
+// Bitrate presets are in Mbps.
 const BITRATE_PRESETS = [3, 5, 7, 10, 15, 20, 25, 30, 35, 40, 50, 70, 100];
 const FPS_PRESETS = [24, 30, 60, 120, 144];
 const REPLAY_PRESETS = [15, 30, 60, 120];
@@ -83,10 +79,6 @@ function setPath(obj: any, path: string, value: any): any {
   return copy;
 }
 
-// Maps a concrete FFmpeg encoder name to a human-readable vendor + codec, so the
-// UI can show "NVIDIA NVENC · H.265" instead of a bare codec that hides whether
-// encoding runs in software (x264/OpenH264) or on which GPU vendor. Covers both
-// the current in-process encoder set and the post-refactor names.
 function encoderLabel(
   raw: string | undefined,
 ): { vendor: string; codec: string; kind: "hw" | "sw" } | null {
@@ -164,10 +156,7 @@ export function SettingsPopup({ onClose }: Props) {
     })();
   }, []);
 
-  // Runtime status (audio sessions, active game, devices, monitors) is a live
-  // snapshot the engine keeps refreshing on its own cadence - re-poll it while
-  // the popup is open so e.g. "Other sources" reflects apps that start/stop
-  // playing audio without the user having to close and reopen Settings.
+  // Poll capabilities while Settings is open to reflect new devices and audio sessions.
   useEffect(() => {
     const timer = setInterval(async () => {
       setRs(await getRuntimeStatus());
@@ -262,9 +251,7 @@ export function SettingsPopup({ onClose }: Props) {
   );
 }
 
-// Replay duration: a preset dropdown (15/30/60/120) plus Custom, which enables a
-// number field. Custom mode is tracked locally so it stays selected even when the
-// custom value happens to equal a preset number.
+// Track custom mode separately even when its value equals a preset.
 function ReplayDurationSection(
   { value, onChange }: { value: number; onChange: (v: number) => void },
 ) {

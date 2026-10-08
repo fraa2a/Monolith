@@ -8,9 +8,7 @@
 #include <cstdint>
 #include <vector>
 
-// Synthesised WAV feedback tones played on record start/stop and clip save.
-// All sounds are sine-wave based with a short attack/decay envelope so they
-// feel intentional rather than system-alert-like.
+// Feedback WAV tones use short sine envelopes.
 namespace feedback {
 
 enum class Sound { RecordStart, RecordStop, ClipSaved };

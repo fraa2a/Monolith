@@ -1,12 +1,7 @@
 #pragma once
 
-// Component self-update for the recorder, delegated to Updater.exe
-// (app/updater). The dedicated process owns the whole flow: it fetches
-// update-manifest.json from the releases page, downloads only the
-// components whose version changed (engine / ui / updater are versioned
-// independently), verifies the Ed25519 signatures and swaps the files on
-// disk. The recorder merely launches it and cleans up the *.old files the
-// swap dance parks next to replaced binaries.
+// Updater.exe owns component download, verification and replacement.
+// The recorder launches it and cleans parked files on startup.
 namespace updater {
 
 // Store the automatic-check preference (settings: update.auto_check).
@@ -24,9 +19,7 @@ void check_now();
 // showing anything unless an update is actually available.
 void check_silent();
 
-// Deletes *.old leftovers from previous self-updates (app root + ui\) and
-// the legacy WinSparkle.dll of pre-component-updater installs. Call early
-// at startup; files still locked are retried on the next launch.
+// Clean parked files on startup; retry locked files on a later launch.
 void post_update_cleanup();
 
 // Kept for WM_DESTROY symmetry - nothing to shut down anymore.

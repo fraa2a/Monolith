@@ -7,14 +7,8 @@ pub fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Directory where the installed app lives (Monolith.exe, Updater.exe, ui\).
-/// Resolution order:
-/// 1. `MONOLITH_APP_DIR` env override (tests / portable layouts);
-/// 2. the exe's own dir when it contains Monolith.exe (installed layout, or
-///    the CMake output dir where the build copies both exes);
-/// 3. dev fallback: walking up from a cargo target dir finds the repo root
-///    (recognized by app/desktop-ui + app/updater) and uses the CMake
-///    release output dir.
+/// Resolve the app directory from MONOLITH_APP_DIR, the installed layout,
+/// then the development CMake output.
 pub fn app_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("MONOLITH_APP_DIR") {
         if !dir.is_empty() {

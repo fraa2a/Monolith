@@ -66,10 +66,8 @@ int64_t packet_duration(const AVPacket* p, AVStream* s) {
     const AVRational rate = s->avg_frame_rate;
     return rate.num > 0 && rate.den > 0 ? std::max<int64_t>(1, av_rescale_q(1, av_inv_q(rate), s->time_base)) : 1;
 }
-// Matroska omits leading decode timestamps for reordered video. Recover only
-// from the next known DTS by subtracting the intervening packet durations in
-// the SAME input timebase. Never clamp DTS to PTS or fabricate a CFR timeline.
-// Unresolvable/malformed prefixes fail explicitly rather than grow a queue.
+// Recover missing leading Matroska DTS from packet durations in the input timebase.
+// Reject unresolved prefixes rather than synthesizing a frame-rate timeline.
 struct TimestampReader {
     AVFormatContext* in;
     std::deque<AVPacket*> pending;
@@ -415,10 +413,8 @@ bool concat_clip_segments(const std::vector<ClipSegment>& segs, double start, do
             opened = true; global_anchor = actual_start;
         } else if (!same_layout(first.p, first_order, in.p, order)) return fail(err, "segments have incompatible stream parameters");
         const double offset = actual_start - global_anchor;
-        // Segment ownership changes at video DTS, not its delayed presentation
-        // timestamp. Applying each key's PTS as a fresh audio trim drops AAC at
-        // every B-frame GOP boundary. Only the outer start uses the retained
-        // presentation anchor; internal audio uses the common source timeline.
+        // Internal segment ownership changes at video DTS. Use the common audio
+        // timeline across GOP boundaries and the presentation anchor only at the outer cut.
         const double local_origin = static_cast<double>(origin(in.p)) / AV_TIME_BASE;
         const double audio_start = first_segment ? seconds(w.anchor, w.tb)
             : seg.file_origin_seconds + local_origin;

@@ -1,5 +1,3 @@
-// Frontend API client. Talks to the Rust host over native Tauri IPC
-// (invoke/listen) instead of the old loopback HTTP server.
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -56,8 +54,7 @@ export async function fetchHashtags(): Promise<string[]> {
   return invoke<string[]>("distinct_hashtags");
 }
 
-// Wraps a command invocation in the old { ok, error } envelope so call sites
-// (built around fetch()'s always-resolves shape) don't need to change.
+// Normalize command failures into the shared ok/error envelope.
 async function ok(promise: Promise<unknown>): Promise<{ ok: boolean; error?: string }> {
   try {
     await promise;
@@ -144,9 +141,6 @@ export const collectionsApi = {
     ok(invoke("remove_clip_from_collection", { collectionId: id, source: c.source, clipId: c.id })),
 };
 
-// Subscribes to live clip-list changes via a native Tauri event. Calls
-// `onChange` whenever the engine reports a new clip. Returns an unsubscribe
-// function.
 export function subscribeClips(onChange: () => void): () => void {
   let unlisten: (() => void) | null = null;
   let cancelled = false;
@@ -228,15 +222,11 @@ export function setSelectedGame(exe: string): Promise<{ ok: boolean; error?: str
   return ok(invoke("set_selected_game", { exe, pid: null }));
 }
 
-// Native icon extracted from an executable, as a base64 data: URL (null when
-// the file has no icon). Preferred over remote artwork for status backgrounds.
-// `processName` is the cache key on the Rust side (survives reinstalls/path
-// changes); pass "" when unknown (skips caching for that one lookup).
+// Use processName as the persistent icon cache key; an empty key disables caching.
 const exeIconRequests = new Map<string, Promise<string | null>>();
 
 export function exeIconUrl(executablePath: string, processName: string): Promise<string | null> {
-  // Every card of the same game used to issue its own IPC round-trip (with a
-  // base64 PNG payload each); share one promise per process/path instead.
+  // Share one icon request per process/path across cards.
   const key = `${processName}\u0000${executablePath}`;
   let request = exeIconRequests.get(key);
   if (!request) {

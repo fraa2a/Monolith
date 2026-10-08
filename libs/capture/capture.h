@@ -20,11 +20,7 @@ struct CaptureOptions {
     bool allow_unlimited_readback = false;
     HWND target_window = nullptr;
 
-    // Desired readback size. When both are > 0 and differ from the captured
-    // content size, the frame is downscaled on the GPU (D3D11 video
-    // processor) before the CPU staging readback, so readback/memcpy cost
-    // scales with the smaller output size instead of native resolution.
-    // 0 (default) = capture at native size, no GPU scaling step.
+    // Positive output dimensions request GPU downscale before readback; zero uses native size.
     int output_width = 0;
     int output_height = 0;
 };
@@ -42,10 +38,8 @@ struct FrameInfo {
     uint32_t height;
     uint32_t seq;           // monotonic, resets on start()
 
-    // CPU-readable BGRA pixel data via a D3D11 staging texture.
-    // Valid only for the duration of the callback; do not cache the pointer.
-    // nullptr on readback failure.  Stride >= width*4 (GPU row alignment).
-    // Spike path: GPU-encoder path (NVENC direct) is deferred to Milestone 4.
+    // BGRA storage is valid only during the callback; do not retain the pointer.
+    // A null pointer indicates readback failure; stride includes GPU row alignment.
     const uint8_t* bgra_data;
     uint32_t       bgra_stride;
 };
@@ -66,7 +60,7 @@ public:
     DisplayCapture(const DisplayCapture&)            = delete;
     DisplayCapture& operator=(const DisplayCapture&) = delete;
 
-    // cb is invoked from the WGC thread pool - must be thread-safe.
+    // cb runs on the WGC thread pool; synchronize its shared state.
     // show_border = false requests yellow-border suppression via
     // GraphicsCaptureSession::IsBorderRequired(false); the OS may deny it.
     bool start(HMONITOR hmon, FrameCallback cb, bool show_border = false);

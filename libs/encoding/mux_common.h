@@ -30,10 +30,7 @@ struct StreamSet {
     std::array<AVStream*, 7> audio{};
 };
 
-// Allocates an output AVFormatContext for `path_utf` using the container's muxer
-// and creates the video stream plus one stream per valid audio param.  On success
-// *out_fmt holds the context and *out_streams the stream mapping; returns false
-// (and frees any partial context) on failure.
+// On success the caller owns out_fmt; failure releases the partial context.
 bool alloc_output(const std::string&                          path_utf,
                   const std::string&                          container,
                   const VideoStreamParams&                    vsp,
@@ -41,17 +38,12 @@ bool alloc_output(const std::string&                          path_utf,
                   AVFormatContext**                           out_fmt,
                   StreamSet*                                  out_streams);
 
-// Opens the file and writes the container header. mp4 keeps the moov atom at the
-// end (no +faststart) so finalizing never rewrites the whole file on stop.
-// On failure the io context is closed here (avformat_free_context alone does
-// not release it), so callers only need to free the context.
+// Close AVIO on header failure; the caller must still free the format context.
 bool open_file_and_write_header(AVFormatContext* fmt,
                                 const std::string& path_utf,
                                 const std::string& container);
 
-// Builds "<dir>\<yyyymmdd_hhmmss_mmm>_<N>s_clip.<ext>" from local time. The
-// millisecond field keeps two saves issued within the same second from
-// overwriting each other. Safe for long directories (no fixed-size buffer).
+// Use local time including milliseconds for the clip filename.
 std::wstring generate_clip_path(const std::wstring& dir,
                                 int duration_sec,
                                 const std::string& container);
@@ -65,17 +57,12 @@ bool write_packet(AVFormatContext* fmt,
                   int64_t          pts_offset,
                   int64_t          dts_offset);
 
-// Captures the pts/dts of the first packet observed on a stream, so callers
-// can offset every subsequent packet back to zero. Shared by both mux modes:
-// replay-buffer's one-shot snapshot (anchor only, never reset) and manual
-// recording's continuous-with-pause stream (anchor plus caller-tracked pause
-// accumulation added on top of anchor.pts/anchor.dts).
+// Observe a timestamp pair once and retain it as the mux offset origin.
 struct TimingAnchor {
     bool    set = false;
     int64_t pts = 0;
     int64_t dts = 0;
 
-    // No-op after the first call for this instance.
     void observe(int64_t p, int64_t d)
     {
         if (set) return;

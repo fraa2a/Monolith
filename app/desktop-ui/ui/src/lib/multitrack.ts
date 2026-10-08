@@ -1,20 +1,5 @@
-// Simultaneous multi-track audio playback (deno.md §2.1 successor).
-//
-// Monolith records separate audio streams (game, mic, apps) into one file
-// (see libs/encoding/mux_common.cpp). Chromium/WebView2 exposes every track
-// via `video.audioTracks`, but a single <video>/<audio> element only ever
-// *renders* one enabled track at a time - flipping `audioTracks[i].enabled`
-// for more than one track has no effect on what you hear. The only way to
-// hear every track at once is to decode each extra track on its own hidden
-// element and let the OS mixer combine them acoustically, so this hook spins
-// up one shadow <video> per extra track and keeps it in lockstep with the
-// visible primary element (play/pause, seek, mute, volume, rate).
-//
-// Sync is event-driven (play/pause/seeking mirrored immediately, currentTime
-// drift corrected on timeupdate), not sample-accurate - under heavy CPU
-// contention drift beyond ~150ms is possible before the next correction
-// tick. That's an accepted tradeoff: still strictly better than silently
-// dropping every track but the first.
+// WebView2 plays the first audio track. Hidden elements select additional tracks
+// by fragment and follow the visible video clock; unavailable tracks are ignored.
 
 import { useEffect, useRef } from "preact/hooks";
 
@@ -29,10 +14,7 @@ export interface MultiTrackHandle {
   setVolume: (volume: number) => void;
 }
 
-// Attaches shadow tracks for `video`'s extra audio tracks once metadata is
-// available. `src` must match the primary element's current src. Returns a
-// handle whose setMuted/setVolume must be used instead of touching the
-// primary element's `.muted`/`.volume` directly, so shadows stay in lockstep.
+// Attach extra audio elements after metadata is available; cleanup releases them.
 export function useMultiTrackAudio(
   video: HTMLVideoElement | null,
   src: string | null,

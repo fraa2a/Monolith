@@ -12,8 +12,7 @@ fn wide(path: &Path) -> Vec<u16> {
 }
 
 fn to_old(path: &Path) -> Result<(), String> {
-    // Renaming a running image or a loaded DLL is legal on Windows; deleting
-    // is not. Park replaced files as *.old - swept on the next launch.
+    // Park replaced binaries as .old; retry deletion after their users exit.
     let old = old_path(path);
     unsafe {
         MoveFileExW(
@@ -44,8 +43,7 @@ fn place_file(staged: &Path, target: &Path) -> Result<(), String> {
         to_old(target)?;
     }
     if fs::rename(staged, target).is_err() {
-        // Same-volume rename should always work (staging lives inside the
-        // app dir); the copy+delete fallback covers exotic setups.
+        // Fall back to copy when the staging rename fails.
         if let Err(error) = fs::copy(staged, target) {
             if replaced {
                 unsafe {
@@ -71,10 +69,7 @@ fn place_file(staged: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Moves every file of the extracted component tree into place under dest.
-/// Files already present in dest but not part of the tree are left alone -
-/// the app root also hosts Updater.exe and user-adjacent files that are not
-/// part of the engine zip.
+/// Replace files present in the staged component; leave unrelated destination files intact.
 pub fn place_tree(src: &Path, dest: &Path) -> Result<(), String> {
     place_tree_rec(src, src, dest)
 }
@@ -93,18 +88,13 @@ fn place_tree_rec(root: &Path, src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Replaces Updater.exe itself: park the running image as .old, copy the new
-/// one in. The running process keeps executing from memory, so the swap is
-/// safe mid-flight; the parked image is swept on the next launch.
+/// Park the running updater image and place its replacement at the installed path.
 pub fn self_swap(new_exe: &Path) -> Result<(), String> {
     let current = std::env::current_exe().map_err(|e| format!("self path: {e}"))?;
     place_file(new_exe, &current)
 }
 
-/// Deletes *.old leftovers from previous applies (app root + ui\). A failure
-/// (file still held by a process that has not fully exited yet) is silently
-/// retried on the next launch. Also drops the legacy WinSparkle.dll from
-/// installs migrated off the old updater.
+/// Retry parked-file cleanup on later launches if files remain locked.
 pub fn sweep_old(app_dir: &Path) {
     let dirs = [app_dir.to_path_buf(), app_dir.join("ui")];
     for dir in dirs {

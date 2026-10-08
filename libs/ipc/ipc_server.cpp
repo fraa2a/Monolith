@@ -122,8 +122,7 @@ void handle_client(SOCKET client)
         const int n = recv(client, tmp, static_cast<int>(sizeof(tmp)), 0);
         if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) continue;
         if (n <= 0) return;
-        // Process bytes by explicit length: embedded NUL is invalid JSON, not
-        // a C-string terminator. Never accumulate an unbounded pipelined batch.
+        // Use byte lengths; embedded NUL remains invalid JSON. Bound pipelined input.
         for (int i = 0; i < n && g_running; ++i) {
             if (tmp[i] != '\n') {
                 if (buf.size() == detail::kMaxRequestBytes) return;
@@ -163,11 +162,7 @@ void handle_client(SOCKET client)
                         PostMessage(g_hwnd, WM_COMMAND, MAKEWPARAM(kCmdPauseResume, 0), 0);
                         response = make_result(req_id, {{"status", "accepted"}});
                     } else if (method == "get_status") {
-                        // g_status_fn/g_mutation_fn are set once in start() before the
-                        // accept loop begins and never reassigned, so concurrent
-                        // handle_client() threads reading them is safe without a lock.
-                        // Each call reads live engine state (g_recording, etc.), which
-                        // is independently synchronized by its own owner.
+                        // Callbacks are installed before accepting clients; their own state needs synchronization.
                         RecordingState st = g_status_fn();
                         response = make_result(req_id, {
                             {"recording",         st.is_recording},
@@ -181,11 +176,7 @@ void handle_client(SOCKET client)
                         PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
                         response = make_result(req_id, {{"status", "accepted"}});
                     } else if (method == "update_close_ui") {
-                        // Updater.exe asks the engine to close the UI process
-                        // so ui\* can be swapped on disk. Runs directly on
-                        // this IPC thread (blocks up to ~3s: graceful close,
-                        // then terminate) - the reply is the confirmation
-                        // that the files are safe to replace.
+                        // Block this IPC thread until the UI exits before allowing file replacement.
                         if (!g_update_close_ui_fn) {
                             response = make_error(req_id, -32601, "Update control unavailable");
                         } else {
@@ -193,18 +184,11 @@ void handle_client(SOCKET client)
                             response = make_result(req_id, {{"status", "ok"}});
                         }
                     } else if (method == "update_engine_exit") {
-                        // Updater.exe asks the engine to shut down so the
-                        // engine files can be swapped. Graceful by design:
-                        // WM_CLOSE → WM_DESTROY stops any recording cleanly.
-                        // The reply may never arrive (the engine tears its
-                        // IPC server down during shutdown) - the updater
-                        // polls for the port to close instead.
+                        // Post engine shutdown; the updater confirms port closure because the reply may be lost.
                         PostMessage(g_hwnd, WM_CLOSE, 0, 0);
                         response = make_result(req_id, {{"status", "accepted"}});
                     } else if (method == "recording_add_bookmark") {
-                        // Handled directly on the IPC thread: bookmark timestamp
-                        // accuracy matters, so it must not round-trip through the
-                        // message loop.
+                        // Timestamp bookmarks on this IPC thread, before message-loop latency.
                         if (!g_add_bookmark_fn) {
                             response = make_error(req_id, -32601, "Bookmark handler unavailable");
                         } else {
@@ -259,11 +243,7 @@ void handle_client(SOCKET client)
                             m.title    = get_or("title", std::string());
                             m.start    = get_or("start", 0.0);
                             m.end      = get_or("end", 0.0);
-                            // handle_client runs on its own thread per connection; the
-                            // mutation callback (handle_clip_mutation in main.cpp)
-                            // opens its own DB handle per call and only touches
-                            // mutex-guarded globals, so concurrent invocations from
-                            // different client threads are safe.
+                            // Mutation callbacks run concurrently on different client threads.
                             std::string err = g_mutation_fn(m);
                             if (err.empty())
                                 response = make_result(req_id, {{"status", "ok"}});
@@ -290,8 +270,7 @@ void handle_client(SOCKET client)
 void accept_loop(SOCKET server)
 {
     while (g_running) {
-        // Poll even without new connections so the last completed worker is
-        // reclaimed promptly, not merely at the next accept or at shutdown.
+        // Reclaim completed workers even without a new connection.
         for (auto it = g_clients.begin(); it != g_clients.end();) {
             if ((*it)->done.load()) {
                 (*it)->thread.join();

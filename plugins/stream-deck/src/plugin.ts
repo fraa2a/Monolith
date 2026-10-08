@@ -14,8 +14,7 @@ streamDeck.actions.registerAction(new SaveReplay());
 streamDeck.actions.registerAction(new RecordingToggle());
 streamDeck.actions.registerAction(new PauseResume());
 
-// Poll recording state every 5s and push title updates to all active action
-// instances so the key labels stay in sync even without user interaction.
+// Poll status for active action labels.
 setInterval(async () => {
     const status = await ipc.getStatus();
     if (status === null) return;

@@ -24,9 +24,7 @@ export async function saveConfig(config: Config): Promise<{ ok: boolean; error?:
   }
 }
 
-// Runtime capabilities (available encoders, monitors, input devices) published
-// by the engine to runtime-status.json. Read-only; used to capability-gate the
-// UI (never offer an encoder/monitor the machine can't do). Best-effort.
+// Engine capabilities are best-effort snapshots from runtime-status.json.
 export interface RuntimeStatus {
   available_encoders?: string[];
   active_encoder?: string;

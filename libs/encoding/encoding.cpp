@@ -44,7 +44,6 @@ static EncodedBytesRef make_encoded_bytes(const uint8_t* data, int size)
     return std::static_pointer_cast<const EncodedBytes>(mutable_bytes);
 }
 
-// ── probe_video_encoder ───────────────────────────────────────────────────────
 
 static const char* kEncoderCandidates[] = {
     "h264_nvenc", "h264_amf", "h264_qsv", "libx264",
@@ -70,8 +69,7 @@ static bool try_open_probe(const char* name, int width, int height)
     ctx->gop_size   = 60;
 
     AVDictionary* opts = nullptr;
-    // libx264/libx265 accept "ultrafast"; libaom-av1 does not (it has
-    // cpu-used instead), so leave it unset there.
+    // libaom-av1 uses cpu-used rather than an x264/x265 preset.
     if (strcmp(name, "libx264") == 0 || strcmp(name, "libx265") == 0)
         av_dict_set(&opts, "preset", "ultrafast", 0);
 
@@ -151,7 +149,6 @@ std::string resolve_video_encoder(const std::string& device,
     return first_openable({sw});
 }
 
-// ── VideoEncoder ──────────────────────────────────────────────────────────────
 
 struct VideoEncoder::Impl {
     std::mutex       mutex;
@@ -216,8 +213,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
     // mutating the caller's config.
     const int quality = (cfg.quality > 0)
         ? std::max(10, std::min(30, cfg.quality)) : 0;
-    // HW encoders (NVENC/QSV) refuse odd dimensions; align once here so the
-    // probe (which also aligns) and the real open agree on the frame size.
+    // Align output dimensions for hardware encoders.
     const int out_w = (cfg.width  + 1) & ~1;
     const int out_h = (cfg.height + 1) & ~1;
 
@@ -277,8 +273,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
         ctx->flags    |= AV_CODEC_FLAG_GLOBAL_HEADER; // SPS/PPS in extradata
 
-        // Offline encodes (trim re-encode) want all cores; the live path keeps
-        // libavcodec defaults so capture latency is unchanged.
+        // Allow offline re-encoding to use all cores; live capture keeps codec thread defaults.
         if (is_sw && !cfg.low_latency)
             ctx->thread_count = 0; // auto
 
@@ -303,9 +298,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
                 av_dict_set_int(&opts, "crf", quality, 0);
             }
         } else {
-            // CBR: pin the average, ceiling and floor to the same target so the
-            // muxed file honours the exact bitrate the user picked, with a 1 s
-            // VBV buffer. Per-vendor RC hints keep HW encoders in true CBR.
+            // Set target/min/max bitrate together with a one-second VBV buffer.
             const int64_t br = cfg.bitrate;
             ctx->bit_rate     = br;
             ctx->rc_max_rate  = br;
@@ -337,10 +330,7 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
         }
 
         if (is_sw) {
-            // libx264/libx265 use "preset"/"tune"; libaom-av1 has neither
-            // (its speed knob is cpu-used), so only the x26x pair gets them.
-            // Offline encodes drop zerolatency (B-frames + frame threading:
-            // better quality per bit) and use a quality-leaning speed knob.
+            // Use codec-specific low-latency options; libaom-av1 has no x264 tune/preset.
             if (name == "libx264" || name == "libx265") {
                 av_dict_set(&opts, "preset",
                             cfg.low_latency ? "fast" : "medium", 0);
@@ -436,16 +426,11 @@ static void drain_video(ImplT* impl)
     }
 }
 
-// Shared tail of push_bgra/push_frame: stamp pts and hand the frame to the
-// encoder. Returns avcodec_send_frame's value. Caller holds the mutex.
-// (Templated like drain_video so it never names the private Impl type.)
+// Caller holds the mutex; submit the shared frame and return the codec status.
 template <typename ImplT>
 static int submit_current_frame(ImplT* impl, int64_t pts)
 {
-    // PTS: clock-locked frame index from the pacer (preferred), or fall back
-    // to the internal counter when pts < 0.  The pacer is the single source
-    // of timing truth - it emits exactly fps frames per real second (dup/skip),
-    // so this PTS advances at wall-clock rate.
+    // PTS is the supplied frame index or the next internal index when negative.
     if (pts >= 0) {
         impl->frame->pts = pts;
         impl->next_pts   = pts + 1;
@@ -560,7 +545,6 @@ void VideoEncoder::close()
     impl_->vsp      = {};
 }
 
-// ── AudioEncoder ──────────────────────────────────────────────────────────────
 
 struct AudioEncoder::Impl {
     std::mutex       mutex;
@@ -842,14 +826,7 @@ void AudioEncoder::close()
     impl_->asp           = {};
 }
 
-// ── TrackMixer ────────────────────────────────────────────────────────────────
-//
-// Canonical mix format is interleaved 32-bit float (AV_SAMPLE_FMT_FLT). Each
-// source owns a swr context (its native WASAPI format → canonical) plus a FIFO
-// of converted samples. A wall-clock-paced thread wakes every kMixIntervalMs,
-// computes how many output frames correspond to elapsed real time, sums that
-// many frames from every source (zero-filling sources that are behind), clips
-// to [-1, 1], and forwards the block to the sink.
+// Mix resampled sources on a wall-clock-paced worker; sources share one output track.
 
 namespace {
 constexpr int kMixIntervalMs   = 10;   // mix cadence
@@ -935,10 +912,7 @@ bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
             while (impl_->running.load(std::memory_order_acquire)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(kMixIntervalMs));
 
-                // Clock-locked CFR: the number of frames emitted is a function of the
-                // real time elapsed since `start`, not of loop iterations. Tracking a
-                // running total against a fixed origin avoids the cumulative drift of
-                // truncating per-tick deltas, keeping audio aligned over long sessions.
+                // Compute emitted frames from a fixed clock origin rather than accumulating rounded tick deltas.
                 int64_t elapsed_us =
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         clock::now() - start).count();
@@ -976,9 +950,7 @@ bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
                     else if (v < -1.0f) v = -1.0f;
                 }
 
-                // Always emit, even when no source contributed (acc is then silence).
-                // A continuous output keeps every configured track present in the
-                // file and the downstream encoder timeline advancing at real time.
+                // Emit silence when no source contributes to keep the track clock advancing.
                 if (impl_->sink) {
                     impl_->sink(
                         reinterpret_cast<const uint8_t*>(acc.data()),

@@ -22,17 +22,13 @@ struct TrimResult {
         return std::nullopt;
     }
 };
-// Lossless is keyframe-aware, not exact: preceding keyframe and required
-// reordered reference packets can extend the requested interval. Audio is
-// copied at packet boundaries, with its original offset, not sample-trimmed.
-// Results describe the retained timeline; failed output is removed by caller.
+// Lossless cuts include reference/keyframe preroll. Audio keeps packet boundaries
+// and offsets; TrimResult describes the retained interval.
 bool trim_clip_lossless(const std::wstring& path, double start, double end,
                         const std::wstring& out_path, std::string* err,
                         TrimResult* result = nullptr);
-// Explicit same-video-codec software fallback. Decode preroll, filter decoded
-// frame timestamps, preserve VFR/timebase and copy ALL audio tracks unchanged.
-// Unsupported encoder/pixel format/container fails; never substitutes a codec
-// or silently drops audio. No packet vectors proportional to clip duration.
+// Re-encode in the same codec, retaining VFR and copying all audio tracks.
+// Unsupported format/encoder/container returns failure.
 bool trim_clip_reencode(const std::wstring& path, double start, double end,
                         const std::wstring& out_path, std::string* err,
                         TrimResult* result = nullptr);

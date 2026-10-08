@@ -1,8 +1,4 @@
-// Collections ("albums"): user-curated groupings of clips that span both
-// sources (replay + manual). Stored in a single global collections.db under
-// %LocalAppData%\Monolith - deliberately not per-catalog, because a collection
-// mixes clips from clips.db and recs.db. Rows referencing clips that have
-// since been deleted are pruned on read.
+// Collection members use (source, clip_id); IDs can overlap across catalogs.
 
 use crate::clip_catalog::{self, ClipSource};
 use crate::paths;
@@ -35,8 +31,7 @@ fn open() -> Result<Connection, String> {
     Ok(conn)
 }
 
-// UTC ISO-8601 in the same format the engine's storage layer writes
-// ("2026-08-11T12:34:56Z") so SQLite string ordering stays consistent.
+// Use UTC ISO-8601 to match the engine catalog timestamps.
 fn now_iso8601_utc() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -175,9 +170,7 @@ pub fn remove_clip_from_collection(
     Ok(())
 }
 
-// Clips in a collection, most recently added first. Stale rows (the clip was
-// deleted from its catalog, or its video file is gone) are pruned here so the
-// collection never shows ghosts.
+// Prune absent clips only after all required catalogs have been read.
 pub fn collection_clips(collection_id: i64) -> Result<Vec<clip_catalog::Clip>, String> {
     let conn = open()?;
     let mut stmt = conn

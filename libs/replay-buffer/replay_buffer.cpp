@@ -33,7 +33,6 @@ namespace replay_buffer {
 
 namespace mux = encoding::mux;
 
-// ── Impl ──────────────────────────────────────────────────────────────────────
 
 struct ReplayBuffer::Impl : detail::PacketRing {
     mutable std::mutex              mutex;
@@ -51,7 +50,6 @@ struct ReplayBuffer::Impl : detail::PacketRing {
     std::thread                     save_thread;
 };
 
-// ── ReplayBuffer ──────────────────────────────────────────────────────────────
 
 ReplayBuffer::ReplayBuffer()  : impl_(new Impl()) {}
 ReplayBuffer::~ReplayBuffer()
@@ -173,7 +171,6 @@ ReplayBufferStats ReplayBuffer::stats() const
     return s;
 }
 
-// ── Clip save internals ───────────────────────────────────────────────────────
 
 static std::wstring generate_clip_path(const std::wstring& dir, int duration_sec,
                                        const std::string& container)
@@ -199,13 +196,11 @@ static std::wstring write_clip(
     std::string  path_utf = mux::wcs_to_utf8(path);
     if (path_utf.empty()) return {};
 
-    // ── Reorder packets by DTS (OBS-style: B-frame safety) ──────────────────
     std::stable_sort(pkts.begin(), pkts.end(),
         [](const encoding::EncodedPacket& a, const encoding::EncodedPacket& b) {
             return a.dts_usec < b.dts_usec;
         });
 
-    // ── Open output context + streams ───────────────────────────────────────
     AVFormatContext* fmt = nullptr;
     mux::StreamSet streams;
     if (!mux::alloc_output(path_utf, container, vsp, audio_params, &fmt, &streams))
@@ -224,7 +219,6 @@ static std::wstring write_clip(
     const auto& key = pkts.front();
     const AVRational anchor_tb{key.tb_num, key.tb_den};
 
-    // ── Write packets (already in DTS order) ─────────────────────────────────
     for (const auto& ep : pkts) {
         AVStream* dst_stream = nullptr;
         if (ep.stream_index == 0)
@@ -254,7 +248,6 @@ static std::wstring write_clip(
     return path;
 }
 
-// ── save_clip ─────────────────────────────────────────────────────────────────
 
 void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
 {
@@ -264,12 +257,7 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
         return;
 
     try {
-    // Disk mode: hand off to the segment buffer (it owns its own save
-    // thread); the facade's saving flag mirrors it so stats() stays honest.
-    // Read cfg/disk under the lock - configure() can swap storage modes and
-    // reset the disk buffer concurrently (settings reload thread). RAM mode
-    // (disk == nullptr, the normal configuration) falls through to the
-    // snapshot path below.
+    // Hold the config lock while routing to the disk buffer; configure can replace it.
     {
         std::lock_guard lk(impl_->mutex);
         if (impl_->disk) {

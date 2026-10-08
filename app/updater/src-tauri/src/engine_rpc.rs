@@ -100,9 +100,7 @@ pub fn close_ui() -> Result<(), String> {
 }
 
 pub fn request_engine_exit() {
-    // Fire and (mostly) forget: the engine tears its IPC server down during
-    // shutdown, so the reply - or even the connection - may never arrive.
-    // wait_engine_exit() is the real confirmation.
+    // Confirm shutdown through wait_engine_exit; the RPC reply can disappear during teardown.
     let _ = rpc("update_engine_exit");
 }
 

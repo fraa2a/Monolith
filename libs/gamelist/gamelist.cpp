@@ -43,13 +43,10 @@ constexpr INTERNET_PORT kPort = INTERNET_DEFAULT_HTTPS_PORT;
 constexpr std::time_t kRefreshSeconds = 72 * 60 * 60;
 constexpr std::time_t kEmptyRetrySeconds = 60 * 60;
 
-// A real response has thousands of entries; anything tiny is treated as a bad
-// fetch and must never overwrite a good DB.
+// Reject undersized responses before replacing the cached database.
 constexpr size_t kMinPlausibleEntries = 50;
 
-// Bump when the `games` table layout changes so old DBs are rebuilt. v1 keyed on
-// exe_lower alone (one game per exe); v2 allows many games per exe (composite key
-// exe_lower+discord_app_id) so shared executables like javaw.exe keep every game.
+// Schema v2 keys by (exe_lower, discord_app_id) to retain shared-executable games.
 constexpr int kSchemaVersion = 2;
 
 std::function<void(const char*, const char*)> g_log_sink;
@@ -60,7 +57,6 @@ void log_msg(const char* tag, const std::string& msg)
     OutputDebugStringA(("[gamelist] " + msg + "\n").c_str());
 }
 
-// ── Shared state ────────────────────────────────────────────────────────────
 
 std::mutex                       g_snapshot_mutex;
 std::shared_ptr<const GameMap>   g_snapshot = std::make_shared<const GameMap>();
@@ -79,7 +75,6 @@ void publish(std::shared_ptr<const GameMap> map)
     g_snapshot = std::move(map);
 }
 
-// ── SQLite ──────────────────────────────────────────────────────────────────
 
 bool exec(sqlite3* db, const char* sql)
 {
@@ -120,8 +115,7 @@ sqlite3* open_db()
         return nullptr;
     }
 
-    // Migrate on schema change: drop a stale `games` table so it is recreated
-    // with the current layout (and re-synced from the network on the next tick).
+    // Recreate an outdated table and schedule network repopulation.
     int stored_version = 0;
     {
         sqlite3_stmt* vs = nullptr;
@@ -236,7 +230,6 @@ bool write_games(sqlite3* db, const GameMap& map, std::time_t now)
     return exec(db, "COMMIT;");
 }
 
-// ── HTTP ────────────────────────────────────────────────────────────────────
 
 bool http_get(std::string* body)
 {
@@ -292,14 +285,10 @@ bool http_get(std::string* body)
     return ok;
 }
 
-// ── Parse ───────────────────────────────────────────────────────────────────
 
 std::string basename_lower(const std::string& name)
 {
-    // Discord marks some executables with a leading '>' - the game runs as a
-    // child/launched process rather than the top-level exe (e.g. Minecraft is
-    // listed as ">javaw.exe"). Strip that marker so the key is the real process
-    // basename we can match against a running process.
+    // Strip Discord executable markers and retain Windows platform entries.
     size_t start = 0;
     while (start < name.size() && (name[start] == '>' || name[start] == ' '))
         ++start;
@@ -329,8 +318,7 @@ bool parse_detectables(const std::string& json, GameMap* out)
         for (const auto& exe : *exes) {
             if (!exe.is_object()) continue;
             if (exe.value("os", std::string()) != "win32") continue;
-            // Skip bare launchers (Steam/Epic/etc.) so we detect the game, not
-            // the storefront that started it.
+            // Exclude launchers from detection membership.
             if (exe.value("is_launcher", false)) continue;
             const std::string raw = exe.value("name", std::string());
             if (raw.empty()) continue;
@@ -441,8 +429,7 @@ void init(const std::wstring& app_data_dir)
     g_started = true;
     g_db_path = app_data_dir + L"\\game_list.db";
 
-    // Load whatever we already have synchronously so detection has data on the
-    // first tick even before the network sync completes.
+    // Load the local snapshot before starting network refresh.
     if (sqlite3* db = open_db()) {
         auto loaded = load_from_db(db);
         if (!loaded->empty())

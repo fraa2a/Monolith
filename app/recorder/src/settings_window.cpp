@@ -73,9 +73,7 @@ std::filesystem::path module_dir()
     return std::filesystem::path(path).parent_path();
 }
 
-// How to launch the UI: the executable, its command line, and the working
-// directory. The Tauri host is a single self-contained exe (Monolith.UI.exe)
-// that opens the WebView2 window, so a plain exe path is all that's needed.
+// Resolve the UI executable, command line and working directory.
 struct UiLaunch {
     std::filesystem::path exe;
     std::wstring          command_line; // quoted exe + args

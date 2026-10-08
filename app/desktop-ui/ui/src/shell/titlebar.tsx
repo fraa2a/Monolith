@@ -35,7 +35,6 @@ export function Titlebar({ view }: Props) {
   const saving = useRef(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Runtime + engine status are read-only and safe to poll live.
   useEffect(() => {
     let alive = true;
     const load = async () => {
@@ -61,10 +60,7 @@ export function Titlebar({ view }: Props) {
     };
   }, []);
 
-  // Config is loaded once, then refreshed only when the capture popover opens.
-  // It is deliberately NOT polled: the titlebar itself is the writer, so a
-  // periodic re-fetch would race the optimistic toggle and revert it a beat
-  // later (the "sets then flips back" bug).
+  // Refresh config on open rather than polling over optimistic edits.
   useEffect(() => {
     let alive = true;
     getConfig().then((cfg) => {
@@ -109,9 +105,6 @@ export function Titlebar({ view }: Props) {
   const activeGame = runtime.active_game;
   const gameProcess = activeGame?.process_id ? activeGame.process_name : "";
   const exePath = activeGame?.process_id ? (activeGame.executable_path ?? "") : "";
-  // Detected games are DB-gated, so display_name is always the game-list name
-  // (e.g. "AURA Gamers gioco") - show it verbatim, no prettify transform. Only
-  // fall back to appLabel for the rare case the engine emits a raw exe name.
   useEffect(() => {
     let alive = true;
     if (!gameProcess) {
@@ -154,9 +147,6 @@ export function Titlebar({ view }: Props) {
   const recording = !!engine.recording;
   const clipping = !recording && !!engine.replay_enabled;
   const statusLabel = !connected ? "Disconnected" : recording ? "Recording" : clipping ? "Clipping" : "Idle";
-  // active_game is an object; render its label, never the object itself (doing so
-  // makes Preact treat it as a vnode → "Objects are not valid as a child" + a
-  // re-render loop that hangs the whole app).
   const gameLabel = activeGame?.process_id
     ? appLabel(activeGame.display_name, activeGame.process_name)
     : "";

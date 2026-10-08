@@ -20,10 +20,7 @@ function fmtTime(seconds: number): string {
   return `${m}:${s < 10 ? "0" : ""}${s}`;
 }
 
-// Custom YouTube-style fullscreen chrome (not the native <video controls>),
-// driven by an externally-owned <video> element rather than one it renders
-// itself - this lets a caller that already has a playing element (e.g. the
-// detail view) reuse it in place instead of restarting playback on a new one.
+// The video element belongs to the caller; this component owns only its controls.
 export function FullscreenChrome(
   { videoEl, multitrack, onClose }: {
     videoEl: HTMLVideoElement | null;
@@ -124,9 +121,7 @@ export function FullscreenChrome(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onClose, videoEl, muted]);
 
-  // Document-level (not a wrapping div's onMouseMove) so the autohide timer
-  // resets no matter which sibling element the pointer is over - the chrome
-  // here only renders fixed-position overlays, not a full-viewport container.
+  // Listen on document because the controls are separate fixed-position overlays.
   useEffect(() => {
     document.addEventListener("mousemove", wake);
     return () => document.removeEventListener("mousemove", wake);
@@ -197,12 +192,7 @@ interface FullscreenProps {
   onClose: () => void;
 }
 
-// Fullscreen playback at original framerate, in a custom YouTube-style frame.
-// The window is maximized for the duration of playback and restored on close.
-// Owns its own <video> since there is no existing playing element to reuse
-// (triggered from a card hover-preview, a different element/component); seeds
-// currentTime from the preview's position so it continues near where the
-// preview left off instead of visibly restarting from 0.
+// Seed playback from the card preview position.
 export function Fullscreen({ clip, initialTime = 0, onClose }: FullscreenProps) {
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
 

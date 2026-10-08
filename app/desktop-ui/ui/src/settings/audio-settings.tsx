@@ -21,11 +21,7 @@ interface Source {
   tracks: number[];
 }
 
-// Audio capture is modelled as a flat list of sources, each with its own
-// enable + volume that the recorder actually applies to the mix. The UI groups
-// them into Game Audio (desktop), Microphone (input), and any other apps that
-// currently have audio. Editing anything switches audio.mode to "custom" so the
-// engine honours the explicit source list.
+// Editing sources selects custom mode; keep desktop and microphone baseline entries.
 export function AudioSettings({ cfg, rs, update }: Props) {
   const audio = cfg.audio ?? {};
   const sources: Source[] = Array.isArray(audio.sources) ? audio.sources : [];
@@ -36,9 +32,7 @@ export function AudioSettings({ cfg, rs, update }: Props) {
   const game = find((s) => s.type === "desktop");
   const mic = find((s) => s.type === "input");
 
-  // Custom mode uses the explicit source list, so it must always contain the two
-  // baseline sources (Game Audio → track 1, Microphone → track 2) that the
-  // default mode implies - otherwise editing one would silently drop the other.
+  // Custom source lists must include the implicit desktop/microphone defaults.
   const withBaseline = (list: Source[]): Source[] => {
     const out = list.slice();
     if (!out.some((s) => s.type === "desktop")) {
@@ -58,7 +52,6 @@ export function AudioSettings({ cfg, rs, update }: Props) {
     return out;
   };
 
-  // Rewrites the whole source list and forces custom mode so the engine applies it.
   const commit = (next: Source[]) => {
     update("audio.mode", "custom");
     update("audio.sources", withBaseline(next));
@@ -97,12 +90,7 @@ export function AudioSettings({ cfg, rs, update }: Props) {
   const processFor = (procName: string): Source | undefined =>
     find((s) => s.type === "process" && s.process_name?.toLowerCase() === procName.toLowerCase());
 
-  // Track layout: the microphone always gets its own track (track 2) - that's
-  // never up for debate since a mixed-in mic can't be un-mixed later. Every
-  // *other* audio source (game desktop audio + each other app) either all
-  // share the game's track (single track) or each gets its own free track
-  // (separate tracks, tracks 1/3/4/5/6). Defaults to "separate" to match the
-  // behaviour this UI shipped with before the toggle existed.
+  // Reserve track 2 for the microphone; other sources share track 1 or use 3..6.
   const trackLayout: "single" | "separate" = audio.track_layout === "single" ? "single" : "separate";
 
   const nextFreeTrack = (): number => {

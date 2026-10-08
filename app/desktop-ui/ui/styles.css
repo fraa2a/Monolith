@@ -79,7 +79,6 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--light-hi); }
 
-/* ── App frame ───────────────────────────────────────────────────────────── */
 .win {
   height: 100vh;
   display: flex;
@@ -88,7 +87,6 @@ body {
   overflow: hidden;
 }
 
-/* ── Custom title bar ────────────────────────────────────────────────────── */
 .titlebar {
   height: 50px;
   flex: none;
@@ -172,7 +170,7 @@ body {
 .tb-status {
   position: relative;
   margin-left: 14px;
-  /* Fill the bar's full height; only the width is constrained below. */
+
   align-self: stretch;
   display: grid;
   grid-auto-flow: column;
@@ -183,7 +181,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  /* Fill the bar vertically (text stays centered); only the width is limited. */
+
   height: 100%;
   padding: 0 20px;
   background: none;
@@ -227,7 +225,7 @@ body {
   background-image: inherit;
   background-repeat: repeat;
   background-position: center;
-  /* Tile scaled from 40px (3 angled rows) to 24px so 5 rows fit (40 * 3/5). */
+
   background-size: 32px 32px;
   transform: rotate(-35deg);
 }
@@ -235,7 +233,7 @@ body {
   opacity: 1;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34' height='26' viewBox='0 0 34 26'%3E%3Cg fill='none' stroke='rgba(255,255,255,.16)' stroke-width='1.2'%3E%3Crect x='7' y='4' width='20' height='14' rx='2'/%3E%3Cpath d='M14 22h6M17 18v4'/%3E%3C/g%3E%3C/svg%3E");
 }
-/* Same 3->5 row scale (34*3/5, 26*3/5), keeping the tile's proportions. */
+
 .capture-feed.screen .feed-bg::before { background-size: 20.4px 15.6px; }
 .feed-shade { background: linear-gradient(180deg, rgba(7, 7, 7, .35), rgba(7, 7, 7, .72)); }
 .capture-feed:hover .feed-bg { opacity: .55; }
@@ -380,7 +378,6 @@ body {
 .monitor-name { font-size: 12px; }
 .monitor-size { margin-top: 2px; font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
 
-/* ── Shell: sidebar + content ────────────────────────────────────────────── */
 .shell {
   flex: 1;
   display: flex;
@@ -432,7 +429,6 @@ body {
 .side-item.active.fav-active::before { background: #f5c542; }
 .side-spacer { flex: 1; }
 
-/* Content is its own scroll panel - a dark well inset into the medium chrome */
 .content {
   flex: 1;
   min-width: 0;
@@ -442,7 +438,6 @@ body {
   padding: 0 26px 36px;
 }
 
-/* ── Content toolbar ─────────────────────────────────────────────────────── */
 .toolbar {
   display: flex;
   gap: 12px;
@@ -461,7 +456,7 @@ body {
 
 .search-wrap {
   position: relative;
-  /* Small, anchored to the right (filters live on the left). */
+
   flex: 0 0 auto;
   width: 240px;
 }
@@ -487,7 +482,6 @@ body {
   padding-bottom: 0;
 }
 
-/* ── Icon filter menus (game / hashtag) with searchable dropdown ──────────── */
 .filter-menus { display: flex; align-items: center; gap: 8px; }
 .filter-menu { position: relative; }
 .filter-btn {
@@ -506,7 +500,7 @@ body {
 .filter-btn:hover { background: var(--light); }
 .filter-btn.active { background: var(--accent-soft); color: var(--accent-hi); }
 .filter-btn > svg { width: 18px; height: 18px; }
-/* Dropdown affordance: a small caret that flips when the menu is open. */
+
 .filter-caret {
   display: grid;
   place-items: center;
@@ -609,7 +603,6 @@ body {
 .btn-toggle { display: inline-flex; align-items: center; gap: 7px; }
 .btn-toggle.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
-/* ── Grid header ─────────────────────────────────────────────────────────── */
 .grid-head { display: flex; align-items: center; gap: 12px; padding: 8px 2px 18px; }
 .grid-count {
   font-family: var(--mono);
@@ -621,7 +614,6 @@ body {
 .grid-count b { color: var(--text); font-weight: 700; }
 .grid-head .rule { flex: 1; height: 1px; background: linear-gradient(90deg, var(--line), transparent); }
 
-/* ── Grid + cards ────────────────────────────────────────────────────────── */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
@@ -778,7 +770,6 @@ body {
   white-space: nowrap;
 }
 
-/* ── Empty / loading ─────────────────────────────────────────────────────── */
 .empty {
   color: var(--text-dim);
   padding: 92px 40px;
@@ -804,7 +795,6 @@ body {
 .loading-dots i:nth-child(3) { animation-delay: .3s; }
 @keyframes load-b { 0%,100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-4px); } }
 
-/* ── Context menu ────────────────────────────────────────────────────────── */
 .ctx-menu {
   position: fixed;
   min-width: 196px;
@@ -837,7 +827,6 @@ body {
 .ctx-danger { color: var(--danger); }
 .ctx-danger:hover { background: rgba(229, 84, 75, .16); }
 
-/* ── Modals ──────────────────────────────────────────────────────────────── */
 .modal-backdrop {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, .62);
@@ -871,7 +860,6 @@ body {
 .tag-add .input { flex: 1; }
 .muted { color: var(--text-dim); font-size: 13px; }
 
-/* ── Fullscreen ──────────────────────────────────────────────────────────── */
 .fs-backdrop {
   position: fixed; inset: 0;
   background: #000;
@@ -919,7 +907,6 @@ body {
 }
 .fs-btn:hover { background: rgba(255,255,255,.14); }
 
-/* ── Detail view ─────────────────────────────────────────────────────────── */
 .detail-backdrop {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, .72);
@@ -1115,7 +1102,6 @@ body {
 }
 .tag-suggestions button:hover { background: var(--light); color: var(--text); }
 
-/* ── Settings popup ──────────────────────────────────────────────────────── */
 .settings {
   position: relative;
   display: grid;
@@ -1203,7 +1189,6 @@ body {
 
 .settings-body { padding: 24px 26px; overflow-y: auto; }
 
-/* Auto-save status, bottom of the settings rail (replaces the old Save footer) */
 .save-status {
   display: flex;
   align-items: center;
@@ -1247,7 +1232,6 @@ body {
 .audio-name { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .audio-vol { font-family: var(--mono); font-size: 12px; color: var(--text-dim); width: 40px; text-align: right; }
 
-/* ── Hover-preview fade (no black flash) ─────────────────────────────────── */
 .card-video {
   position: absolute;
   inset: 0;
@@ -1266,7 +1250,6 @@ body {
 .game-icon.placeholder svg { width: 13px; height: 13px; }
 .fav-badge svg, .ov-btn svg, .ctx-ico svg { display: block; }
 
-/* ── Detail view: title + filename ──────────────────────────────────────── */
 .detail-filename {
   font-family: var(--mono);
   font-size: 11px;
@@ -1275,7 +1258,6 @@ body {
   margin-top: -10px;
 }
 
-/* ── Settings: sections + cards ─────────────────────────────────────────── */
 .set-section { margin-bottom: 26px; }
 .set-section:last-child { margin-bottom: 4px; }
 .set-section-head { margin-bottom: 12px; padding: 0 2px; }
@@ -1326,7 +1308,6 @@ body {
 .set-empty-row { padding: 2px 0; }
 .opt-danger { color: #e5776e; }
 
-/* ── Toggle switch ──────────────────────────────────────────────────────── */
 .toggle {
   width: 42px; height: 24px;
   flex: none;
@@ -1350,7 +1331,6 @@ body {
 }
 .toggle.on .toggle-knob { transform: translateX(18px); background: var(--accent-ink); }
 
-/* ── Segmented control ──────────────────────────────────────────────────── */
 .segmented {
   display: inline-flex;
   background: var(--field);
@@ -1375,13 +1355,11 @@ body {
 .seg:hover { color: var(--text); }
 .seg.active { background: var(--accent); color: var(--accent-ink); }
 
-/* ── Folder picker ──────────────────────────────────────────────────────── */
 .folder-picker { display: flex; gap: 8px; align-items: center; min-width: 340px; }
 .folder-path { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12.5px; }
 .btn-ghost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .btn-ghost svg { display: block; }
 
-/* ── Volume slider ──────────────────────────────────────────────────────── */
 .volume { display: flex; align-items: center; gap: 12px; }
 .volume input[type="range"] { width: 140px; accent-color: #fff; cursor: pointer; }
 .volume.disabled { opacity: .4; }
@@ -1394,7 +1372,6 @@ body {
 }
 .audio-other-control { display: flex; align-items: center; gap: 16px; }
 
-/* ── Hotkey capture ─────────────────────────────────────────────────────── */
 .hotkey-capture {
   display: inline-flex;
   align-items: center;
@@ -1419,7 +1396,6 @@ body {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
-/* ── Bookmarks & trim ────────────────────────────────────────────────────── */
 .detail-bookmarks { margin-top: 18px; }
 .detail-bookmarks-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .detail-bookmarks-head .k {
@@ -1452,7 +1428,6 @@ body {
 .bm-swatch-btn.active { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bm-label-input { flex: 1; min-width: 0; padding: 6px 9px; font-size: 13px; }
 
-/* Timeline wrapper: bookmark ticks sit on the scrubber line. */
 .timeline-wrap { position: relative; }
 .bm-marker {
   position: absolute;
@@ -1466,7 +1441,6 @@ body {
 }
 .bm-marker:hover { border-color: var(--light-hi); }
 
-/* Trim track: thin line with a start/end handle pair + selection overlay. */
 .trim-track {
   position: relative;
   height: 28px;
@@ -1514,7 +1488,6 @@ body {
 .act-trim.active { color: var(--accent); }
 .act-btn:disabled { opacity: .35; cursor: default; }
 
-/* ── Collections ─────────────────────────────────────────────────────────── */
 .collections-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));

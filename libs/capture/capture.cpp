@@ -26,7 +26,6 @@ namespace wgdx = winrt::Windows::Graphics::DirectX;
 
 namespace capture {
 
-// ── Impl ──────────────────────────────────────────────────────────────────────
 
 class FrameGate {
 public:
@@ -66,10 +65,7 @@ struct DisplayCapture::Impl {
     uint32_t                              staging_w = 0;
     uint32_t                              staging_h = 0;
 
-    // GPU pre-readback downscale (see CaptureOptions::output_width/height).
-    // Absent/null when the device doesn't expose D3D11 video support, or
-    // while no downscale is configured - the CopyResource(native) path is
-    // then used unconditionally, identical to pre-downscale behavior.
+    // Keep GPU downscale resources separate from the native capture texture.
     winrt::com_ptr<ID3D11VideoDevice>              video_device;
     winrt::com_ptr<ID3D11VideoContext>             video_ctx;
     winrt::com_ptr<ID3D11VideoProcessorEnumerator> vp_enum;
@@ -102,7 +98,6 @@ struct DisplayCapture::Impl {
     bool                  handler_registered = false;
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 bool is_supported()
 {
@@ -158,10 +153,7 @@ static wgc::GraphicsCaptureItem item_from_window(HWND hwnd)
     return item;
 }
 
-// (Re)creates the video processor and its scaled output texture for the
-// given source -> destination size. No-op if already configured for the
-// same sizes. Returns false (leaving impl in a "not scaled" state) on any
-// failure, so callers fall back to native-resolution CopyResource.
+// Recreate the GPU video processor when source or output size changes.
 static bool ensure_video_processor(DisplayCapture::Impl* impl,
                                     uint32_t src_w, uint32_t src_h,
                                     uint32_t dst_w, uint32_t dst_h)
@@ -250,7 +242,6 @@ static bool gpu_downscale(DisplayCapture::Impl* impl, ID3D11Texture2D* src_tex,
         impl->video_processor.get(), out_view.get(), 0, 1, &stream));
 }
 
-// ── DisplayCapture ────────────────────────────────────────────────────────────
 
 DisplayCapture::DisplayCapture() : impl_(std::make_shared<Impl>()) {}
 DisplayCapture::~DisplayCapture() { stop(); }
@@ -374,12 +365,7 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
                 winrt::com_ptr<ID3D11Texture2D> gpu_tex;
                 if (access && SUCCEEDED(access->GetInterface(IID_PPV_ARGS(gpu_tex.put())))) {
 
-                    // GPU pre-readback downscale: when a smaller output size is
-                    // configured, scale on the GPU into impl_->scaled_tex first and
-                    // size the staging texture (and thus the CPU readback/memcpy)
-                    // to that smaller size instead of native resolution. Falls back
-                    // to the native-resolution path on any failure or when no
-                    // downscale is configured, so behavior is unchanged by default.
+                    // Downscale on the GPU before CPU readback; retain native readback if setup fails.
                     const uint32_t want_w = static_cast<uint32_t>(std::max(0, impl_->options.output_width));
                     const uint32_t want_h = static_cast<uint32_t>(std::max(0, impl_->options.output_height));
                     const bool want_scale = impl_->vp_available && want_w > 0 && want_h > 0 &&

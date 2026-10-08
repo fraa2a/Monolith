@@ -24,10 +24,7 @@ pub fn installed() -> Installed {
     }
 }
 
-/// Persists the last-applied per-component versions. The exe FileVersion is
-/// the primary source; this file catches exes whose resource block is
-/// missing or unreadable (and lets the updater's own version survive
-/// self-swaps even if the new exe ever ships without a resource).
+/// components.json is a fallback when installed executable version resources are unavailable.
 pub fn write_components_json(v: &Installed) {
     let path = paths::app_dir().join("components.json");
     if let Ok(json) = serde_json::to_string_pretty(v) {
@@ -40,10 +37,7 @@ fn read_components_json() -> Option<Installed> {
     serde_json::from_str(&text).ok()
 }
 
-/// Reads the Win32 VERSIONINFO FileVersion ("major.minor.patch[.build]") via
-/// the fixed, translation-independent block - no StringFileInfo lookup
-/// needed. Returns None when the file is missing or carries no version
-/// resource.
+/// Read the translation-independent fixed VERSIONINFO block.
 fn file_version(path: &Path) -> Option<String> {
     if !path.is_file() {
         return None;

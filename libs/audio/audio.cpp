@@ -218,10 +218,7 @@ static void capture_thread(ImplT* impl)
     const uint16_t bit_depth = impl->mix_fmt->wBitsPerSample;
 
     while (impl->running.load(std::memory_order_acquire)) {
-        // Event-driven: block until WASAPI signals a buffer is ready (no busy
-        // polling).  A 200 ms timeout bounds shutdown latency and guards against
-        // a missed signal.  Loopback streams only raise the event while audio is
-        // flowing, so the timeout also lets us re-check `running` during silence.
+        // Wait for WASAPI buffer events rather than polling; the running flag controls shutdown.
         if (impl->event)
             WaitForSingleObject(impl->event, 200);
 
@@ -379,9 +376,7 @@ std::vector<ProcessAudioSessionInfo> enumerate_render_sessions()
         __uuidof(IMMDeviceEnumerator), enumerator.put_void());
     if (FAILED(hr)) return result;
 
-    // Enumerate sessions on every active render endpoint, not just the default
-    // one: an app (e.g. Discord) may render to a non-default output device, and
-    // its session would otherwise never appear in the source list.
+    // Enumerate sessions on all render endpoints, including non-default devices.
     winrt::com_ptr<IMMDeviceCollection> devices;
     if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, devices.put())))
         return result;
@@ -427,9 +422,7 @@ static std::wstring to_lower(std::wstring s)
     return s;
 }
 
-// Monolith's own processes (recorder + Settings sidecar).  Used so that opening
-// the Settings window does not steal the foreground bonus from the live game,
-// and shared with the shell/system exclusion list below.
+// Keep the tracked game focus bonus when Monolith owns the foreground window.
 static bool is_self_process(const std::wstring& lower_name)
 {
     return lower_name == L"monolith.exe" || lower_name == L"monolith.settings.exe";
@@ -524,10 +517,7 @@ static BOOL CALLBACK annotate_window_enum_proc(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
-// True when `title` plausibly names the DB game `display_name`: the title
-// contains the whole display name, or any of its alphanumeric tokens of length
-// >= 3. Case-insensitive. Only used to disambiguate several processes sharing
-// one executable; a loose match here just biases selection, never gates it.
+// Match window titles against database names to disambiguate shared executables.
 static bool title_matches_db_name(const std::string& display_name_utf8,
                                   const std::wstring& window_title)
 {
@@ -567,17 +557,14 @@ std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg)
     DWORD fg_pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &fg_pid);
 
-    // Sticky foreground: when our own recorder/Settings window holds focus,
-    // substitute the caller-supplied live game pid so it keeps being marked
-    // foreground while a Monolith window is up.
+    // Use the tracked game PID as a foreground hint while Monolith has focus.
     if (fg_pid != 0 && cfg.sticky_foreground_pid != 0) {
         ProcessInfo fg_info = process_info(fg_pid);
         if (is_self_process(to_lower(fg_info.process_name)))
             fg_pid = cfg.sticky_foreground_pid;
     }
 
-    // Enumerate ALL processes (not just windows) so alt-tabbed / loading games
-    // still match. Gate each on game-list membership.
+    // Check all running processes against game-list membership, including windowless games.
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return out;
 
@@ -612,9 +599,7 @@ std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg)
             ci.process = process_info(pid);
             if (ci.process.process_name.empty())
                 ci.process.process_name = pe.szExeFile;
-            // Provisional identity: the first game registered for this exe. When
-            // the exe is shared it is refined by window title after the window
-            // pass below. Always a DB display name (Bug 2: never a prettified exe).
+            // Refine shared-executable identity with the main-window title below.
             ci.display_name   = it->second.front().display_name;
             ci.discord_app_id = it->second.front().discord_app_id;
             ci.has_session    = has_audio_session(pid);
@@ -643,10 +628,7 @@ std::vector<GameCandidateInfo> detect_game_candidates(const DetectConfig& cfg)
                 ci.process.window_title = fit->second.title;
         }
 
-        // Disambiguate shared executables (e.g. javaw.exe used by Minecraft,
-        // Spiral Knights, ...): pick the game whose name matches the window
-        // title. With a single registered game there is nothing to resolve; if
-        // none matches, the provisional first game stands (normal behavior).
+        // Use the main-window title to select among games sharing an executable.
         const gamelist::GameList& entries = *cand_entries[i];
         if (entries.size() > 1 && !ci.process.window_title.empty()) {
             for (const auto& e : entries) {
@@ -829,9 +811,7 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
         return false;
     }
 
-    // OBS-style process loopback: the virtual device has no reliable
-    // GetMixFormat path, so we provide the capture format up front, then use
-    // WASAPI event callbacks to wake only when process audio is available.
+    // Provide process-loopback format explicitly; the virtual device lacks a reliable GetMixFormat.
     auto* wf = static_cast<WAVEFORMATEXTENSIBLE*>(
         CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE)));
     if (!wf) { stop(); return false; }
@@ -849,7 +829,6 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
     wf->SubFormat              = kSubTypeFloat; // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
     impl_->mix_fmt = reinterpret_cast<WAVEFORMATEX*>(wf);
 
-    // Use WASAPI event callbacks like OBS, not timer polling.
     DWORD flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
     hr = impl_->client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,

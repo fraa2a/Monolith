@@ -9,8 +9,6 @@ interface Props {
   onCancel: () => void;
 }
 
-// Custom secondary confirmation popup (deno.md extra #1: delete asks again with
-// a custom popup, not a native dialog).
 export function ConfirmDialog(
   { title, message, confirmLabel = "Confirm", danger, onConfirm, onCancel }: Props,
 ) {

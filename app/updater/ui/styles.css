@@ -50,8 +50,6 @@ body {
 
 #app { height: 100%; display: flex; flex-direction: column; }
 
-/* ── Mini titlebar ─────────────────────────────────────────────────────── */
-
 .tb {
   height: 40px;
   flex: none;
@@ -98,8 +96,6 @@ body {
 .tb-close:hover { background: var(--danger); color: #fff; }
 .tb-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-/* ── Body ──────────────────────────────────────────────────────────────── */
-
 .upd-body {
   flex: 1;
   min-height: 0;
@@ -116,8 +112,6 @@ body {
   border-radius: 4px;
   border: 2px solid var(--bg);
 }
-
-/* Headline zone: release version + meta */
 
 .release { display: flex; flex-direction: column; gap: 6px; }
 
@@ -150,8 +144,6 @@ body {
 
 .release-meta a:hover { color: var(--accent-hi); border-bottom-color: var(--accent-line); }
 .release-meta a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
-
-/* ── Component cards ───────────────────────────────────────────────────── */
 
 .comps { display: flex; flex-direction: column; gap: 8px; }
 
@@ -223,8 +215,6 @@ body {
   border-left: 1px solid var(--line);
 }
 
-/* Per-component meter (downloading / verifying) */
-
 .meter {
   height: 3px;
   border-radius: 2px;
@@ -255,8 +245,6 @@ body {
 .comp-row .stat.ok { color: var(--ok); }
 .comp-row .stat.err { color: var(--danger); }
 
-/* Total line above the footer */
-
 .total {
   display: flex;
   align-items: center;
@@ -269,8 +257,6 @@ body {
 
 .total strong { color: var(--dim); font-weight: 600; }
 
-/* Recording notice (update deferred) */
-
 .notice {
   display: flex;
   gap: 10px;
@@ -282,8 +268,6 @@ body {
   font-size: 12px;
   color: #f2b7b2;
 }
-
-/* ── Centered states: checking / up to date / applying / done ─────────── */
 
 .center {
   flex: 1;
@@ -324,8 +308,6 @@ body {
 
 .center-vers b { color: var(--dim); font-weight: 600; }
 
-/* Loading dots (same rhythm as the main app) */
-
 .dots { display: flex; gap: 5px; }
 
 .dots i {
@@ -343,8 +325,6 @@ body {
   0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-3px); }
 }
-
-/* Applying: indeterminate sweep, like a buffer flush */
 
 .sweep {
   width: 200px;
@@ -370,8 +350,6 @@ body {
   100% { transform: translateX(260%); }
 }
 
-/* Error block */
-
 .error-box {
   background: var(--danger-soft);
   border: 1px solid rgba(229, 84, 75, 0.28);
@@ -385,8 +363,6 @@ body {
 }
 
 .error-box .title { font-weight: 700; color: var(--danger); }
-
-/* ── Footer actions ────────────────────────────────────────────────────── */
 
 .foot {
   flex: none;
@@ -428,8 +404,6 @@ body {
 
 .btn:disabled { opacity: 0.38; }
 
-/* ── Buffer bar (signature) ────────────────────────────────────────────── */
-
 .buffer {
   flex: none;
   height: 18px;
@@ -461,8 +435,6 @@ body {
 }
 
 .buffer.live .buffer-fill { background: var(--accent); box-shadow: 0 0 8px rgba(157, 180, 209, 0.5); }
-
-/* ── Reduced motion ────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
   .dots i, .sweep::after { animation-duration: 2.4s; }

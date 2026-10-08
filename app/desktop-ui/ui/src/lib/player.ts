@@ -1,9 +1,7 @@
 // Video player helpers shared by the card preview and the detail player.
 // See multitrack.ts for simultaneous multi-track audio playback.
 
-// Fully resets a <video> element's audio/playback state before it is reused for
-// a different clip, so leftover audio from the previous clip can't bleed through
-// during the first silent seconds of the next one.
+// Clear the old source before reusing an element for another clip.
 export function resetPlayer(video: HTMLVideoElement | null): void {
   if (!video) return;
   video.pause();
@@ -13,7 +11,6 @@ export function resetPlayer(video: HTMLVideoElement | null): void {
   } catch {
     /* not seekable yet */
   }
-  // Detach the source and reload so decoder/audio state is cleared.
   video.removeAttribute("src");
   try {
     video.load();
