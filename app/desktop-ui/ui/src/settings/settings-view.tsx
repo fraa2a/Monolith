@@ -15,6 +15,7 @@ import {
   Toggle,
 } from "./controls.tsx";
 import { Icon } from "../shell/icons.tsx";
+import { Button } from "../components/ui/button.tsx";
 
 type Page =
   | "general"
@@ -51,6 +52,17 @@ const PAGE_GROUPS: { label: string; pages: { id: Page; label: string; icon: stri
     ],
   },
 ];
+
+const PAGE_HELP: Record<Page, string> = {
+  general: "Manage recording, replay and app preferences.",
+  recording: "Choose where full recordings are saved.",
+  clip: "Set the length and output of your instant replays.",
+  capture: "Choose your capture source and video quality.",
+  audio: "Manage audio sources, tracks and volume.",
+  hotkeys: "Set shortcuts for clips, recordings and bookmarks.",
+  advanced: "Configure encoding and recorder diagnostics.",
+  game: "Choose how Monolith detects and records games.",
+};
 
 // Bitrate presets are in Mbps.
 const BITRATE_PRESETS = [3, 5, 7, 10, 15, 20, 25, 30, 35, 40, 50, 70, 100];
@@ -117,10 +129,11 @@ function findHotkeyConflicts(entries: { label: string; value: string }[]): Set<s
   return conflicts;
 }
 
-export function SettingsPopup({ onClose }: Props) {
+export function SettingsView({ onClose }: Props) {
   const [draft, setDraft] = useState<Config | null>(null);
   const [rs, setRs] = useState<RuntimeStatus>({});
   const [page, setPage] = useState<Page>("general");
+  const [query, setQuery] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
@@ -191,7 +204,7 @@ export function SettingsPopup({ onClose }: Props) {
     return () => clearTimeout(saveTimer.current);
   }, [draft]);
 
-  // Don't let the "saved" reset timer fire on an unmounted popup.
+  // Don't let the "saved" reset timer fire on an unmounted view.
   useEffect(() => () => clearTimeout(savedTimer.current), []);
 
   const update = (path: string, value: any) => {
@@ -199,26 +212,29 @@ export function SettingsPopup({ onClose }: Props) {
     setDraft((d) => (d ? setPath(d, path, value) : d));
   };
 
+  const current = PAGE_GROUPS.flatMap((group) => group.pages).find((entry) => entry.id === page)!;
+  const groups = PAGE_GROUPS.map((group) => ({
+    ...group,
+    pages: group.pages.filter((entry) => `${group.label} ${entry.label}`.toLowerCase().includes(query.trim().toLowerCase())),
+  })).filter((group) => group.pages.length > 0);
+
   return (
-    <div class="modal-backdrop" onMouseDown={onClose}>
-      <div class="settings" onMouseDown={(e) => e.stopPropagation()}>
-        <button
-          class="settings-close"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={onClose}
-          title="Close (Esc)"
-        >
-          <Icon name="x" size={18} />
-        </button>
-        <div class="settings-nav">
+      <section class="settings" aria-label="Settings">
+        <nav class="settings-nav" aria-label="Settings pages">
           <div class="settings-title">Settings</div>
-          {PAGE_GROUPS.map((group) => (
+          <div class="settings-search search-wrap">
+            <Icon name="search" size={16} />
+            <input class="input" type="search" aria-label="Search settings pages" placeholder="Search settings"
+              value={query} onInput={(event) => setQuery(event.currentTarget.value)} />
+          </div>
+          {groups.map((group) => (
             <div class="settings-group" key={group.label}>
               <div class="side-section">{group.label}</div>
               {group.pages.map((pg) => (
                 <button
                   key={pg.id}
                   class={pg.id === page ? "settings-tab active" : "settings-tab"}
+                  aria-current={pg.id === page ? "page" : undefined}
                   onClick={() => setPage(pg.id)}
                 >
                   <Icon name={pg.icon} size={16} />
@@ -227,6 +243,7 @@ export function SettingsPopup({ onClose }: Props) {
               ))}
             </div>
           ))}
+          {groups.length === 0 && <p class="muted">No matching settings pages.</p>}
 
           <div class="side-spacer" />
           {saveState !== "idle" && (
@@ -239,15 +256,24 @@ export function SettingsPopup({ onClose }: Props) {
                 : (error ?? "Save failed")}
             </div>
           )}
-        </div>
+        </nav>
 
         <div class="settings-body">
+          <header class="settings-page-head">
+            <span class="settings-page-icon"><Icon name={current.icon} size={36} /></span>
+            <h1>{current.label}</h1>
+            <p>{PAGE_HELP[page]}</p>
+            <Button variant="ghost" size="icon" class="settings-close" onClick={onClose} title="Close settings (Esc)" aria-label="Close settings">
+              <Icon name="x" size={18} />
+            </Button>
+          </header>
+          <div class="settings-page-content">
           {!draft
             ? <div class="empty">Loading settings… (is the engine running?)</div>
             : <Pages page={page} cfg={draft} rs={rs} update={update} appVersion={appVersion} engineVersion={engineVersion} onCheckUpdates={checkForUpdates} />}
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
   );
 }
 
@@ -357,9 +383,7 @@ function Pages({ page, cfg, rs, update, appVersion, engineVersion, onCheckUpdate
               label="Check for updates"
               help="Opens the updater window. Only the components that changed are downloaded."
               control={
-                <button type="button" class="set-action" onClick={onCheckUpdates}>
-                  Check now
-                </button>
+                <Button variant="outline" size="sm" onClick={onCheckUpdates}>Check now</Button>
               }
             />
           </Section>

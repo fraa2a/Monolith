@@ -20,9 +20,10 @@ import { HashtagDialog } from "./home/hashtag-dialog.tsx";
 import { Fullscreen } from "./home/fullscreen.tsx";
 import { DetailView } from "./home/detail-view.tsx";
 import { Filters } from "./home/filters.tsx";
-import { SettingsPopup } from "./settings/settings-popup.tsx";
+import { SettingsView } from "./settings/settings-view.tsx";
 import { Titlebar } from "./shell/titlebar.tsx";
 import { Sidebar } from "./shell/sidebar.tsx";
+import { Icon } from "./shell/icons.tsx";
 
 interface MenuState {
   x: number;
@@ -129,6 +130,8 @@ export function App() {
   }, [updateClip]);
 
   const changeFilter = useCallback((next: Filter) => {
+    setCollectionView(null);
+    setShowSettings(false);
     setFilter((prev) => (sameFilter(prev, next) ? prev : next));
   }, []);
 
@@ -175,8 +178,9 @@ export function App() {
   return (
     <div class="win">
       <Titlebar
+        settingsActive={showSettings}
         view={
-          collectionView?.kind === "detail"
+          showSettings ? "Settings" : collectionView?.kind === "detail"
             ? `Collections · ${collections.find((c) => c.id === collectionView.id)?.name ?? "Collections"}`
             : collectionView
             ? "Collections"
@@ -190,10 +194,12 @@ export function App() {
           filter={filter}
           onChange={changeFilter}
           onOpenSettings={() => setShowSettings(true)}
+          settingsActive={showSettings}
           collectionsActive={collectionView != null}
-          onOpenCollections={() => setCollectionView({ kind: "list" })}
+          onOpenCollections={() => { setShowSettings(false); setCollectionView({ kind: "list" }); }}
         />
-        <main class="content">
+        <main class={`content ${showSettings ? "content-settings" : ""}`}>
+          {showSettings ? <SettingsView onClose={() => setShowSettings(false)} /> : <>
           {loadError && <p class="err" role="alert">{loadError}</p>}
           {collectionView ? (
             collectionView.kind === "list" ? (
@@ -230,6 +236,7 @@ export function App() {
             hashtags={hashtags}
             filter={filter}
             onChange={changeFilter}
+            count={clips.length}
           />
 
           {loading
@@ -243,12 +250,7 @@ export function App() {
         ? (
           <div class="empty">
             <div class="empty-glyph">
-              <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v8l4-4 3 3 3-3 4 4V7H5z"
-                />
-              </svg>
+              <Icon name="film" size={32} />
             </div>
             <div class="empty-title">No clips yet</div>
             <div class="empty-hint">Press Ctrl+Shift+F8 while capturing to save your first clip.</div>
@@ -272,6 +274,7 @@ export function App() {
           )}
             </>
           )}
+          </>}
         </main>
       </div>
 
@@ -335,7 +338,6 @@ export function App() {
         />
       )}
 
-      {showSettings && <SettingsPopup onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

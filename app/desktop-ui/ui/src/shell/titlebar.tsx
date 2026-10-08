@@ -4,6 +4,8 @@ import {
   fetchEngineStatus,
   fetchGameArtwork,
   setSelectedGame,
+  recorderCommand,
+  type RecorderCommand,
   type EngineStatus,
   type GameArtwork,
 } from "../lib/api.ts";
@@ -11,19 +13,20 @@ import { appWindow } from "../lib/window.ts";
 import { getConfig, getRuntimeStatus, saveConfig, type Config, type RuntimeStatus } from "../lib/settings-api.ts";
 import { appLabel, monitorDisplayName } from "../lib/format.ts";
 import { Icon } from "./icons.tsx";
+import { Button } from "../components/ui/button.tsx";
 
 interface Props {
   view: string;
+  settingsActive: boolean;
 }
 
 function cloneConfig(config: Config | null): Config {
   return JSON.parse(JSON.stringify(config ?? {}));
 }
 
-// Custom title bar (the window is decorations-less). The whole bar is a drag region except controls. 
-// Live capture status + manual-record control sit left, at a fixed offset from the brand, and fill the bar's full height.
+// Native dragging excludes interactive controls.
 
-export function Titlebar({ view }: Props) {
+export function Titlebar({ view, settingsActive }: Props) {
   const [runtime, setRuntime] = useState<RuntimeStatus>({});
   const [engine, setEngine] = useState<EngineStatus>({});
   const [config, setConfig] = useState<Config | null>(null);
@@ -34,6 +37,7 @@ export function Titlebar({ view }: Props) {
   const hasCheckedOnce = useRef(false);
   const saving = useRef(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -69,18 +73,7 @@ export function Titlebar({ view }: Props) {
     return () => {
       alive = false;
     };
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    getConfig().then((cfg) => {
-      if (alive) setConfig(cfg);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [open]);
+  }, [open, settingsActive]);
 
   // Dismiss the capture popover on Escape or a click/mousedown outside it - the
   // same affordance the rest of the UI uses. Without this the popover could only
@@ -202,9 +195,19 @@ export function Titlebar({ view }: Props) {
     void setSelectedGame(exe);
   };
 
+  const record = async (method: RecorderCommand) => {
+    if (busy) return;
+    setBusy(true);
+    setSaveError(null);
+    const result = await recorderCommand(method);
+    if (!result.ok) setSaveError(result.error ?? "Recorder command failed");
+    else setEngine(await fetchEngineStatus());
+    setBusy(false);
+  };
+
   const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest(".tb-btn, .capture-feed, .mode-popover")) return;
+    if ((e.target as HTMLElement).closest("button, input, select, .mode-popover")) return;
     appWindow.startDrag();
   };
 
@@ -228,11 +231,11 @@ export function Titlebar({ view }: Props) {
           </button>
         </div>
       )}
-      <div class="titlebar" onMouseDown={onMouseDown} onDblClick={() => appWindow.toggleMaximize()}>
+      <div class="titlebar" onMouseDown={onMouseDown} onDblClick={(e) => {
+        if (!(e.target as HTMLElement).closest("button, input, select, .mode-popover")) appWindow.toggleMaximize();
+      }}>
         <div class="tb-brand">
-          <span class="tb-app">MONOLITH</span>
-          <span class="tb-sep">/</span>
-          <span class="tb-view">{view}</span>
+          <span class="tb-app" aria-label="Monolith">M</span>
         </div>
 
         <div class="tb-status">
@@ -244,6 +247,8 @@ export function Titlebar({ view }: Props) {
               setOpen((v) => !v);
             }}
             title="Capture source and mode"
+            aria-expanded={open}
+            aria-label={`Capture source: ${statusLabel}, ${subject}`}
           >
             <span
               class="feed-bg"
@@ -336,23 +341,32 @@ export function Titlebar({ view }: Props) {
           )}
         </div>
 
+        <div class="capture-actions">
+          <Button variant="ghost" size="sm" disabled={busy || engine.connected !== true || !engine.replay_enabled}
+            onClick={() => record("save_replay")} title="Save an instant replay">
+            <kbd>{config?.hotkeys?.save_replay ?? "Ctrl+Shift+F8"}</kbd>
+            <span>Clip {Number(config?.replay_buffer?.duration_seconds ?? 30)}s</span>
+          </Button>
+          <Button variant="ghost" size="sm" class={recording ? "record-active" : ""}
+            disabled={busy || engine.connected !== true || (!recording && !config?.recording?.enabled)}
+            onClick={() => record(recording ? "recording_stop" : "recording_start")}>
+            <kbd>{recording ? (config?.hotkeys?.recording_stop ?? "Ctrl+Shift+F10") : (config?.hotkeys?.recording_start ?? "Ctrl+Shift+F9")}</kbd>
+            <span>{recording ? "Stop recording" : "Long recording"}</span>
+          </Button>
+        </div>
+
         <div class="tb-drag" />
+        <span class="tb-view">{view}</span>
 
         <div class="tb-controls">
-          <button class="tb-btn" title="Minimize" onClick={() => appWindow.minimize()}>
-            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
-              <rect x="1" y="5.5" width="9" height="1" fill="currentColor" />
-            </svg>
+          <button class="tb-btn" title="Minimize" aria-label="Minimize" onClick={() => appWindow.minimize()}>
+            <Icon name="window-minimize" size={16} />
           </button>
-          <button class="tb-btn" title="Maximize" onClick={() => appWindow.toggleMaximize()}>
-            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
-              <rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" />
-            </svg>
+          <button class="tb-btn" title="Maximize" aria-label="Maximize" onClick={() => appWindow.toggleMaximize()}>
+            <Icon name="window-maximize" size={14} />
           </button>
-          <button class="tb-btn tb-close" title="Close" onClick={() => appWindow.close()}>
-            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
-              <path d="M1.5 1.5l8 8M9.5 1.5l-8 8" stroke="currentColor" stroke-width="1.1" />
-            </svg>
+          <button class="tb-btn tb-close" title="Close" aria-label="Close" onClick={() => appWindow.close()}>
+            <Icon name="x" size={16} />
           </button>
         </div>
       </div>

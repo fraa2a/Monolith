@@ -3,12 +3,24 @@
 Updated: 2026-10-08
 
 
-## Current checkpoint: merged audit and updater follow-up
+## Current checkpoint: screenshot-based desktop UI redesign
+
+- Screenshot fidelity follow-up: the content panel now has the reference's 8 px top-left curve, including Library, Collections and Settings. Removed the horizontal title-bar separator so the header and navigation rail join continuously. Refreshed the three fixture previews; Vite production build, the existing 12-layout browser regression, text policy and whitespace checks pass. Native Windows window-frame rendering is not verified locally.
+
+- Updater follow-up PR #6 was merged. Redesign baseline is main `3cff095825edd5ace5e65c168c3ed3863e727f63`.
+- `feat/ui-redesign` implements the user's screenshot reference for Library, Favorites, Collections and full-page Settings, shared Preact shadcn-style button variants, GLOW SVG icons and bundled Inter. UI component version is 1.5.0; engine/updater versions and contracts are unchanged.
+- Recorder title-bar actions use existing commands. Navigation exits collections/settings; thumbnail actions are keyboard accessible; confirmation Cancel no longer triggers deletion on Enter. Capture shortcuts refresh after Settings closes.
+- TypeScript, Vite production build, browser interaction regression and 12 responsive layouts pass locally. GLOW/Inter licenses are included in the bundle. A dedicated UI CI job is added. Actual Windows/WebView2/media/device/window behavior remains unverified locally.
+- English implementation report and fixture previews: `docs/ui/2026-10-08-redesign.md`. Existing O07 pending settings writes and O12 membership/fullscreen/error feedback remain open. Published PR #7: https://github.com/fraa2a/Monolith/pull/7. Remote code tree matched the tested local tree. GitHub Core regression tests started; Windows CI was queued. This request does not ask to merge the redesign PR.
+
+
+
+## Previous checkpoint: merged audit and updater follow-up
 
 - The user explicitly authorized publication and merging while checks are pending. Packaging #3, audit #4 and comments #5 are merged; current baseline main is `34285273f29d547d17a8f828a154a16e8dfbf957`. Earlier approval/review restrictions below describe historical checkpoints and do not override this authorization.
 - `fix/audit-followup` addresses O01/O02 with one staged file plan, persisted recovery journal, resumable rollback, metadata in the same plan, installed updater version reads and surfaced restart errors. Updater is version 1.0.2. No new dependencies or release publication.
 - Local production-module harness: 14 Rust tests pass. Windows-target tests compile with `cargo check --locked --tests --no-default-features --target x86_64-pc-windows-msvc --manifest-path tests/rust/Cargo.toml`. Focused formatting, whitespace and text-policy checks pass. Full Tauri host build and Windows execution are not local results.
-- Published follow-up PR #6: https://github.com/fraa2a/Monolith/pull/6. Independent Windows recovery job `113110828408` passed on code commit `dd922544406e309943f7aea646cca70992a22fc0`: 11 tests passed, zero failed, including replacement/recovery of a running executable. The ignored child helper is explicitly launched by that test. Full native Windows dependency compilation remains in progress. PR #6 remains open.
+- Published follow-up PR #6: https://github.com/fraa2a/Monolith/pull/6. Independent Windows recovery job `113110828408` passed on code commit `dd922544406e309943f7aea646cca70992a22fc0`: 11 tests passed, zero failed, including replacement/recovery of a running executable. The ignored child helper is explicitly launched by that test. Full native Windows dependency compilation was still in progress at that checkpoint. PR #6 was subsequently merged.
 - Follow-up evidence and limitations: `docs/audit/2026-10-08-followup.md`; decision: ADR-0021. O03 through O14 remain open. Recovery requires launching an updater; the two-move executable replacement has a possible missing-path interruption window. No claim of instantaneous filesystem atomicity, certified power-loss durability or successful engine readiness.
 
 

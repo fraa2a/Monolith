@@ -1,6 +1,4 @@
-// Frontend client for the settings popup. Talks to the Rust host over native
-// Tauri IPC (invoke), which reads/writes settings.db and triggers the engine
-// reload.
+// Settings persist through the native host and trigger an engine reload.
 
 import { invoke } from "@tauri-apps/api/core";
 
