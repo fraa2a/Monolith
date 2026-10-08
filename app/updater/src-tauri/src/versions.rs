@@ -19,17 +19,20 @@ pub fn installed() -> Installed {
         ui: file_version(&dir.join("ui").join("Monolith.UI.exe"))
             .or_else(|| fallback.as_ref().map(|f| f.ui.clone()))
             .unwrap_or_else(|| "0.0.0".into()),
-        // Own build: exact, no resource-file read needed.
-        updater: env!("CARGO_PKG_VERSION").to_string(),
+        updater: file_version(&dir.join("Updater.exe"))
+            .or_else(|| fallback.as_ref().map(|f| f.updater.clone()))
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
     }
 }
 
-/// components.json is a fallback when installed executable version resources are unavailable.
-pub fn write_components_json(v: &Installed) {
-    let path = paths::app_dir().join("components.json");
-    if let Ok(json) = serde_json::to_string_pretty(v) {
-        let _ = std::fs::write(path, json);
-    }
+/// Stage metadata for inclusion in the same transaction as the binaries.
+pub fn stage_components_json(v: &Installed, path: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let json = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    file.write_all(&json)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 fn read_components_json() -> Option<Installed> {

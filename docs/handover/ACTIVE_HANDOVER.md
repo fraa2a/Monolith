@@ -3,6 +3,16 @@
 Updated: 2026-10-08
 
 
+## Current checkpoint: merged audit and updater follow-up
+
+- The user explicitly authorized publication and merging while checks are pending. Packaging #3, audit #4 and comments #5 are merged; current baseline main is `34285273f29d547d17a8f828a154a16e8dfbf957`. Earlier approval/review restrictions below describe historical checkpoints and do not override this authorization.
+- `fix/audit-followup` addresses O01/O02 with one staged file plan, persisted recovery journal, resumable rollback, metadata in the same plan, installed updater version reads and surfaced restart errors. Updater is version 1.0.2. No new dependencies or release publication.
+- Local production-module harness: 14 Rust tests pass. Windows-target tests compile with `cargo check --locked --tests --no-default-features --target x86_64-pc-windows-msvc --manifest-path tests/rust/Cargo.toml`. Focused formatting, whitespace and text-policy checks pass. Full Tauri host build and Windows execution are not local results.
+- Added an independent Windows recovery job including a real running executable replacement/recovery test. Read current PR checks for its execution result. Full native Windows dependency compilation was still running at this checkpoint.
+- Follow-up evidence and limitations: `docs/audit/2026-10-08-followup.md`; decision: ADR-0021. O03 through O14 remain open. Recovery requires launching an updater; the two-move executable replacement has a possible missing-path interruption window. No claim of instantaneous filesystem atomicity, certified power-loss durability or successful engine readiness.
+
+
+
 ## Continuation checkpoint 2026-10-08: status verification
 
 - Published packaging PR: https://github.com/fraa2a/Monolith/pull/3. Remote head verified as `8ba6db2`; Windows CI run `37710318411` failed during Configure because `overlay-ports` was in `vcpkg.json` instead of `vcpkg-configuration.json`. The earlier x264 archive/hash issue prompted the pinned Git overlay.

@@ -319,3 +319,13 @@ Collection hydration distinguishes unavailable catalogs from absent clips, loads
 Both Rust engine clients require bounded JSON-RPC response envelopes tied to the request ID. Updater components require validated size, SHA256 and Ed25519 metadata; unsigned components have no bypass. Archive extraction is a separate module with Windows path/link/resource limits. Per-file replacement restoration does not provide component-wide rollback.
 
 Manual recording uses one presentation origin across all streams to preserve composition and intertrack offsets. Failed packet/finalization output is not returned for cataloging. Synchronous recording I/O and pause/resume continuity remain follow-up work.
+
+## ADR-0021: Recoverable component installation
+
+Date: 2026-10-08
+
+Replace the independent component swaps with one app-local transaction containing every selected payload file and the final component metadata. Preparation copies and syncs the entire plan before stopping the engine. A schema-versioned journal stores old/new hashes and a prepared/committed/rolled-back phase. Files are parked and placed with Windows `MoveFileExW` using write-through; prepared journals restore the previous plan, while committed journals retain the new files. Journal replacement uses a synced temporary file.
+
+Recover before querying installed versions. Preserve unexpectedly changed files and surface recovery errors. Keep transaction backups until commit or complete rollback; retry cleanup if loaded images prevent removal. Read installed updater version resources and report engine spawn errors. Do not start a restored engine while recovery is still pending.
+
+This provides recoverable disk installation, not instantaneous multi-file visibility or certified power-loss durability. A missing updater executable between its two moves can require a retained updater/reinstallation to invoke recovery. Stable file identity, concurrent external writers, engine readiness and clean Windows installer execution remain separate work. See `docs/audit/2026-10-08-followup.md` for test evidence.

@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[path = "../../../app/updater/src-tauri/src/install.rs"]
+mod install;
+
 #[path = "../../../app/updater/src-tauri/src/archive.rs"]
 mod archive;
 #[cfg(feature = "catalogs")]

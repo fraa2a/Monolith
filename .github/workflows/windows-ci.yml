@@ -10,6 +10,15 @@ permissions:
   packages: write
 
 jobs:
+  updater:
+    name: Test updater recovery on Windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --no-default-features --manifest-path tests/rust/Cargo.toml
+
   build:
     name: Build Monolith for Windows
     runs-on: windows-latest
