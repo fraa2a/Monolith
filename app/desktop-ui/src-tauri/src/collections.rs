@@ -29,7 +29,8 @@ fn open() -> Result<Connection, String> {
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let conn = Connection::open(dir.join("collections.db")).map_err(|err| err.to_string())?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(4000));
-    conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|err| err.to_string())?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|err| err.to_string())?;
     conn.execute_batch(DDL).map_err(|err| err.to_string())?;
     Ok(conn)
 }
@@ -88,7 +89,8 @@ pub fn list_collections() -> Result<Vec<CollectionSummary>, String> {
             })
         })
         .map_err(|err| err.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
 }
 
 pub fn create_collection(name: &str, color: &str) -> Result<i64, String> {
@@ -109,8 +111,11 @@ pub fn rename_collection(id: i64, name: &str) -> Result<(), String> {
         return Err("empty collection name".to_string());
     }
     let conn = open()?;
-    conn.execute("UPDATE collections SET name = ?1 WHERE id = ?2", params![name.trim(), id])
-        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE collections SET name = ?1 WHERE id = ?2",
+        params![name.trim(), id],
+    )
+    .map_err(|err| err.to_string())?;
     if conn.changes() == 0 {
         return Err("collection not found".to_string());
     }
@@ -119,11 +124,6 @@ pub fn rename_collection(id: i64, name: &str) -> Result<(), String> {
 
 pub fn delete_collection(id: i64) -> Result<(), String> {
     let conn = open()?;
-    // collection_clips rows go via the FK ON DELETE CASCADE now that the
-    // pragma is enabled in open(); delete clips first anyway so a failed
-    // cascade (older DB, pragma didn't stick) cannot leave orphans.
-    conn.execute("DELETE FROM collection_clips WHERE collection_id = ?1", params![id])
-        .map_err(|err| err.to_string())?;
     conn.execute("DELETE FROM collections WHERE id = ?1", params![id])
         .map_err(|err| err.to_string())?;
     if conn.changes() == 0 {
@@ -132,10 +132,14 @@ pub fn delete_collection(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-pub fn add_clip_to_collection(collection_id: i64, source: ClipSource, clip_id: i64) -> Result<(), String> {
+pub fn add_clip_to_collection(
+    collection_id: i64,
+    source: ClipSource,
+    clip_id: i64,
+) -> Result<(), String> {
     let conn = open()?;
     // Only accept clips that exist in the catalog right now.
-    if clip_catalog::clip_by_id(source, clip_id).is_none() {
+    if !clip_catalog::clips_by_ids(source, &[clip_id])?.contains_key(&clip_id) {
         return Err("clip not found".to_string());
     }
     let exists: bool = conn
@@ -157,7 +161,11 @@ pub fn add_clip_to_collection(collection_id: i64, source: ClipSource, clip_id: i
     Ok(())
 }
 
-pub fn remove_clip_from_collection(collection_id: i64, source: ClipSource, clip_id: i64) -> Result<(), String> {
+pub fn remove_clip_from_collection(
+    collection_id: i64,
+    source: ClipSource,
+    clip_id: i64,
+) -> Result<(), String> {
     let conn = open()?;
     conn.execute(
         "DELETE FROM collection_clips WHERE collection_id = ?1 AND source = ?2 AND clip_id = ?3",
@@ -184,24 +192,54 @@ pub fn collection_clips(collection_id: i64) -> Result<Vec<clip_catalog::Clip>, S
         })
         .map_err(|err| err.to_string())?;
 
+    let entries = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    let replay_ids: Vec<_> = entries
+        .iter()
+        .filter(|(source, _)| source == "replay")
+        .map(|(_, id)| *id)
+        .collect();
+    let manual_ids: Vec<_> = entries
+        .iter()
+        .filter(|(source, _)| source == "manual")
+        .map(|(_, id)| *id)
+        .collect();
+    let mut replay = if replay_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        clip_catalog::clips_by_ids(ClipSource::Replay, &replay_ids)?
+    };
+    let mut manual = if manual_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        clip_catalog::clips_by_ids(ClipSource::Manual, &manual_ids)?
+    };
     let mut clips = Vec::new();
     let mut stale = Vec::new();
-    for entry in rows {
-        let (source_str, clip_id) = entry.map_err(|err| err.to_string())?;
-        let Some(source) = ClipSource::parse(&source_str) else {
-            stale.push((collection_id, source_str, clip_id));
-            continue;
+    for (source, id) in entries {
+        let clip = match source.as_str() {
+            "replay" => replay.remove(&id),
+            "manual" => manual.remove(&id),
+            _ => None,
         };
-        match clip_catalog::clip_by_id(source, clip_id) {
-            Some(clip) => clips.push(clip),
-            None => stale.push((collection_id, source_str, clip_id)),
+        if let Some(clip) = clip {
+            clips.push(clip);
+        } else {
+            stale.push((source, id));
         }
     }
-    for (cid, source, clip_id) in stale {
-        let _ = conn.execute(
+    drop(stmt);
+    // Prune only after both catalogs were read without errors.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    for (source, id) in stale {
+        tx.execute(
             "DELETE FROM collection_clips WHERE collection_id = ?1 AND source = ?2 AND clip_id = ?3",
-            params![cid, source, clip_id],
-        );
+            params![collection_id, source, id],
+        ).map_err(|err| err.to_string())?;
     }
+    tx.commit().map_err(|err| err.to_string())?;
     Ok(clips)
 }

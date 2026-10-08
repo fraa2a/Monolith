@@ -110,6 +110,11 @@ int main() {
     check(!db, "ambiguous journal rejected");
     sql(path,
         "DELETE FROM file_mutation_journal WHERE token='1122334455667788';");
+    // Directory aliases cannot enter catalog file mutations.
+    db = storage::ClipDb::open(folder, "replay", &e);
+    check(db != nullptr, "open after ambiguous recovery");
+    check(!db->rename_clip(1, L"..", &e), "parent alias rejected");
+    check(!db->rename_clip(1, L"trailing ", &e), "trailing space rejected");
     // Invalid journal is rejected rather than interpreted.
     sql(path, "INSERT INTO file_mutation_journal VALUES "
               "('bad',1,'delete',3,'../x','q','','','prepared');");

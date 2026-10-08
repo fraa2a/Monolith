@@ -24,7 +24,15 @@ pub fn download(
     on_progress: &dyn Fn(u64),
     on_verify: &dyn Fn(),
 ) -> Result<(), String> {
-    let downloaded = crate::http::get_to_file(url, dest, cancel, on_progress)
+    crate::manifest::ComponentInfo {
+        version: "0.0.0".into(),
+        url: url.into(),
+        size: expected_size,
+        sha256: expected_sha256.into(),
+        ed_signature: ed_signature_b64.into(),
+    }
+    .validate()?;
+    let downloaded = crate::http::get_to_file(url, dest, expected_size, cancel, on_progress)
         .map_err(|e| {
             if e == "__cancelled" {
                 CANCELLED.to_string()
@@ -47,11 +55,9 @@ pub fn download(
             return Err("checksum mismatch - the download is corrupt".to_string());
         }
     }
-    if !ed_signature_b64.is_empty() {
-        if let Err(e) = verify_signature(dest, ed_signature_b64) {
-            let _ = std::fs::remove_file(dest);
-            return Err(e);
-        }
+    if let Err(e) = verify_signature(dest, ed_signature_b64) {
+        let _ = std::fs::remove_file(dest);
+        return Err(e);
     }
     Ok(())
 }
@@ -83,10 +89,24 @@ fn verify_signature(path: &Path, sig_b64: &str) -> Result<(), String> {
         .map_err(|_| "bad signature encoding".to_string())?
         .try_into()
         .map_err(|_: Vec<u8>| "bad signature length".to_string())?;
-    let key =
-        VerifyingKey::from_bytes(&key_bytes).map_err(|_| "bad public key".to_string())?;
+    let key = VerifyingKey::from_bytes(&key_bytes).map_err(|_| "bad public key".to_string())?;
     let sig = Signature::from_bytes(&sig_bytes);
     let msg = std::fs::read(path).map_err(|e| format!("read for verify: {e}"))?;
     key.verify_strict(&msg, &sig)
         .map_err(|_| "signature verification failed".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_and_forged_signatures_are_rejected() {
+        let path = std::env::temp_dir().join(format!("monolith-signature-{}", std::process::id()));
+        std::fs::write(&path, b"untrusted component").unwrap();
+        assert!(verify_signature(&path, "").is_err());
+        let forged = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+        assert!(verify_signature(&path, &forged).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
 }

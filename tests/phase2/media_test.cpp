@@ -1,4 +1,5 @@
 #include <encoding/trim.h>
+#include <recording/recording.h>
 #include <disk-segments/disk_segments.h>
 #include <replay-buffer/packet_ring.h>
 #include <replay-buffer/replay_buffer.h>
@@ -20,12 +21,19 @@ namespace fs = std::filesystem;
 std::mutex save_gate_mutex;
 std::condition_variable save_gate;
 bool block_save = false, save_entered = false;
+bool fail_write = false;
+extern "C" int __real_av_interleaved_write_frame(AVFormatContext*, AVPacket*);
+extern "C" int __wrap_av_interleaved_write_frame(AVFormatContext* fmt, AVPacket* packet) {
+    if (fail_write) return AVERROR(EIO);
+    return __real_av_interleaved_write_frame(fmt, packet);
+}
 extern "C" int __real_av_write_frame(AVFormatContext*, AVPacket*);
 extern "C" int __wrap_av_write_frame(AVFormatContext* fmt, AVPacket* packet) {
     {
         std::unique_lock lk(save_gate_mutex);
         if (block_save) { save_entered = true; save_gate.notify_all(); save_gate.wait(lk, [] { return !block_save; }); }
     }
+    if (fail_write) return AVERROR(EIO);
     return __real_av_write_frame(fmt, packet);
 }
 void command(const std::string& cmd) { CHECK(std::system(cmd.c_str()) == 0); }
@@ -150,6 +158,32 @@ int main(int argc, char** argv) {
     for (const auto& p : delayed) replay.push(p);
     std::promise<std::wstring> ram_saved; replay.save_clip([&](auto p) { ram_saved.set_value(p); });
     auto ram = ram_saved.get_future().get(); CHECK(!ram.empty()); decode(ram);
+
+    replay.save_clip([](auto) { throw std::runtime_error("completion failed"); });
+    for (int i = 0; i < 500 && replay.stats().saving; ++i) std::this_thread::sleep_for(10ms);
+    CHECK(!replay.stats().saving);
+    std::promise<std::wstring> recovered_save;
+    replay.save_clip([&](auto p) { recovered_save.set_value(p); });
+    CHECK(!recovered_save.get_future().get().empty());
+    recording::ManualRecorder recorder;
+    recorder.set_video_params(media.video); recorder.set_audio_params(media.audio);
+    CHECK(recorder.start((dir/"recordings"/"nested").wstring(), "mp4"));
+    const auto first_path = recorder.current_path();
+    for (const auto& p : media.packets) recorder.push(p);
+    std::wstring recorded;
+    CHECK(recorder.stop(&recorded) && !recorded.empty()); decode(recorded);
+    std::ofstream(dir/"manual-path.txt") << fs::path(recorded).string();
+    CHECK(recorder.start((dir/"recordings"/"nested").wstring(), "mp4"));
+    CHECK(recorder.current_path() != first_path); CHECK(recorder.stop());
+    CHECK(recorder.start((dir/"failed-recordings").wstring(), "mp4"));
+    fail_write = true;
+    recorder.push(*first_video);
+    fail_write = false;
+    recorded = L"stale";
+    CHECK(recorder.stop(&recorded) && recorded.empty());
+    const std::wstring long_folder(300, L'a');
+    CHECK(recorder.start(long_folder, "mkv"));
+    CHECK(recorder.current_path().size() > 300); CHECK(recorder.stop());
 
     // Continuous encoder clock: unlike the pressure fixture below, never loop
     // independently encoded AAC priming/tail packets over a reset boundary.

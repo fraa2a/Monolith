@@ -64,17 +64,17 @@ enum class VideoCodec {
 // Codec metadata needed by muxers to write stream headers.
 struct VideoStreamParams {
     VideoCodec codec = VideoCodec::H264;
-    int width, height;
-    int fps_num, fps_den;
-    int tb_num, tb_den;
+    int width = 0, height = 0;
+    int fps_num = 0, fps_den = 0;
+    int tb_num = 0, tb_den = 0;
     std::vector<uint8_t> extradata; // global headers (SPS/PPS/VPS)
 };
 
 struct AudioStreamParams {
     int stream_index = 1; // 1..6; 0 is reserved for video
-    int sample_rate;
-    int channels;
-    int tb_num, tb_den;
+    int sample_rate = 0;
+    int channels = 0;
+    int tb_num = 0, tb_den = 0;
     std::vector<uint8_t> extradata; // AAC AudioSpecificConfig
 };
 
@@ -112,8 +112,9 @@ public:
     VideoEncoder& operator=(const VideoEncoder&) = delete;
 
     struct Config {
-        int     width;               // output (encoded) width
-        int     height;              // output (encoded) height
+        int     width = 0;           // output (encoded) width
+        int     height = 0;          // output (encoded) height
+        VideoCodec codec = VideoCodec::H264;
         int     fps     = 60;
         // Rate control is always CBR at this target bitrate (bits per second).
         // quality is retained only for probe/back-compat and is unused by the

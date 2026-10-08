@@ -27,10 +27,12 @@ pub fn app_dir() -> PathBuf {
     }
     let mut cur: Option<&std::path::Path> = Some(exe.as_path());
     while let Some(dir) = cur {
-        if dir.join("app").join("desktop-ui").is_dir()
-            && dir.join("app").join("updater").is_dir()
-        {
-            return dir.join("build").join("app").join("recorder").join("Release");
+        if dir.join("app").join("desktop-ui").is_dir() && dir.join("app").join("updater").is_dir() {
+            return dir
+                .join("build")
+                .join("app")
+                .join("recorder")
+                .join("Release");
         }
         cur = dir.parent();
     }

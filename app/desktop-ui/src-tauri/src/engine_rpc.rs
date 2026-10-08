@@ -1,10 +1,13 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-const HOST: &str = "127.0.0.1:45991";
+const HOST: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
+    std::net::Ipv4Addr::LOCALHOST,
+    45991,
+));
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn rpc(method: &str, params: Option<Value>) -> Result<Value, String> {
@@ -16,16 +19,63 @@ fn rpc(method: &str, params: Option<Value>) -> Result<Value, String> {
         "params": params,
     });
 
-    let mut stream = TcpStream::connect(HOST).map_err(|err| err.to_string())?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+    let mut stream =
+        TcpStream::connect_timeout(&HOST, Duration::from_secs(4)).map_err(|err| err.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(4)))
+        .map_err(|err| err.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(4)))
+        .map_err(|err| err.to_string())?;
     writeln!(stream, "{payload}").map_err(|err| err.to_string())?;
 
-    let mut line = String::new();
-    let mut reader = BufReader::new(stream);
-    reader.read_line(&mut line).map_err(|err| err.to_string())?;
+    read_response(BufReader::new(stream), id)
+}
 
-    serde_json::from_str::<Value>(line.trim()).map_err(|err| err.to_string())
+fn read_response(reader: impl BufRead, id: u64) -> Result<Value, String> {
+    let mut line = Vec::new();
+    reader
+        .take(64 * 1024 + 1)
+        .read_until(b'\n', &mut line)
+        .map_err(|err| err.to_string())?;
+    if line.len() > 64 * 1024 || line.last() != Some(&b'\n') {
+        return Err("invalid or oversized engine response".into());
+    }
+    let value: Value = serde_json::from_slice(&line).map_err(|err| err.to_string())?;
+    if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || value.get("id").and_then(Value::as_u64) != Some(id)
+        || value.get("result").is_some() == value.get("error").is_some()
+    {
+        return Err("invalid engine response envelope".into());
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_response;
+    use std::io::Cursor;
+    #[test]
+    fn response_envelope_and_size_are_bounded() {
+        assert!(read_response(
+            Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}\n"),
+            1
+        )
+        .is_ok());
+        assert!(read_response(
+            Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":null}\n"),
+            1
+        )
+        .is_err());
+        assert!(read_response(Cursor::new(b"{\"id\":1,\"result\":null}\n"), 1).is_err());
+        assert!(read_response(
+            Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null,\"error\":null}\n"),
+            1
+        )
+        .is_err());
+        assert!(read_response(Cursor::new(vec![b'x'; 65537]), 1).is_err());
+        assert!(read_response(Cursor::new(b"{}"), 1).is_err());
+    }
 }
 
 pub fn mutate_clip(method: &str, params: Value) -> Value {

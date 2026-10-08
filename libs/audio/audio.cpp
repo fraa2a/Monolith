@@ -157,6 +157,7 @@ class ActivateCompletionHandler final
     , public IAgileObject {
 public:
     explicit ActivateCompletionHandler(HANDLE done) : done_(done) {}
+    ~ActivateCompletionHandler() { if (done_) CloseHandle(done_); }
 
     ULONG STDMETHODCALLTYPE AddRef() override
     {
@@ -228,10 +229,11 @@ static void capture_thread(ImplT* impl)
         HRESULT hr = impl->cap_client->GetNextPacketSize(&packet_size);
         if (FAILED(hr)) {
             OutputDebugStringA("[audio] GetNextPacketSize failed - stopping\n");
+            impl->running.store(false, std::memory_order_release);
             break;
         }
 
-        while (packet_size > 0) {
+        while (packet_size > 0 && impl->running.load(std::memory_order_acquire)) {
             BYTE*  data   = nullptr;
             UINT32 frames = 0;
             DWORD  flags  = 0;
@@ -257,10 +259,19 @@ static void capture_thread(ImplT* impl)
             pkt.data          = silent ? nullptr : reinterpret_cast<const uint8_t*>(data);
             pkt.data_bytes    = bytes;
 
-            if (impl->cb) impl->cb(pkt);
+            try { if (impl->cb) impl->cb(pkt); }
+            catch (...) {
+                impl->cap_client->ReleaseBuffer(frames);
+                impl->running.store(false, std::memory_order_release);
+                break;
+            }
 
             impl->cap_client->ReleaseBuffer(frames);
-            impl->cap_client->GetNextPacketSize(&packet_size);
+            hr = impl->cap_client->GetNextPacketSize(&packet_size);
+            if (FAILED(hr)) {
+                impl->running.store(false, std::memory_order_release);
+                break;
+            }
         }
 
         // Fallback pacing when no event handle is available (should not happen
@@ -691,15 +702,17 @@ bool WasapiCapture::start(Mode mode, PacketCallback cb)
 bool WasapiCapture::start_device(Mode mode, const std::wstring& device_id_value, PacketCallback cb)
 {
     if (impl_->running) return false;
+    stop();
     impl_->cb = std::move(cb);
 
+    auto fail = [this]() { stop(); return false; };
     HRESULT hr;
 
     hr = CoCreateInstance(
         __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
         __uuidof(IMMDeviceEnumerator),
         impl_->enumerator.put_void());
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) return fail();
 
     // Loopback: render endpoint + AUDCLNT_STREAMFLAGS_LOOPBACK.
     // Microphone: capture endpoint, no extra flags.
@@ -707,19 +720,19 @@ bool WasapiCapture::start_device(Mode mode, const std::wstring& device_id_value,
         EDataFlow flow = (mode == Mode::Loopback) ? eRender : eCapture;
         hr = impl_->enumerator->GetDefaultAudioEndpoint(
             flow, eConsole, impl_->device.put());
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) return fail();
     } else {
         hr = impl_->enumerator->GetDevice(device_id_value.c_str(), impl_->device.put());
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) return fail();
     }
 
     hr = impl_->device->Activate(
         __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
         impl_->client.put_void());
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) return fail();
 
     hr = impl_->client->GetMixFormat(&impl_->mix_fmt);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) return fail();
 
     DWORD flags = (mode == Mode::Loopback) ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
     flags |= AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
@@ -730,29 +743,31 @@ bool WasapiCapture::start_device(Mode mode, const std::wstring& device_id_value,
         0,
         impl_->mix_fmt,
         nullptr);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) return fail();
 
     impl_->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!impl_->event) return false;
+    if (!impl_->event) return fail();
     hr = impl_->client->SetEventHandle(impl_->event);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) return fail();
 
     hr = impl_->client->GetService(
         __uuidof(IAudioCaptureClient),
         impl_->cap_client.put_void());
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) return fail();
 
     hr = impl_->client->Start();
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) return fail();
 
     impl_->running = true;
-    impl_->thread  = std::thread([impl = impl_]() { capture_thread(impl); });
+    try { impl_->thread = std::thread([impl = impl_]() { capture_thread(impl); }); }
+    catch (...) { stop(); return false; }
     return true;
 }
 
 bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback cb)
 {
     if (process_id == 0 || impl_->running) return false;
+    stop();
     impl_->cb = std::move(cb);
 
     HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -786,7 +801,6 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
                  static_cast<unsigned long>(hr));
         audio_log("audio.app", buf);
         handler->Release();
-        CloseHandle(done);
         return false;
     }
 
@@ -796,22 +810,20 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
         snprintf(buf, sizeof(buf),
                  "process loopback: activation %s (hr=0x%08lX)",
                  wait_result != WAIT_OBJECT_0 ? "timed out" : "failed",
-                 static_cast<unsigned long>(handler->activate_hr()));
+                 static_cast<unsigned long>(wait_result == WAIT_OBJECT_0 ? handler->activate_hr() : E_PENDING));
         audio_log("audio.app", buf);
         handler->Release();
-        CloseHandle(done);
         return false;
     }
 
     winrt::com_ptr<IUnknown> activated = handler->activated();
     handler->Release();
-    CloseHandle(done);
 
     if (!activated) {
         audio_log("audio.app", "process loopback: activation returned no interface");
         return false;
     }
-    impl_->client = activated.as<IAudioClient>();
+    impl_->client = activated.try_as<IAudioClient>();
     if (!impl_->client) {
         audio_log("audio.app", "process loopback: IAudioClient query failed");
         return false;
@@ -822,7 +834,7 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
     // WASAPI event callbacks to wake only when process audio is available.
     auto* wf = static_cast<WAVEFORMATEXTENSIBLE*>(
         CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE)));
-    if (!wf) return false;
+    if (!wf) { stop(); return false; }
     ZeroMemory(wf, sizeof(*wf));
     wf->Format.wFormatTag      = WAVE_FORMAT_EXTENSIBLE;
     wf->Format.nChannels       = 2;
@@ -895,16 +907,17 @@ bool WasapiCapture::start_process_loopback(uint32_t process_id, PacketCallback c
     }
 
     impl_->running = true;
-    impl_->thread = std::thread([impl = impl_]() { capture_thread(impl); });
+    try { impl_->thread = std::thread([impl = impl_]() { capture_thread(impl); }); }
+    catch (...) { stop(); return false; }
     return true;
 }
 
 void WasapiCapture::stop()
 {
-    const bool was_running = impl_->running.exchange(false, std::memory_order_acq_rel);
+    impl_->running.store(false, std::memory_order_release);
     if (impl_->thread.joinable()) impl_->thread.join();
 
-    if (was_running && impl_->client) impl_->client->Stop();
+    if (impl_->client) impl_->client->Stop();
 
     if (impl_->mix_fmt) {
         CoTaskMemFree(impl_->mix_fmt);

@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <functional>
+#include <memory>
 
 struct ID3D11Texture2D;
 
@@ -79,7 +80,7 @@ public:
 
 private:
     struct Impl;
-    Impl* impl_;
+    std::shared_ptr<Impl> impl_;
 
     friend bool ensure_video_processor(Impl*, uint32_t, uint32_t, uint32_t, uint32_t);
     friend bool gpu_downscale(Impl*, ID3D11Texture2D*, uint32_t, uint32_t, uint32_t, uint32_t);

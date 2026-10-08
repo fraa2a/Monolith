@@ -1,6 +1,7 @@
 #include "settings_window.h"
 
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -11,6 +12,7 @@ namespace {
 // Handle of the last spawned Settings process; owned by the UI thread
 // (show() is only called from the tray window's message loop).
 HANDLE g_settings_process = nullptr;
+std::mutex g_process_mutex;
 
 struct FocusContext {
     DWORD pid;
@@ -117,6 +119,7 @@ UiLaunch resolve_ui_launch()
 
 void show(HWND owner, UINT reload_message)
 {
+    std::lock_guard lock(g_process_mutex);
     if (settings_already_running()) return;
 
     UiLaunch launch = resolve_ui_launch();
@@ -168,6 +171,7 @@ void show(HWND owner, UINT reload_message)
     DuplicateHandle(GetCurrentProcess(), process_info.hProcess,
                     GetCurrentProcess(), &guard,
                     0, FALSE, DUPLICATE_SAME_ACCESS);
+    if (g_settings_process) CloseHandle(g_settings_process);
     g_settings_process = guard;
 
     std::thread([owner, reload_message, process]() {
@@ -179,6 +183,7 @@ void show(HWND owner, UINT reload_message)
 
 void close_running()
 {
+    std::lock_guard lock(g_process_mutex);
     if (!g_settings_process) return;
 
     DWORD wait = WaitForSingleObject(g_settings_process, 0);

@@ -19,3 +19,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME ipc_server COMMAND ipc_server_test)
     set_tests_properties(ipc_server PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 endif()
+
+add_executable(pcm_input_test pcm_input_test.cpp)
+target_include_directories(pcm_input_test PRIVATE ../../libs)
+add_test(NAME pcm_input COMMAND pcm_input_test)

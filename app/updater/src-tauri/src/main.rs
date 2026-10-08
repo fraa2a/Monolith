@@ -16,6 +16,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod apply;
+mod archive;
 mod download;
 mod engine_rpc;
 mod http;
@@ -228,7 +229,12 @@ fn run_pipeline(app: &AppHandle) {
 
     let app_dir = paths::app_dir();
     let staging = paths::staging_dir();
-    let _ = std::fs::remove_dir_all(&staging);
+    if staging.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&staging) {
+            fail(app, &format!("cannot clear staging dir: {e}"));
+            return;
+        }
+    }
     if let Err(e) = std::fs::create_dir_all(&staging) {
         fail(app, &format!("cannot create staging dir: {e}"));
         return;
@@ -338,7 +344,7 @@ fn run_pipeline(app: &AppHandle) {
             }
         }
         let src = staging.join("ui");
-        if let Err(e) = apply::extract_zip(&staging.join("ui.zip"), &src)
+        if let Err(e) = archive::extract_zip(&staging.join("ui.zip"), &src)
             .and_then(|_| apply::place_tree(&src, &app_dir.join("ui")))
         {
             fail(app, &format!("applying interface: {e}"));
@@ -355,7 +361,7 @@ fn run_pipeline(app: &AppHandle) {
             }
         }
         let src = staging.join("engine");
-        if let Err(e) = apply::extract_zip(&staging.join("engine.zip"), &src)
+        if let Err(e) = archive::extract_zip(&staging.join("engine.zip"), &src)
             .and_then(|_| apply::place_tree(&src, &app_dir))
         {
             fail(app, &format!("applying engine: {e}"));
@@ -397,7 +403,7 @@ fn run_pipeline(app: &AppHandle) {
 
     if has("updater") {
         let src = staging.join("updater");
-        if let Err(e) = apply::extract_zip(&staging.join("updater.zip"), &src)
+        if let Err(e) = archive::extract_zip(&staging.join("updater.zip"), &src)
             .and_then(|_| apply::self_swap(&src.join("Updater.exe")))
         {
             fail(app, &format!("applying updater: {e}"));

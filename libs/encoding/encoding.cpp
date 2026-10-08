@@ -1,4 +1,5 @@
 #include "encoding.h"
+#include "pcm_input.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -13,6 +14,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -206,7 +208,7 @@ VideoEncoderPerfStats VideoEncoder::perf_stats() const
 
 bool VideoEncoder::open(Config const& cfg, PacketSink sink)
 {
-    if (cfg.width <= 0 || cfg.height <= 0 || cfg.fps <= 0)
+    if (cfg.width <= 0 || cfg.width > 16384 || cfg.height <= 0 || cfg.height > 16384 || cfg.fps <= 0 || cfg.fps > 1000)
         return false;
     if (cfg.bitrate <= 0 && cfg.quality <= 0)
         return false;
@@ -254,7 +256,8 @@ bool VideoEncoder::open(Config const& cfg, PacketSink sink)
 
     auto try_open = [&](const std::string& name, bool use_extras) -> bool {
         const AVCodec* codec = avcodec_find_encoder_by_name(name.c_str());
-        if (!codec) return false;
+        if (!codec || codec->id != static_cast<AVCodecID>(cfg.codec == VideoCodec::H265 ? AV_CODEC_ID_HEVC :
+            (cfg.codec == VideoCodec::AV1 ? AV_CODEC_ID_AV1 : AV_CODEC_ID_H264))) return false;
 
         impl_->ctx = avcodec_alloc_context3(codec);
         if (!impl_->ctx) return false;
@@ -459,7 +462,7 @@ void VideoEncoder::push_bgra(const uint8_t* bgra, int stride, int width, int hei
 {
     std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx || !bgra) return;
-    if (width <= 0 || height <= 0) return;
+    if (width <= 0 || width > INT_MAX / 4 || height <= 0 || stride < width * 4) return;
 
     // (Re-)create the scaler when the source size changes (display mode
     // switches, or output resolution differs from capture resolution).
@@ -698,9 +701,10 @@ static AVSampleFormat wasapi_to_av_fmt(int bit_depth, bool is_float)
 {
     if (is_float) return (bit_depth == 64) ? AV_SAMPLE_FMT_DBL : AV_SAMPLE_FMT_FLT;
     switch (bit_depth) {
+        case 8: return AV_SAMPLE_FMT_U8;
         case 16: return AV_SAMPLE_FMT_S16;
         case 32: return AV_SAMPLE_FMT_S32;
-        default: return AV_SAMPLE_FMT_FLT; // best guess
+        default: return AV_SAMPLE_FMT_NONE;
     }
 }
 
@@ -712,16 +716,11 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
     if (!impl_->ctx || bytes <= 0) return;
     if (sample_rate <= 0 || channels <= 0 || bit_depth <= 0) return;
 
-    AVSampleFormat src_fmt   = wasapi_to_av_fmt(bit_depth, is_float);
-    int            src_frames = bytes / (bit_depth / 8 * channels);
-    if (src_frames <= 0) return;
-
-    std::vector<uint8_t> silence;
-    const uint8_t* src_data = data;
-    if (!src_data) {
-        silence.resize(static_cast<size_t>(bytes), 0);
-        src_data = silence.data();
-    }
+    detail::PcmInput input;
+    if (!input.prepare(data, bytes, channels, bit_depth, is_float)) return;
+    AVSampleFormat src_fmt = wasapi_to_av_fmt(input.bit_depth, is_float);
+    const int src_frames = input.frames;
+    const uint8_t* src_data = input.data;
 
     // (Re-)init swr if the input format changed.
     bool need_swr = !impl_->swr
@@ -916,75 +915,87 @@ int TrackMixer::source_count() const
 
 bool TrackMixer::open(int out_sample_rate, int out_channels, Sink sink)
 {
-    if (out_sample_rate <= 0 || out_channels <= 0) return false;
+    if (out_sample_rate <= 0 || out_sample_rate > 384000 || out_channels <= 0 || out_channels > 64) return false;
     close();
     impl_->out_rate = out_sample_rate;
     impl_->out_ch   = out_channels;
     impl_->sink     = std::move(sink);
     impl_->running.store(true, std::memory_order_release);
 
-    impl_->thread = std::thread([this] {
-        using clock = std::chrono::steady_clock;
-        const auto start = clock::now();
-        int64_t emitted_frames = 0; // frames already sent since `start`
-        const int ch = impl_->out_ch;
-        std::vector<float> acc;   // accumulator (interleaved)
-        std::vector<float> tmp;   // per-source read buffer (interleaved)
+    try {
+        impl_->thread = std::thread([this] {
+            try {
+            using clock = std::chrono::steady_clock;
+            const auto start = clock::now();
+            int64_t emitted_frames = 0; // frames already sent since `start`
+            const int ch = impl_->out_ch;
+            std::vector<float> acc;   // accumulator (interleaved)
+            std::vector<float> tmp;   // per-source read buffer (interleaved)
 
-        while (impl_->running.load(std::memory_order_acquire)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(kMixIntervalMs));
+            while (impl_->running.load(std::memory_order_acquire)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kMixIntervalMs));
 
-            // Clock-locked CFR: the number of frames emitted is a function of the
-            // real time elapsed since `start`, not of loop iterations. Tracking a
-            // running total against a fixed origin avoids the cumulative drift of
-            // truncating per-tick deltas, keeping audio aligned over long sessions.
-            int64_t elapsed_us =
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    clock::now() - start).count();
-            int64_t target = (elapsed_us * impl_->out_rate) / 1'000'000;
-            int frames = static_cast<int>(target - emitted_frames);
-            if (frames <= 0) continue;
-            emitted_frames = target;
+                // Clock-locked CFR: the number of frames emitted is a function of the
+                // real time elapsed since `start`, not of loop iterations. Tracking a
+                // running total against a fixed origin avoids the cumulative drift of
+                // truncating per-tick deltas, keeping audio aligned over long sessions.
+                int64_t elapsed_us =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        clock::now() - start).count();
+                int64_t target = (elapsed_us * impl_->out_rate) / 1'000'000;
+                const int64_t pending = target - emitted_frames;
+                if (pending <= 0) continue;
+                const int frames = static_cast<int>(std::min<int64_t>(pending, std::max(1, impl_->out_rate / 10)));
+                emitted_frames += frames;
 
-            acc.assign(static_cast<size_t>(frames) * ch, 0.0f);
-            {
-                std::lock_guard lk(impl_->mutex);
-                tmp.resize(static_cast<size_t>(frames) * ch);
-                for (auto& [id, sp] : impl_->sources) {
-                    if (!sp->fifo) continue;
-                    int avail = av_audio_fifo_size(sp->fifo);
-                    int take  = std::min(frames, avail);
-                    if (take <= 0) continue;
-                    void* dst[1] = { tmp.data() };
-                    int got = av_audio_fifo_read(sp->fifo, dst, take);
-                    if (got <= 0) continue;
-                    size_t n = static_cast<size_t>(got) * ch;
-                    const float g = sp->gain;
-                    if (g == 1.0f) {
-                        for (size_t i = 0; i < n; ++i) acc[i] += tmp[i];
-                    } else {
-                        for (size_t i = 0; i < n; ++i) acc[i] += tmp[i] * g;
+                acc.assign(static_cast<size_t>(frames) * ch, 0.0f);
+                {
+                    std::lock_guard lk(impl_->mutex);
+                    tmp.resize(static_cast<size_t>(frames) * ch);
+                    for (auto& [id, sp] : impl_->sources) {
+                        if (!sp->fifo) continue;
+                        int avail = av_audio_fifo_size(sp->fifo);
+                        int take  = std::min(frames, avail);
+                        if (take <= 0) continue;
+                        void* dst[1] = { tmp.data() };
+                        int got = av_audio_fifo_read(sp->fifo, dst, take);
+                        if (got <= 0) continue;
+                        size_t n = static_cast<size_t>(got) * ch;
+                        const float g = sp->gain;
+                        if (g == 1.0f) {
+                            for (size_t i = 0; i < n; ++i) acc[i] += tmp[i];
+                        } else {
+                            for (size_t i = 0; i < n; ++i) acc[i] += tmp[i] * g;
+                        }
                     }
                 }
-            }
 
-            // Clip to [-1, 1] to avoid wrap/overflow on summed sources.
-            for (float& v : acc) {
-                if (v >  1.0f) v =  1.0f;
-                else if (v < -1.0f) v = -1.0f;
-            }
+                // Clip to [-1, 1] to avoid wrap/overflow on summed sources.
+                for (float& v : acc) {
+                    if (v >  1.0f) v =  1.0f;
+                    else if (v < -1.0f) v = -1.0f;
+                }
 
-            // Always emit, even when no source contributed (acc is then silence).
-            // A continuous output keeps every configured track present in the
-            // file and the downstream encoder timeline advancing at real time.
-            if (impl_->sink) {
-                impl_->sink(
-                    reinterpret_cast<const uint8_t*>(acc.data()),
-                    static_cast<int>(acc.size() * sizeof(float)),
-                    impl_->out_rate, ch, 32, /*is_float=*/true);
+                // Always emit, even when no source contributed (acc is then silence).
+                // A continuous output keeps every configured track present in the
+                // file and the downstream encoder timeline advancing at real time.
+                if (impl_->sink) {
+                    impl_->sink(
+                        reinterpret_cast<const uint8_t*>(acc.data()),
+                        static_cast<int>(acc.size() * sizeof(float)),
+                        impl_->out_rate, ch, 32, /*is_float=*/true);
+                }
             }
-        }
-    });
+            } catch (...) {
+                impl_->running.store(false, std::memory_order_release);
+                std::fprintf(stderr, "[audio] mixer worker failed\n");
+            }
+        });
+    } catch (...) {
+        impl_->running.store(false, std::memory_order_release);
+        impl_->sink = nullptr;
+        return false;
+    }
     return true;
 }
 
@@ -996,7 +1007,7 @@ int TrackMixer::add_source(float gain)
     auto src = std::make_unique<MixSource>();
     src->fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLT, impl_->out_ch, impl_->out_rate);
     if (!src->fifo) return -1;
-    src->gain = (gain < 0.0f) ? 0.0f : gain;
+    src->gain = (std::isfinite(gain) && gain >= 0.0f) ? gain : 0.0f;
     impl_->sources.emplace(id, std::move(src));
     return id;
 }
@@ -1006,7 +1017,7 @@ void TrackMixer::set_source_gain(int source_id, float gain)
     std::lock_guard lk(impl_->mutex);
     auto it = impl_->sources.find(source_id);
     if (it == impl_->sources.end()) return;
-    it->second->gain = (gain < 0.0f) ? 0.0f : gain;
+    it->second->gain = (std::isfinite(gain) && gain >= 0.0f) ? gain : 0.0f;
 }
 
 void TrackMixer::remove_source(int source_id)
@@ -1024,13 +1035,11 @@ void TrackMixer::push(int source_id, const uint8_t* data, int bytes,
                       int sample_rate, int channels, int bit_depth, bool is_float)
 {
     if (bytes <= 0 || sample_rate <= 0 || channels <= 0 || bit_depth <= 0) return;
-    AVSampleFormat src_fmt = wasapi_to_av_fmt(bit_depth, is_float);
-    int src_frames = bytes / (bit_depth / 8 * channels);
-    if (src_frames <= 0) return;
-
-    std::vector<uint8_t> silence;
-    const uint8_t* src_data = data;
-    if (!src_data) { silence.assign(static_cast<size_t>(bytes), 0); src_data = silence.data(); }
+    detail::PcmInput input;
+    if (!input.prepare(data, bytes, channels, bit_depth, is_float)) return;
+    const AVSampleFormat src_fmt = wasapi_to_av_fmt(input.bit_depth, is_float);
+    const int src_frames = input.frames;
+    const uint8_t* src_data = input.data;
 
     std::lock_guard lk(impl_->mutex);
     auto it = impl_->sources.find(source_id);
@@ -1063,17 +1072,18 @@ void TrackMixer::push(int source_id, const uint8_t* data, int bytes,
         // Drop oldest data if a source overruns (downstream stalled / paused).
         if (av_audio_fifo_size(s.fifo) + converted > kMaxFifoFrames) {
             int drop = av_audio_fifo_size(s.fifo) + converted - kMaxFifoFrames;
-            av_audio_fifo_drain(s.fifo, drop);
+            av_audio_fifo_drain(s.fifo, std::min(drop, av_audio_fifo_size(s.fifo)));
         }
-        av_audio_fifo_write(s.fifo, reinterpret_cast<void**>(s.conv), converted);
+        const int retained = std::min(converted, kMaxFifoFrames);
+        void* samples[1] = {s.conv[0] + static_cast<size_t>(converted - retained) * impl_->out_ch * sizeof(float)};
+        av_audio_fifo_write(s.fifo, samples, retained);
     }
 }
 
 void TrackMixer::close()
 {
-    if (impl_->running.exchange(false, std::memory_order_acq_rel)) {
-        if (impl_->thread.joinable()) impl_->thread.join();
-    }
+    impl_->running.store(false, std::memory_order_release);
+    if (impl_->thread.joinable()) impl_->thread.join();
     std::lock_guard lk(impl_->mutex);
     for (auto& [id, sp] : impl_->sources) {
         if (sp->swr)  swr_free(&sp->swr);

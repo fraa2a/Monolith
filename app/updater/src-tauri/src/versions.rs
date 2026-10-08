@@ -86,6 +86,7 @@ fn file_version(path: &Path) -> Option<String> {
         )
         .as_bool()
             || block.is_null()
+            || len < std::mem::size_of::<VS_FIXEDFILEINFO>() as u32
         {
             return None;
         }

@@ -18,7 +18,10 @@ extern "C" {
 #include <windows.h>
 
 #include <array>
+#include <atomic>
+#include <filesystem>
 #include <cstring>
+#include <cstdio>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -50,9 +53,13 @@ struct ManualRecorder::Impl {
     std::array<AVStream*, 7>    audio_streams{};
     bool                        header_written = false;
     bool                        wrote_packet = false;
+    bool                        output_failed = false;
     bool                        started_at_keyframe = false;
     bool                        resume_needs_keyframe = false;
     std::array<StreamTiming, 7> timing{};
+    int64_t                     origin_pts = 0;
+    int                         origin_num = 1;
+    int                         origin_den = 1;
 };
 
 static std::wstring generate_recording_path(
@@ -61,14 +68,18 @@ static std::wstring generate_recording_path(
 {
     SYSTEMTIME st;
     GetLocalTime(&st);
-    wchar_t path[MAX_PATH];
-    swprintf_s(path, MAX_PATH,
-        L"%s\\%04d%02d%02d_%02d%02d%02d_recording.%s",
-        dir.c_str(),
-        st.wYear, st.wMonth, st.wDay,
-        st.wHour, st.wMinute, st.wSecond,
-        mux::file_extension(container));
-    return path;
+    static std::atomic<uint64_t> sequence{0};
+    for (;;) {
+        wchar_t name[96];
+        swprintf_s(name, 96,
+            L"%04u%02u%02u_%02u%02u%02u%03u_%llu_recording.%s",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+            st.wMilliseconds, static_cast<unsigned long long>(sequence.fetch_add(1)),
+            mux::file_extension(container));
+        const auto path = std::filesystem::path(dir) / name;
+        std::error_code error;
+        if (!std::filesystem::exists(path, error)) return path.wstring();
+    }
 }
 
 template <typename ImplT>
@@ -77,7 +88,9 @@ static bool open_output(ImplT* impl)
     if (impl->header_written) return true;
     if (!impl->vsp_set || impl->path.empty()) return false;
 
-    CreateDirectoryW(impl->output_dir.c_str(), nullptr);
+    std::error_code error;
+    std::filesystem::create_directories(impl->output_dir, error);
+    if (error) return false;
 
     std::string path_utf = mux::wcs_to_utf8(impl->path);
     if (path_utf.empty()) return false;
@@ -90,19 +103,25 @@ static bool open_output(ImplT* impl)
     impl->video_stream  = streams.video;
     impl->audio_streams = streams.audio;
 
-    if (!mux::open_file_and_write_header(impl->fmt, path_utf, impl->container))
+    if (!mux::open_file_and_write_header(impl->fmt, path_utf, impl->container)) {
+        avformat_free_context(impl->fmt);
+        impl->fmt = nullptr;
+        impl->video_stream = nullptr;
+        impl->audio_streams = {};
         return false;
+    }
 
     impl->header_written = true;
     return true;
 }
 
 template <typename ImplT>
-static void close_output(ImplT* impl)
+static bool close_output(ImplT* impl)
 {
+    bool ok = !impl->output_failed;
     if (impl->fmt) {
-        if (impl->header_written) av_write_trailer(impl->fmt);
-        if (impl->fmt->pb) avio_closep(&impl->fmt->pb);
+        if (impl->header_written && av_write_trailer(impl->fmt) < 0) ok = false;
+        if (impl->fmt->pb && avio_closep(&impl->fmt->pb) < 0) ok = false;
         avformat_free_context(impl->fmt);
     }
     impl->fmt = nullptr;
@@ -113,6 +132,8 @@ static void close_output(ImplT* impl)
     impl->started_at_keyframe = false;
     impl->resume_needs_keyframe = false;
     impl->timing = {};
+    impl->output_failed = false;
+    return ok;
 }
 
 template <typename ImplT>
@@ -129,11 +150,13 @@ static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
     if (!dst_stream) return false;
 
     StreamTiming& timing = impl->timing[ep.stream_index];
-    timing.anchor.observe(ep.pts, ep.dts);
+    const auto origin = av_rescale_q(impl->origin_pts, AVRational{impl->origin_num, impl->origin_den},
+        AVRational{ep.tb_num, ep.tb_den});
+    timing.anchor.observe(origin, origin);
 
     if (timing.pause_start_set) {
-        if (ep.pts > timing.pause_start_pts)
-            timing.paused_pts += ep.pts - timing.pause_start_pts;
+        if (ep.dts > timing.pause_start_pts)
+            timing.paused_pts += ep.dts - timing.pause_start_pts;
         timing.pause_start_set = false;
     }
 
@@ -209,8 +232,10 @@ bool ManualRecorder::stop(std::wstring* output_path)
 {
     std::lock_guard lk(impl_->mutex);
     if (impl_->state == RecordingState::Idle) return false;
-    if (output_path) *output_path = impl_->wrote_packet ? impl_->path : std::wstring{};
-    close_output(impl_);
+    const bool wrote_packet = impl_->wrote_packet;
+    const bool complete = close_output(impl_);
+    if (!complete) std::fprintf(stderr, "[recording] output could not be finalized\n");
+    if (output_path) *output_path = complete && wrote_packet ? impl_->path : std::wstring{};
     impl_->path.clear();
     impl_->state = RecordingState::Idle;
     return true;
@@ -226,7 +251,7 @@ void ManualRecorder::push(encoding::EncodedPacket pkt)
             StreamTiming& timing = impl_->timing[pkt.stream_index];
             if (timing.anchor.set && !timing.pause_start_set) {
                 timing.pause_start_set = true;
-                timing.pause_start_pts = pkt.pts;
+                timing.pause_start_pts = pkt.dts;
             }
         }
         return;
@@ -234,6 +259,9 @@ void ManualRecorder::push(encoding::EncodedPacket pkt)
 
     if (!impl_->started_at_keyframe) {
         if (pkt.stream_index != 0 || !pkt.is_keyframe) return;
+        impl_->origin_pts = pkt.pts;
+        impl_->origin_num = pkt.tb_num;
+        impl_->origin_den = pkt.tb_den;
         impl_->started_at_keyframe = true;
     }
 
@@ -242,7 +270,10 @@ void ManualRecorder::push(encoding::EncodedPacket pkt)
         impl_->resume_needs_keyframe = false;
     }
 
-    write_packet(impl_, pkt);
+    if (!impl_->output_failed && !write_packet(impl_, pkt)) {
+        impl_->output_failed = true;
+        std::fprintf(stderr, "[recording] packet write failed\n");
+    }
 }
 
 RecordingState ManualRecorder::state() const

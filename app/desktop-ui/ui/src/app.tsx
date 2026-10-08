@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
   collectionsApi,
   type Clip,
@@ -41,6 +41,8 @@ export function App() {
   const [hashtags, setHashtags] = useState<string[]>([]);
   const [filter, setFilter] = useState<Filter>({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const reloadId = useRef(0);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [tagDialog, setTagDialog] = useState<Clip | null>(null);
@@ -53,20 +55,28 @@ export function App() {
   const [collectionPicker, setCollectionPicker] = useState<Clip | null>(null);
 
   const reload = useCallback(async (silent = false) => {
+    const requestId = ++reloadId.current;
     if (!silent) setLoading(true);
-    // In collection view the grid isn't shown: skip the clips+games scans
-    // (each is a full catalog pass); hashtags stay for the detail filter UI.
-    const [c, g, h, cols] = await Promise.all([
-      collectionView ? Promise.resolve([] as Clip[]) : fetchClips(filter),
-      collectionView ? Promise.resolve([] as string[]) : fetchGames(),
-      fetchHashtags(),
-      collectionView ? collectionsApi.list() : Promise.resolve(null as CollectionSummary[] | null),
-    ]);
-    setClips(c);
-    setGames(g);
-    setHashtags(h);
-    if (cols) setCollections(cols);
-    setLoading(false);
+    try {
+      // In collection view the grid isn't shown: skip the clips+games scans
+      // (each is a full catalog pass); hashtags stay for the detail filter UI.
+      const [c, g, h, cols] = await Promise.all([
+        collectionView ? Promise.resolve([] as Clip[]) : fetchClips(filter),
+        collectionView ? Promise.resolve([] as string[]) : fetchGames(),
+        fetchHashtags(),
+        collectionView ? collectionsApi.list() : Promise.resolve(null as CollectionSummary[] | null),
+      ]);
+      if (requestId !== reloadId.current) return;
+      setLoadError(null);
+      setClips(c);
+      setGames(g);
+      setHashtags(h);
+      if (cols) setCollections(cols);
+    } catch (error) {
+      if (requestId === reloadId.current) setLoadError(String(error));
+    } finally {
+      if (requestId === reloadId.current) setLoading(false);
+    }
   }, [filter, collectionView]);
 
   const updateClip = useCallback((next: Clip) => {
@@ -82,7 +92,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    reload();
+    void reload();
+    return () => { reloadId.current++; };
   }, [reload]);
 
   useEffect(() => {
@@ -152,7 +163,11 @@ export function App() {
 
   const doDelete = async () => {
     if (!confirmDel) return;
-    await clipApi.delete(confirmDel);
+    const result = await clipApi.delete(confirmDel);
+    if (!result.ok) {
+      setLoadError(result.error ?? "Could not delete clip");
+      return;
+    }
     setConfirmDel(null);
     setDetailIndex(null);
     await reload(true);
@@ -180,6 +195,7 @@ export function App() {
           onOpenCollections={() => setCollectionView({ kind: "list" })}
         />
         <main class="content">
+          {loadError && <p class="err" role="alert">{loadError}</p>}
           {collectionView ? (
             collectionView.kind === "list" ? (
               <CollectionsView

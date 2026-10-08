@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <utility>
+#include <mutex>
 
 namespace wgc  = winrt::Windows::Graphics::Capture;
 namespace wgdx = winrt::Windows::Graphics::DirectX;
@@ -97,6 +98,8 @@ struct DisplayCapture::Impl {
     CaptureOptions        options;
     int64_t               qpc_freq = 0;
     FrameCallback         cb;
+    std::mutex            callback_mutex;
+    bool                  handler_registered = false;
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -249,8 +252,8 @@ static bool gpu_downscale(DisplayCapture::Impl* impl, ID3D11Texture2D* src_tex,
 
 // ── DisplayCapture ────────────────────────────────────────────────────────────
 
-DisplayCapture::DisplayCapture() : impl_(new Impl()) {}
-DisplayCapture::~DisplayCapture() { stop(); delete impl_; }
+DisplayCapture::DisplayCapture() : impl_(std::make_shared<Impl>()) {}
+DisplayCapture::~DisplayCapture() { stop(); }
 bool DisplayCapture::running() const { return impl_->active.load(std::memory_order_relaxed); }
 bool DisplayCapture::border_suppressed() const { return impl_->border_suppressed.load(std::memory_order_relaxed); }
 
@@ -275,6 +278,8 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
 {
     if (impl_->active) return false;
     if (!is_supported()) return false;
+    stop();
+    impl_ = std::make_shared<Impl>();
 
     impl_->cb         = std::move(cb);
     impl_->options    = options;
@@ -321,8 +326,10 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
         impl_->active = true;
 
         impl_->frame_token = impl_->pool.FrameArrived(
-            [this](wgc::Direct3D11CaptureFramePool const& pool, auto const&)
+            [state = impl_](wgc::Direct3D11CaptureFramePool const& pool, auto const&)
             {
+                auto* impl_ = state.get();
+                std::lock_guard lock(impl_->callback_mutex);
                 if (!impl_->active.load(std::memory_order_acquire)) return;
 
                 auto frame = pool.TryGetNextFrame();
@@ -430,18 +437,26 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
                             impl_->frames_readback.fetch_add(1, std::memory_order_relaxed);
                             fi.bgra_data   = static_cast<const uint8_t*>(mapped.pData);
                             fi.bgra_stride = mapped.RowPitch;
-                            if (impl_->cb) impl_->cb(fi);
+                            try { if (impl_->cb) impl_->cb(fi); }
+                            catch (...) {
+                                impl_->d3d_ctx->Unmap(impl_->staging_tex.get(), 0);
+                                frame.Close();
+                                return;
+                            }
                             impl_->d3d_ctx->Unmap(impl_->staging_tex.get(), 0);
                         }
                     }
                 }
 
                 // Fall through: call cb even if readback failed (bgra_data = nullptr).
-                if (fi.bgra_data == nullptr && impl_->cb) impl_->cb(fi);
+                if (fi.bgra_data == nullptr && impl_->cb) {
+                    try { impl_->cb(fi); } catch (...) {}
+                }
 
                 frame.Close();
             });
 
+        impl_->handler_registered = true;
         impl_->session = impl_->pool.CreateCaptureSession(item);
         impl_->border_suppressed = false;
 
@@ -463,9 +478,7 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
         impl_->session.StartCapture();
     }
     catch (...) {
-        impl_->active = false;
-        impl_->cb     = nullptr;
-        impl_->d3d_device = nullptr;
+        stop();
         return false;
     }
 
@@ -474,17 +487,13 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
 
 void DisplayCapture::stop()
 {
-    if (!impl_->active) return;
-
-    // Signal the callback to abort immediately on next invocation.
     impl_->active.store(false, std::memory_order_release);
-
-    // Give any in-flight callback time to see active=false and return.
-    // Spike-quality sync: 30ms >> max callback duration at 60fps (16ms).
-    Sleep(30);
-
-    // Revoke the handler - no new invocations after this returns.
-    impl_->pool.FrameArrived(impl_->frame_token);
+    if (impl_->handler_registered && impl_->pool) {
+        impl_->pool.FrameArrived(impl_->frame_token);
+        impl_->handler_registered = false;
+    }
+    // Queued callbacks retain their session state; drain GPU access before release.
+    std::lock_guard lock(impl_->callback_mutex);
 
     if (impl_->session) { impl_->session.Close(); impl_->session = nullptr; }
     if (impl_->pool)    { impl_->pool.Close();    impl_->pool    = nullptr; }

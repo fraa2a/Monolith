@@ -439,12 +439,11 @@ static void publish_runtime_status()
     }
     std::string error;
     std::string json = settings::serialize_runtime_status(snapshot);
-    {
-        std::lock_guard<std::mutex> lk(g_last_runtime_status_mutex);
-        if (json == g_last_runtime_status_json) return; // unchanged: skip disk write
-        g_last_runtime_status_json = json;
-    }
-    if (!settings::write_runtime_status(app_data_dir(), snapshot, &error))
+    std::lock_guard<std::mutex> lk(g_last_runtime_status_mutex);
+    if (json == g_last_runtime_status_json) return;
+    if (settings::write_runtime_status(app_data_dir(), snapshot, &error))
+        g_last_runtime_status_json = std::move(json);
+    else
         log_msg("settings", ("runtime-status write failed: " + error).c_str());
 }
 
@@ -522,9 +521,10 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
         if (htimer) {
             LARGE_INTEGER due;
             due.QuadPart = -static_cast<LONGLONG>(tick_ms) * 10000; // 100ns units, relative
-            SetWaitableTimer(htimer, &due, 0, nullptr, nullptr, FALSE);
             HANDLE handles[2] = { g_pacer_stop_event, htimer };
-            DWORD w = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+            DWORD w = SetWaitableTimer(htimer, &due, 0, nullptr, nullptr, FALSE)
+                ? WaitForMultipleObjects(2, handles, FALSE, INFINITE)
+                : WaitForSingleObject(g_pacer_stop_event, static_cast<DWORD>(tick_ms));
             if (w == WAIT_OBJECT_0 || w == WAIT_FAILED) break;
         } else {
             DWORD w = WaitForSingleObject(g_pacer_stop_event,
@@ -629,8 +629,19 @@ static void pacer_start()
     }
 
     g_pacer_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    g_pacer_running = true;
-    g_pacer_thread = CreateThread(nullptr, 0, pacer_thread_proc, nullptr, 0, nullptr);
+    if (g_pacer_stop_event) {
+        g_pacer_running = true;
+        g_pacer_thread = CreateThread(nullptr, 0, pacer_thread_proc, nullptr, 0, nullptr);
+        if (g_pacer_thread) return;
+        CloseHandle(g_pacer_stop_event);
+        g_pacer_stop_event = nullptr;
+    }
+    g_pacer_running = false;
+    if (g_pacer_time_period_set) {
+        timeEndPeriod(1);
+        g_pacer_time_period_set = false;
+    }
+    log_error("capture", "video pacer could not start");
 }
 
 static void pacer_stop()
@@ -1143,7 +1154,7 @@ static void auto_record_stop()
     std::wstring path;
     if (g_recording.stop(&path)) {
         rec_clock_stop();
-        if (path.empty()) log_msg("recording", "auto recording stopped: no packets written");
+        if (path.empty()) log_msg("recording", "auto recording stopped: no complete output");
         else {
             log_path("recording", "auto recording saved: ", path);
             // Same closure as manual stop: pending bookmarks flush into the
@@ -2417,7 +2428,8 @@ static void media_start(HWND hwnd)
 
     // ── WGC display capture ───────────────────────────────────────────────────
     if (capture::is_supported()) {
-        bool ok = g_video.start(hmon, [](capture::FrameInfo const& f) {
+        const settings::Config video_settings = g_settings;
+        bool ok = g_video.start(hmon, [video_settings](capture::FrameInfo const& f) {
             // Log buffer stats every 300 frames (~5s at 60fps).
             if (f.seq % 300 == 0) {
                 // FrameArrived can fire on different thread-pool threads and
@@ -2523,7 +2535,7 @@ static void media_start(HWND hwnd)
                     avg_push_ms,
                     avg_sws_ms,
                     avg_encode_ms,
-                    g_settings.video_fps);
+                    video_settings.video_fps);
                 log_msg("perf-video", perf);
 
                 last_capture_stats = capture_stats;
@@ -2563,7 +2575,7 @@ static void media_start(HWND hwnd)
                 // this remains the source of truth either way.
                 int g_enc_w_resolved = 0, g_enc_h_resolved = 0;
                 resolve_target_size(static_cast<int>(f.width), static_cast<int>(f.height),
-                                     g_settings.resolution_preset,
+                                     video_settings.resolution_preset,
                                      &g_enc_w_resolved, &g_enc_h_resolved);
                 g_enc_w = g_enc_w_resolved;
                 g_enc_h = g_enc_h_resolved;
@@ -2571,18 +2583,21 @@ static void media_start(HWND hwnd)
                 // Resolve the concrete FFmpeg encoder from the user's CPU/GPU +
                 // codec choice, given what this machine can actually open.
                 std::string resolved = encoding::resolve_video_encoder(
-                    g_settings.encoder_device, g_settings.encoder_codec,
+                    video_settings.encoder_device, video_settings.encoder_codec,
                     g_enc_w, g_enc_h);
 
                 encoding::VideoEncoder::Config vcfg;
                 vcfg.width             = g_enc_w;
                 vcfg.height            = g_enc_h;
-                vcfg.fps               = g_settings.video_fps;
+                vcfg.fps               = video_settings.video_fps;
+                vcfg.codec             = video_settings.encoder_codec == "av1" ? encoding::VideoCodec::AV1 :
+                    (video_settings.encoder_codec == "h265" || video_settings.encoder_codec == "hevc" ?
+                        encoding::VideoCodec::H265 : encoding::VideoCodec::H264);
                 vcfg.quality           = 0; // 0 = CBR
-                vcfg.bitrate           = static_cast<int64_t>(g_settings.video_bitrate_kbps) * 1000;
+                vcfg.bitrate           = static_cast<int64_t>(video_settings.video_bitrate_kbps) * 1000;
                 vcfg.scaling_filter    = "bilinear"; // fixed; scaler choice removed from UI
                 vcfg.preferred_encoder = resolved; // "" → probe order fallback
-                vcfg.extra_options     = g_settings.extra_ffmpeg_options;
+                vcfg.extra_options     = video_settings.extra_ffmpeg_options;
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
                     g_perf_encoder_packets_output.fetch_add(1, std::memory_order_relaxed);
@@ -2598,15 +2613,15 @@ static void media_start(HWND hwnd)
                     snprintf(enc_msg, sizeof(enc_msg),
                         "%s %dx%d @%dfps %dkbps CBR%s%s",
                         g_video_enc.encoder_name().c_str(), g_enc_w, g_enc_h,
-                        g_settings.video_fps,
-                        g_settings.video_bitrate_kbps,
-                        g_settings.extra_ffmpeg_options.empty() ? "" :
+                        video_settings.video_fps,
+                        video_settings.video_bitrate_kbps,
+                        video_settings.extra_ffmpeg_options.empty() ? "" :
                             (g_video_enc.extra_options_rejected()
                                 ? "  extra_options=REJECTED (opened without them)"
                                 : "  extra_options="),
-                        (!g_settings.extra_ffmpeg_options.empty() &&
+                        (!video_settings.extra_ffmpeg_options.empty() &&
                          !g_video_enc.extra_options_rejected())
-                            ? g_settings.extra_ffmpeg_options.c_str() : "");
+                            ? video_settings.extra_ffmpeg_options.c_str() : "");
                     log_msg("encoding", enc_msg);
                 } else {
                     log_msg("encoding", "WARNING: video encoder open failed - will retry");
@@ -2629,9 +2644,9 @@ static void media_start(HWND hwnd)
                         char err[176];
                         snprintf(err, sizeof(err),
                             "No usable video encoder for %dx%d @%dfps (%s/%s). Retrying…",
-                            g_enc_w, g_enc_h, g_settings.video_fps,
-                            g_settings.encoder_device.c_str(),
-                            g_settings.encoder_codec.c_str());
+                            g_enc_w, g_enc_h, video_settings.video_fps,
+                            video_settings.encoder_device.c_str(),
+                            video_settings.encoder_codec.c_str());
                         std::lock_guard<std::mutex> lk(g_status_mutex);
                         g_runtime_status.active_encoder.clear();
                         g_runtime_status.video_encoder_error = err;
@@ -3267,7 +3282,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
         std::wstring path;
         if (g_recording.stop(&path)) {
             rec_clock_stop();
-            if (path.empty()) log_msg("recording", "recording stopped: no packets written");
+            if (path.empty()) log_msg("recording", "recording stopped: no complete output");
             else {
                 log_path("recording", "recording saved: ", path);
                 // Catalog off the UI thread - decode + DB I/O must not block it.

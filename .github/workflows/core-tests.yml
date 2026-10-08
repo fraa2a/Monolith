@@ -1,0 +1,51 @@
+name: Core regression tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake nlohmann-json3-dev libsqlite3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev pkg-config ffmpeg
+      - name: Check repository text
+        run: python3 scripts/check-text.py
+      - name: Run portable native regressions
+        run: |
+          for suite in phase1 phase2 u6; do
+            cmake -S "tests/$suite" -B "build-tests/$suite" -DCMAKE_CXX_FLAGS='-Werror'
+            cmake --build "build-tests/$suite" --parallel 2
+            ctest --test-dir "build-tests/$suite" --output-on-failure
+          done
+      - name: Run Rust catalog and updater regressions
+        run: cargo test --locked --manifest-path tests/rust/Cargo.toml
+      - name: Check Windows updater modules
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --locked --no-default-features --target x86_64-pc-windows-msvc --manifest-path tests/rust/Cargo.toml
+      - name: Build and test Stream Deck IPC
+        working-directory: plugins/stream-deck
+        run: |
+          npm ci --ignore-scripts --no-audit
+          npm run build
+          node --test ../../tests/stream-deck/ipc-client.test.mjs
+      - name: Check and build frontends
+        run: |
+          for app in desktop-ui updater; do
+            cd "app/$app"
+            npm ci --ignore-scripts --no-audit
+            npx tsc --noEmit
+            npx vite build
+            cd ../..
+          done

@@ -1,7 +1,7 @@
 use crate::paths;
 use rusqlite::{params, Connection, OpenFlags};
-use serde_json::Value;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -55,8 +55,8 @@ fn open(readonly: bool) -> Option<Connection> {
     Some(conn)
 }
 
-fn ensure_schema(conn: &Connection) {
-    let _ = conn.execute_batch(
+fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS game_catalog (
             process_name_lower TEXT PRIMARY KEY,
             display_name TEXT NOT NULL DEFAULT '',
@@ -64,22 +64,26 @@ fn ensure_schema(conn: &Connection) {
             icon_url TEXT,
             cover_url TEXT
         );
-        // entry_by_app_id and refresh_stale filter on discord_app_id; without
-        // this index both are full table scans on the clip-grid hot path.
-        CREATE INDEX IF NOT EXISTS idx_game_catalog_app_id
-            ON game_catalog(discord_app_id);",
-    );
+        ",
+    )?;
     for (name, ty) in [
         ("display_name", "TEXT NOT NULL DEFAULT ''"),
         ("discord_app_id", "TEXT"),
         ("icon_url", "TEXT"),
         ("cover_url", "TEXT"),
         ("exe_icon_png", "BLOB"),
+        ("last_updated", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         if !has_column(conn, "game_catalog", name) {
-            let _ = conn.execute(&format!("ALTER TABLE game_catalog ADD COLUMN {name} {ty}"), []);
+            conn.execute(
+                &format!("ALTER TABLE game_catalog ADD COLUMN {name} {ty}"),
+                [],
+            )?;
         }
     }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_game_catalog_app_id ON game_catalog(discord_app_id);",
+    )
 }
 
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
@@ -191,13 +195,18 @@ pub fn cached_exe_icon(process_name: &str) -> Option<Vec<u8>> {
 pub fn store_exe_icon(process_name: &str, png: &[u8]) {
     let key = process_name.to_lowercase();
     let Some(conn) = open(false) else { return };
-    ensure_schema(&conn);
-    let _ = conn.execute(
+    if let Err(err) = ensure_schema(&conn) {
+        eprintln!("game catalog schema: {err}");
+        return;
+    }
+    if let Err(err) = conn.execute(
         "INSERT INTO game_catalog (process_name_lower, exe_icon_png)
          VALUES (?1, ?2)
          ON CONFLICT(process_name_lower) DO UPDATE SET exe_icon_png=excluded.exe_icon_png",
         params![&key, png],
-    );
+    ) {
+        eprintln!("game icon cache write: {err}");
+    }
 }
 
 // Batched form of the cache-only lookup: one DB read serves a whole page of
@@ -220,7 +229,10 @@ impl ArtworkCache {
                     .map(|id| (id.to_string(), entry.clone()))
             })
             .collect();
-        Self { by_process, by_app_id }
+        Self {
+            by_process,
+            by_app_id,
+        }
     }
 
     pub fn resolve(&self, app_id: Option<&str>, process_name: Option<&str>) -> CatalogEntry {
@@ -324,8 +336,11 @@ fn fetch_and_cache_discord_app(app_id: &str, process_name: Option<&str>) -> Opti
         .unwrap_or_else(|| format!("discord:{app_id}"));
     let last_updated = now_unix();
     if let Some(conn) = open(false) {
-        ensure_schema(&conn);
-        let _ = conn.execute(
+        if let Err(err) = ensure_schema(&conn) {
+            eprintln!("game catalog schema: {err}");
+            return None;
+        }
+        if let Err(err) = conn.execute(
             "INSERT INTO game_catalog
                 (process_name_lower, display_name, discord_app_id, icon_url, cover_url, last_updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -336,7 +351,7 @@ fn fetch_and_cache_discord_app(app_id: &str, process_name: Option<&str>) -> Opti
                 cover_url=excluded.cover_url,
                 last_updated=excluded.last_updated",
             params![&key, &name, app_id, &icon_url, &cover_url, last_updated],
-        );
+        ) { eprintln!("game artwork cache write: {err}"); return None; }
     }
 
     Some(CatalogEntry {
@@ -354,21 +369,30 @@ fn fetch_and_cache_discord_app(app_id: &str, process_name: Option<&str>) -> Opti
 // cache-only reads (resolve_artwork_cached) stay reasonably fresh without ever
 // blocking a display path on the network. Call from a background thread.
 pub fn refresh_stale(max_age: Duration) {
-    let Some(conn) = open(true) else { return };
-    ensure_schema(&conn);
+    let Some(conn) = open(false) else { return };
+    if let Err(err) = ensure_schema(&conn) {
+        eprintln!("game catalog schema: {err}");
+        return;
+    }
     let cutoff = now_unix() - max_age.as_secs() as i64;
     let sql = format!(
         "SELECT {} FROM game_catalog WHERE discord_app_id IS NOT NULL AND last_updated < ?1",
         select_expr(&conn),
     );
-    let Ok(mut stmt) = conn.prepare(&sql) else { return };
-    let Ok(rows) = stmt.query_map(params![cutoff], row_to_entry) else { return };
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return;
+    };
+    let Ok(rows) = stmt.query_map(params![cutoff], row_to_entry) else {
+        return;
+    };
     let stale: Vec<CatalogEntry> = rows.flatten().collect();
     drop(stmt);
     drop(conn);
 
     for entry in stale {
-        let Some(app_id) = entry.discord_app_id.as_deref() else { continue };
+        let Some(app_id) = entry.discord_app_id.as_deref() else {
+            continue;
+        };
         let process_name = if entry.process_name_lower.starts_with("discord:") {
             None
         } else {

@@ -71,6 +71,8 @@ export function useMultiTrackAudio(
     }
 
     let cancelled = false;
+    mutedRef.current = video.muted;
+    volumeRef.current = video.volume;
 
     const onLoadedMetadata = () => {
       if (cancelled) return;
@@ -101,6 +103,7 @@ export function useMultiTrackAudio(
         shadow.volume = volumeRef.current;
         shadow.preload = "auto";
         shadow.playsInline = true;
+        shadow.playbackRate = video.playbackRate;
         const trackIndex = i;
         shadow.onloadedmetadata = () => {
           if (cancelled) return;
@@ -114,6 +117,7 @@ export function useMultiTrackAudio(
             }
           }
           shadow.currentTime = video.currentTime;
+          shadow.playbackRate = video.playbackRate;
           if (!video.paused) shadow.play().catch(() => {});
         };
         shadow.src = src;
@@ -146,7 +150,17 @@ export function useMultiTrackAudio(
       }
     };
 
+    const syncVolume = () => {
+      applyMuted(video.muted);
+      applyVolume(video.volume);
+    };
+    const syncRate = () => {
+      for (const { el } of shadowsRef.current) el.playbackRate = video.playbackRate;
+    };
+    video.addEventListener("volumechange", syncVolume);
+    video.addEventListener("ratechange", syncRate);
     video.addEventListener("loadedmetadata", onLoadedMetadata);
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) onLoadedMetadata();
     video.addEventListener("play", syncPlay);
     video.addEventListener("pause", syncPause);
     video.addEventListener("seeked", syncSeek);
@@ -154,6 +168,8 @@ export function useMultiTrackAudio(
 
     return () => {
       cancelled = true;
+      video.removeEventListener("volumechange", syncVolume);
+      video.removeEventListener("ratechange", syncRate);
       video.removeEventListener("loadedmetadata", onLoadedMetadata);
       video.removeEventListener("play", syncPlay);
       video.removeEventListener("pause", syncPause);

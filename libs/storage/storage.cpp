@@ -158,11 +158,10 @@ const char *kCreateSchema =
 std::string now_iso8601_utc() {
   std::time_t t = std::time(nullptr);
   std::tm gm{};
-  gmtime_s(&gm, &t);
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                gm.tm_year + 1900, gm.tm_mon + 1, gm.tm_mday, gm.tm_hour,
-                gm.tm_min, gm.tm_sec);
+  if (gmtime_s(&gm, &t) != 0) return {};
+  char buf[32]{};
+  if (std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &gm) == 0)
+    return {};
   return buf;
 }
 
@@ -291,7 +290,9 @@ std::unordered_map<std::wstring, std::weak_ptr<std::recursive_mutex>>
     g_mutation_map;
 
 bool leaf(const std::wstring &s) {
-  return !s.empty() && fs::path(s).filename() == fs::path(s) &&
+  return !s.empty() && s != L"." && s != L".." &&
+         s.back() != L'.' && s.back() != L' ' &&
+         fs::path(s).filename() == fs::path(s) &&
          s.find_first_of(L"\\/:") == std::wstring::npos &&
          s.find(L'\0') == std::wstring::npos;
 }
@@ -349,7 +350,8 @@ public:
     mutex_ =
         CreateMutexW(nullptr, FALSE,
                      (L"Local\\MonolithStorage-" + std::to_wstring(h)).c_str());
-    if (!mutex_ || WaitForSingleObject(mutex_, INFINITE) != WAIT_OBJECT_0) {
+    const DWORD result = mutex_ ? WaitForSingleObject(mutex_, INFINITE) : WAIT_FAILED;
+    if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) {
       if (mutex_)
         CloseHandle(mutex_);
       mutex_ = nullptr;
@@ -1178,7 +1180,7 @@ bool ClipDb::regenerate_thumbnail(int64_t id, std::string *error) {
     }
     sqlite3_finalize(st);
   }
-  if (video_base.empty()) {
+  if (!leaf(video_base) || !optional_leaf(thumb_base)) {
     if (error)
       *error = "clip not found";
     return false;
@@ -1217,7 +1219,7 @@ bool ClipDb::regenerate_thumbnail(int64_t id, std::string *error) {
 
 bool ClipDb::rename_clip(int64_t id, const std::wstring &new_stem,
                          std::string *error) {
-  if (new_stem.empty() ||
+  if (!leaf(new_stem) ||
       new_stem.find_first_of(L"\\/:*?\"<>|.") != std::wstring::npos) {
     if (error)
       *error = "invalid clip name";
@@ -1361,6 +1363,10 @@ ReconcileStats ClipDb::reconcile(std::string *error) {
 
   std::unordered_set<std::wstring> known;
   for (auto &r : rows) {
+    if (!leaf(r.video) || !optional_leaf(r.thumb)) {
+      if (error) *error = "invalid catalog media path";
+      continue;
+    }
     const std::wstring vpath = impl_->video_path(r.video);
     if (!fs::exists(vpath, ec)) {
       if (remove_clip(r.id, /*remove_files=*/true, nullptr))
