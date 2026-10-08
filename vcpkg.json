@@ -19,8 +19,5 @@
         "gpl"
       ]
     }
-  ],
-  "overlay-ports": [
-    "ports"
   ]
 }
