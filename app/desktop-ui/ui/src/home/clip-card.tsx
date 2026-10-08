@@ -4,6 +4,7 @@ import { type Clip, clipApi, exeIconUrl, mediaUrl, thumbUrl } from "../lib/api.t
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { useMultiTrackAudio } from "../lib/multitrack.ts";
+import { Button } from "../components/ui/button.tsx";
 
 interface Props {
   clip: Clip;
@@ -209,14 +210,16 @@ export const ClipCard = memo(function ClipCard(
       onMouseEnter={enter}
       onMouseLeave={leave}
     >
-      <div class="card-media" onClick={() => onOpenDetail(clip)}>
+      <div class="card-media">
         {showPlaceholder
           ? (
             <div class="thumb-placeholder" title="Thumbnail unavailable">
               <Icon name="film" size={34} />
             </div>
           )
-          : <img class="card-thumb" src={thumbSrc!} onError={onThumbError} />}
+          : <img class="card-thumb" src={thumbSrc!} alt="" loading="lazy" onError={onThumbError} />}
+
+        <button class="card-open" type="button" aria-label={`Open ${clip.title || "Untitled"}`} onClick={() => onOpenDetail(clip)} />
 
         {preview && (
           <video
@@ -309,6 +312,11 @@ export const ClipCard = memo(function ClipCard(
           <span class="dot">·</span>
           <span>{formatSize(clip.size_bytes)}</span>
         </div>
+      </div>
+      <div class="card-footer">
+        <Button variant="ghost" size="sm" onClick={() => onOpenDetail(clip)}><Icon name="play" size={15} />Open clip</Button>
+        <Button variant="ghost" size="icon" aria-label={`Actions for ${clip.title || "Untitled"}`}
+          onClick={(e) => onContextMenu(e as unknown as MouseEvent, clip)}><Icon name="more" size={18} /></Button>
       </div>
     </div>
   );

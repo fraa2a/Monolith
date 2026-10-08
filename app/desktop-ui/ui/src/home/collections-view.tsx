@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { type CollectionSummary, collectionsApi } from "../lib/api.ts";
 import { Icon } from "../shell/icons.tsx";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
+import { Button } from "../components/ui/button.tsx";
 
 export const COLLECTION_COLORS = [
   "#f59e0b",
@@ -97,10 +98,10 @@ export function CollectionFormModal(
         </div>
         {error && <p class="err">{error}</p>}
         <div class="modal-actions">
-          <button class="btn" disabled={busy} onClick={onCancel}>Cancel</button>
-          <button class="btn btn-primary" disabled={!name.trim() || busy} onClick={save}>
+          <Button variant="outline" disabled={busy} onClick={onCancel}>Cancel</Button>
+          <Button disabled={!name.trim() || busy} onClick={save}>
             {busy ? "Saving…" : submitLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -121,54 +122,32 @@ export function CollectionsView({ collections, onOpen, onChanged }: {
 
   return (
     <>
-      <div class="grid-head">
-        <h1 style={{ margin: 0, fontSize: "15px", fontWeight: 700 }}>Collections</h1>
-        <span class="grid-count">
-          <b>{collections.length}</b> {collections.length === 1 ? "collection" : "collections"}
-        </span>
-        <div class="rule" />
-        <button class="btn btn-primary" onClick={() => setForm({ mode: "create" })}>
-          New collection
-        </button>
+      <div class="collection-heading">
+        <div><h1>Collections</h1><p>Group your saved clips.</p></div>
+        <Button onClick={() => setForm({ mode: "create" })}><Icon name="plus" size={16} />New collection</Button>
       </div>
-
-      {collections.length === 0
-        ? (
-          <div class="empty">
-            <div class="empty-glyph"><Icon name="album" size={26} /></div>
-            <div class="empty-title">No collections yet</div>
-            <div class="empty-hint">Right-click a clip → Add to collection.</div>
-          </div>
-        )
-        : (
+      <div class="collection-tabs"><span>My collections</span><small class="grid-count"> · {collections.length}</small></div>
           <div class="collections-grid">
+            <button class="collection-new" type="button" onClick={() => setForm({ mode: "create" })}>
+              <span class="collection-cover"><Icon name="plus-circle" size={24} /><span>New collection</span></span>
+            </button>
             {collections.map((c) => (
               <div
                 key={c.id}
                 class="collection-card"
-                role="button"
-                tabIndex={0}
-                style={{ borderLeftColor: c.color }}
-                onClick={() => onOpen(c.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onOpen(c.id);
-                  }
-                }}
               >
-                <div class="collection-cover">
-                  {c.clip_count === 0
-                    ? <Icon name="album" size={30} />
-                    : <span class="color-swatch" style={{ background: c.color }} />}
-                </div>
-                <div class="collection-name">{c.name}</div>
-                <div class="collection-count">
+                <button class="collection-open" type="button" onClick={() => onOpen(c.id)}>
+                  <span class="collection-cover" style={{ color: c.color }}><Icon name="folder" size={40} /></span>
+                  <span class="collection-name">{c.name}</span>
+                  <span class="collection-count">
                   {c.clip_count} {c.clip_count === 1 ? "clip" : "clips"}
-                </div>
+                  </span>
+                </button>
+                <div class="collection-actions">
                 <button
                   class="card-act"
                   title="Rename"
+                  aria-label={`Rename ${c.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     setForm({ mode: "rename", collection: c });
@@ -179,6 +158,7 @@ export function CollectionsView({ collections, onOpen, onChanged }: {
                 <button
                   class="card-act danger"
                   title="Delete"
+                  aria-label={`Delete ${c.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     setDeleting(c);
@@ -186,10 +166,10 @@ export function CollectionsView({ collections, onOpen, onChanged }: {
                 >
                   <Icon name="trash-2" size={14} />
                 </button>
+                </div>
               </div>
             ))}
           </div>
-        )}
 
       {form && (
         <CollectionFormModal

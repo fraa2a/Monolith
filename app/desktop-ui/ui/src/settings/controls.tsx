@@ -1,5 +1,5 @@
 import type { ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../shell/icons.tsx";
 import { pickFolder } from "../lib/settings-api.ts";
 
@@ -208,7 +208,7 @@ export function HotkeyCapture(
   const [capturing, setCapturing] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!capturing) return;
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
