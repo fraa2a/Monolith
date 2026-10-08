@@ -5,10 +5,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-// Public half of the Monolith Ed25519 signing key - the same pair WinSparkle
-// used. The private half lives in the CI secret WINSPARKLE_ED_PRIVATE_KEY and
-// signs each component zip (openssl pkeyutl -sign -rawin, Sparkle format);
-// scripts/generate-update-manifest.ps1 emits the signatures we verify here.
+// Release components are signed with the CI Ed25519 key; this is its public half.
 const PUBLIC_KEY_B64: &str = "GgyaSRupUFn5Omaa90w0H2xDTrqff2DdzRDtbeplvKA=";
 
 /// Sentinel error string signalling a user cancel (not a failure).

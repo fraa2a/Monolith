@@ -6,12 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Discord is only ever used to enrich the display (name/icon/cover) of a game
-// the C++ recorder's local heuristic already detected - never to decide which
-// process is active. All reads used by the clip grid go through
-// resolve_artwork_cached (below), which never makes a network call; artwork
-// is populated/refreshed only by the scheduled background job in main.rs
-// (see refresh_stale) and by the live "currently playing" titlebar lookup.
+// Detection uses the local game-list database; Discord supplies display artwork only.
 
 const DISCORD_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -170,13 +165,7 @@ pub fn resolve_icon(process_name: &str) -> Option<String> {
     entry_by_process(process_name).and_then(|entry| entry.icon_url)
 }
 
-// Executable icons (PNG bytes extracted via SHDefExtractIconW, see exe_icon.rs)
-// are cached here by process name rather than by install path, so the same
-// game keeps its icon across reinstalls/relocations/different machines
-// instead of re-extracting (and never sharing a cache entry) every time the
-// exe's on-disk path differs. Reuses the same table as Discord artwork: an
-// exe icon and Discord artwork for the same process name are just two
-// columns of the one row keyed by process_name_lower.
+// Cache executable icons by normalized process name rather than installation path.
 pub fn cached_exe_icon(process_name: &str) -> Option<Vec<u8>> {
     let key = process_name.to_lowercase();
     let conn = open(true)?;
@@ -263,9 +252,7 @@ impl CatalogEntry {
     }
 }
 
-// Network-capable lookup: fetches from Discord (with an explicit timeout) when
-// the cache is missing or incomplete. Used only by explicit/live contexts
-// (the titlebar's "currently playing" indicator), never by the clip grid.
+// Network-capable artwork lookup for live/explicit requests; exclude the clip grid.
 pub fn resolve_artwork(app_id: Option<&str>, process_name: Option<&str>) -> CatalogEntry {
     if let Some(app_id) = app_id.filter(|id| !id.is_empty()) {
         if let Some(entry) = entry_by_app_id(app_id) {
@@ -364,10 +351,7 @@ fn fetch_and_cache_discord_app(app_id: &str, process_name: Option<&str>) -> Opti
     })
 }
 
-// Background refresh: re-fetches any catalog row with a known discord_app_id
-// whose last_updated is older than max_age (or never set), so the clip grid's
-// cache-only reads (resolve_artwork_cached) stay reasonably fresh without ever
-// blocking a display path on the network. Call from a background thread.
+// Refresh stale artwork on a background worker.
 pub fn refresh_stale(max_age: Duration) {
     let Some(conn) = open(false) else { return };
     if let Err(err) = ensure_schema(&conn) {

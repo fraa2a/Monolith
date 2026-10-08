@@ -18,7 +18,7 @@ export class RecordingToggle extends SingletonAction {
             }
             const method = status.recording ? 'recording_stop' : 'recording_start';
             await ipc.request(method);
-            // Optimistic update; status polling corrects it within 5s.
+            // Optimistic state is refreshed by the next status poll.
             await ev.action.setTitle(status.recording ? '⏺ REC' : '⏹ STOP');
             await ev.action.showOk();
         } catch {

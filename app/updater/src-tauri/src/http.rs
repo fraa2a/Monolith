@@ -1,11 +1,4 @@
-// Minimal WinHTTP client: manifest fetch + streaming download with progress.
-//
-// WinHTTP (not a Rust TLS stack) on purpose: the updater inherits the system
-// proxy configuration - the same behavior the WinSparkle era had - and stays
-// free of C dependencies, which also allows `cargo check --target
-// x86_64-pc-windows-msvc` from any host. Redirects (GitHub's
-// releases/latest/download → objects.githubusercontent.com) are followed by
-// WinHTTP's default policy.
+// Use WinHTTP for system proxy support and release redirects.
 
 use std::io::Write;
 use std::path::Path;

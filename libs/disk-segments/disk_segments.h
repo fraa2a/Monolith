@@ -9,15 +9,8 @@
 
 namespace disk_segments {
 
-// Rolling keyframe-aligned buffer of clip segments on disk - the "disk"
-// storage mode for the replay buffer. Mirrors replay_buffer::ReplayBuffer's
-// public surface so that class can route on its Config::storage. Segments are
-// ~5 s long (rolled on video keyframes); age and payload retention keep
-// the last Config::duration_sec behind the newest packet.
-//
-// Each segment is an independent, fully muxed file whose packets restart at
-// a common decode origin (composition/audio offsets preserved), for concat via
-// encoding::concat_clip_segments (which also trims the window edges).
+// Roll segments at video keys near five seconds. Each file uses a common decode
+// origin with composition/audio offsets for later concatenation.
 class DiskSegmentBuffer {
 public:
      DiskSegmentBuffer();
@@ -41,17 +34,12 @@ public:
     void set_audio_params(encoding::AudioStreamParams const& p);
     void set_audio_params(std::vector<encoding::AudioStreamParams> const& p);
 
-    // Thread-safe - call from encoder sink callbacks.
+    // Encoder callbacks may push concurrently; serialize lifecycle changes.
     void push(encoding::EncodedPacket pkt);
 
-    // Concatenates the retained window [newest − duration, newest] into a
-    // clip in `out_dir` on a worker thread. cb runs on that thread with the
-    // output path (empty on failure / empty buffer). Concurrent calls are
-    // dropped (one save at a time), mirroring ReplayBuffer::save_clip:
-    // returns false when dropped (cb will not run in that case).
-    // cb may query stats/request another save (dropped), but must not clear
-    // or destroy this buffer from its own save thread. clear/destruction cancel
-    // cooperative FFmpeg I/O and join before releasing owned inputs.
+    // Save runs on a worker; an empty path reports failure. A rejected concurrent
+    // save returns false without invoking cb. The callback must not clear or destroy
+    // the buffer; teardown cancels I/O and joins the worker.
     bool save_clip(const std::wstring& out_dir,
                    std::function<void(std::wstring)> cb = nullptr);
 

@@ -8,9 +8,7 @@
 
 namespace replay_buffer {
 
-// Thread-safe rolling ring buffer over EncodedPackets.
-// push() is safe to call concurrently from multiple threads.
-// save_clip() snapshots the buffer and writes a clip file asynchronously.
+// Serialize lifecycle changes; push/save use synchronized packet state.
 struct ReplayBufferStats {
     size_t packet_count = 0;
     // RAM: retained encoded payload only, excluding bounded packet/index
@@ -53,7 +51,7 @@ public:
     void set_audio_params(encoding::AudioStreamParams const& p);
     void set_audio_params(std::vector<encoding::AudioStreamParams> const& p);
 
-    // Thread-safe - call from encoder sink callbacks.
+    // Encoder callbacks may push concurrently; serialize lifecycle changes.
     void push(encoding::EncodedPacket pkt);
 
     // Snapshot the ring buffer and save a clip asynchronously.

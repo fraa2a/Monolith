@@ -179,8 +179,7 @@ std::string utf8_at(const json& doc, const char* section, const char* key, const
     return value_it->get<std::string>();
 }
 
-// Normalizes a hotkey chord string for case-insensitive comparison ("Ctrl+Shift+F8"
-// and "ctrl+shift+f8" collide). "NONE" (hotkey disabled) never collides with itself.
+// Compare enabled hotkeys case-insensitively; exclude NONE bindings.
 std::string normalize_hotkey(const std::string& chord)
 {
     std::string out = chord;
@@ -484,13 +483,8 @@ Config config_from_json(
     config.hotkey_pause_resume = utf8_at(doc, "hotkeys", "pause_resume", "Ctrl+Shift+F11");
     config.hotkey_add_bookmark = utf8_at(doc, "hotkeys", "add_bookmark", "Ctrl+Shift+F12");
 
-    // ── active_game detection settings ───────────────────────────────────────────
-    // Detection is a pure local heuristic over running processes (no network
-    // calls; Discord is only used elsewhere to enrich display artwork/name for
-    // a detected game) and polls on a fixed 5s cadence. Only detection_enabled
-    // and the internal process blacklist survive as configurable data; the
-    // timing tunables are hardcoded (ActiveGameSettings defaults) and no
-    // longer exposed in the UI.
+    // Detection timing uses ActiveGameSettings defaults; persisted input supplies
+    // the enable flag and blacklist.
     {
         auto ag_it = doc.find("active_game");
         const json* ag = (ag_it != doc.end() && ag_it->is_object()) ? &(*ag_it) : nullptr;

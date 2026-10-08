@@ -58,30 +58,20 @@ struct Config {
     // Active game detection settings.
     ActiveGameSettings active_game;
 
-    // Capture mode: "always" keeps the replay buffer running; "game_only" stops
-    // it after idle_timeout_seconds with no detected game and restarts on detect.
-    // Never stops an active manual recording.
+    // game_only pauses replay without a target; manual recording has separate controls.
     std::string capture_mode = "always"; // "always" | "game_only"
     int capture_idle_timeout_seconds = 300; // clamped 30-3600
     bool capture_auto_record = false;
-    // When true, the replay buffer stays active even with no detected game: in
-    // game_only mode it falls back to full-screen capture until a game appears.
-    // When false (default) the replay buffer is disabled once no game is present
-    // (after the idle timeout).
+    // Enable screen fallback for replay while no game is detected.
     bool capture_clip_without_game = false;
 
     // Capture (capture/encoder restart when no manual recording is active).
     std::wstring monitor_device;          // e.g. L"\\\\.\\DISPLAY1"; empty = primary
-    // Resolution is chosen as a preset height; the width is derived from the
-    // captured monitor's aspect ratio and never upscaled beyond the monitor.
-    // "source" keeps the native monitor resolution.
+    // Resolution presets specify height; preserve aspect ratio and native size as an upper bound.
     std::string resolution_preset = "source"; // source | 480p | 720p | 1080p | 1440p
     bool show_capture_border = false;
 
-    // Encoder (capture/encoder restart when no manual recording is active).
-    // Simplified surface: user picks CPU/GPU + codec; the engine resolves the
-    // concrete FFmpeg encoder from what the machine actually supports. Rate
-    // control is always CBR with the configured bitrate.
+    // Resolve device/codec preferences to an encoder; recording uses the target CBR bitrate.
     std::string encoder_device = "gpu";   // "gpu" | "cpu"
     std::string encoder_codec  = "h264";  // "h264" | "h265" | "av1"
     int video_bitrate_kbps = 20000;       // CBR target, clamped 1000-200000
@@ -117,9 +107,7 @@ LoadResult load(
 
 bool save(Config& config, std::string* error);
 
-// Snapshot of runtime capabilities written to AppData\Local\Monolith\
-// runtime-status.json so the Settings UI can offer only real choices
-// (available encoders, attached monitors, border-suppression support).
+// Runtime capabilities published to runtime-status.json for the Settings UI.
 struct RuntimeMonitor {
     std::wstring device;   // e.g. L"\\\\.\\DISPLAY1"
     int width = 0;
@@ -158,8 +146,6 @@ struct ActiveGameStatus {
     bool fast_scan_enabled = true;
 };
 
-// One detected game (DB-matched running process) offered to the UI so the user
-// can pick which to record/clip when several are running at once.
 struct GameCandidateStatus {
     uint32_t process_id = 0;
     std::wstring process_name;
@@ -186,8 +172,6 @@ struct RuntimeStatus {
     int encode_height = 0;
 };
 
-// Serializes RuntimeStatus to the JSON written to runtime-status.json.
-// Exposed so callers can diff against the previous content and skip no-op writes.
 std::string serialize_runtime_status(const RuntimeStatus& status);
 
 bool write_runtime_status(

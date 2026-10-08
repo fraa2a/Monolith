@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../shell/icons.tsx";
 import { pickFolder } from "../lib/settings-api.ts";
 
-// ── Layout primitives ──────────────────────────────────────────────────────────
 // A settings page is a stack of Sections; each Section is a titled card holding
 // a set of Fields. This gives every group a consistent frame, divider and rhythm.
 
@@ -46,7 +45,6 @@ export function Field(
   );
 }
 
-// ── Controls ────────────────────────────────────────────────────────────────────
 
 export function Toggle(
   { checked, onChange }: { checked: boolean; onChange: (v: boolean) => void },
@@ -113,8 +111,6 @@ export function TextInput(
   );
 }
 
-// Read-only path field with a Browse button that opens the native Windows folder
-// picker. The user never types a path manually.
 export function FolderPicker(
   { value, onPick }: { value: string; onPick: (path: string) => void },
 ) {
@@ -188,10 +184,6 @@ export function VolumeSlider(
   );
 }
 
-// ── Hotkey capture ──────────────────────────────────────────────────────────────
-// Replaces free-text hotkey entry. On focus it listens for a real key chord and
-// writes the canonical "Ctrl+Alt+3" string, so combinations the old text box
-// dropped (e.g. Ctrl+Alt+3) are captured correctly.
 
 const MOD_LABEL: Record<string, string> = {
   Control: "Ctrl",

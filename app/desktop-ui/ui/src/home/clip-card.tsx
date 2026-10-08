@@ -58,12 +58,7 @@ export const ClipCard = memo(function ClipCard(
     regenTried.current = false;
   }, [clip.id, clip.source, clip.thumbnail_file, clip.duration_seconds]);
 
-  // Icon is always resolved locally: prefer the icon embedded in the game's
-  // own executable (no network, no cache dependency), then fall back to
-  // whatever list_clips already resolved from the local Discord artwork
-  // cache (game_icon_url) - never fetched here, so opening the library never
-  // triggers a network call. A game newly added to the cache picks up its
-  // icon on the next scheduled refresh (see game_catalog::refresh_stale).
+  // Prefer the executable icon, then cached artwork; avoid network lookup per card.
   useEffect(() => {
     let active = true;
     if (!clip.game_executable_path) {
@@ -96,10 +91,7 @@ export const ClipCard = memo(function ClipCard(
       video.load();
     };
 
-    // WebView2 can't decode the default .mkv container, so the <video> canvas
-    // fallback below never fires for most clips. Ask the engine (FFmpeg, decodes
-    // mkv) to regenerate the thumbnail instead; on success it bumps the clip
-    // generation and the grid reloads with the populated thumbnail_file.
+    // Use engine thumbnail generation when WebView2 cannot decode the container.
     const fallbackToEngine = async () => {
       if (cancelled || regenTried.current) return;
       regenTried.current = true;

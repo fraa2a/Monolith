@@ -269,8 +269,6 @@ export function DetailView(
     }
   }, [clip?.id, clip?.source]);
 
-  // Bookmarks live in the catalog next to the clip; refresh whenever the clip
-  // changes (replay clips simply have none).
   useEffect(() => {
     let cancelled = false;
     setBookmarks([]);
@@ -283,8 +281,7 @@ export function DetailView(
     return () => { cancelled = true; };
   }, [clip?.id, clip?.source]);
 
-  // Fullscreen reuses this same <video> element in place (see render below) -
-  // only the surrounding chrome/layout changes, so playback never restarts.
+  // Reuse the detail video element when changing fullscreen chrome.
   useEffect(() => {
     if (!fsMode) return;
     appWindow.maximize();
@@ -464,8 +461,7 @@ export function DetailView(
       setDuration(newDuration);
       setCurrent(0);
       setTrimming(false);
-      // The file on disk was replaced in place, so force the player to
-      // re-fetch it (the custom protocol may serve the stale file otherwise).
+      // Reload the source after an in-place trim to discard protocol/decoder caches.
       const v = videoRef.current;
       if (v) {
         v.pause();

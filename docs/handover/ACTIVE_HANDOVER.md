@@ -461,3 +461,5 @@ The user authorized autonomous publication of all three English PRs after checks
 Technical audit changes and local regression evidence are in `docs/audit/2026-10-08.md`; `file-inventory.md` inventories every tracked/new file. PCM/mixer/recording/media, Rust catalogs/RPC/integrity, storage, frontends, plugin and packaging verifier checks passed. Windows native/Tauri runtime and clean installer launch are not certified. O01-O14 explicitly preserve unresolved architectural/runtime findings. Historical report findings must not all be marked closed.
 
 Comment cleanup follows on a separate branch based on the technical PR. Review stack: packaging, technical audit, comment cleanup.
+
+Comment cleanup checkpoint: audit PR #4 is published and its complete core Actions workflow passed. Comment-only source preservation passed across 69 code/style/generated files; generated plugin JS matches the compiler, and both frontend asset hashes match the audit build. Windows full build remains in dependency compilation. The report contains the validation scope and unresolved work.

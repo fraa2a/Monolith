@@ -31,7 +31,6 @@ namespace {
 
 using platform_win::wide_to_utf8;
 
-// RAII wrappers so early returns can't leak libav objects.
 struct FmtCtx {
     AVFormatContext* p = nullptr;
     ~FmtCtx() { if (p) avformat_close_input(&p); }
@@ -137,7 +136,6 @@ bool generate_thumbnail(const std::wstring& video_path,
     }
     if (!got || decoded.p->width <= 0 || decoded.p->height <= 0) return false;
 
-    // Scale so the longest side is at most max_dim (aspect preserved, even dims).
     const int sw = decoded.p->width, sh = decoded.p->height;
     double scale = std::min(1.0, static_cast<double>(max_dim) / std::max(sw, sh));
     int dw = std::max(2, (static_cast<int>(sw * scale) / 2) * 2);

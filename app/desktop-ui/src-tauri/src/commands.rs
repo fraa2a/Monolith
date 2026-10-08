@@ -1,17 +1,4 @@
-// Tauri IPC commands invoked from the frontend via `invoke()`. Replaces the old
-// loopback HTTP `/api/*` routes (server.rs, removed) now that the window loads
-// bundled assets directly (see main.rs) and has the Tauri JS API available.
-//
-// Read-only catalog commands work without the recorder. Delete and rename
-// cross to the engine over JSON-RPC so it owns their catalog/filesystem recovery. See
-// docs/DECISIONS.md.
-//
-// IMPORTANT: every command here is `async fn`. Tauri v2 runs plain
-// (non-async) commands inline on the main thread, which is also the WebView2
-// message-pump thread - a synchronous SQLite query or engine_rpc TCP call
-// there freezes the whole window. `async fn` commands are dispatched via
-// `async_runtime::spawn`, and the blocking bodies below run on
-// `spawn_blocking` so the UI thread never waits on disk/network I/O.
+// Native Tauri commands. Run blocking disk, decode and network work through spawn_blocking.
 
 use crate::{clip_catalog, engine_rpc, game_catalog, settings_store};
 #[cfg(target_os = "windows")]
@@ -27,10 +14,7 @@ fn parse_source(source: &str) -> Result<ClipSource, String> {
     ClipSource::parse(source).ok_or_else(|| "bad source".to_string())
 }
 
-// Runs a blocking closure off the main thread and returns its value.
-// Panics inside `f` are not expected in normal operation (they'd indicate a
-// bug in the catalog/engine code, same as today), so they're surfaced by
-// unwrapping the join result rather than silently swallowed.
+// The closure runs on a blocking worker, outside the Tauri message loop.
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     tauri::async_runtime::spawn_blocking(f)
         .await
@@ -48,7 +32,6 @@ async fn blocking_result<T: Send + 'static>(
         .map_err(|err| err.to_string())?
 }
 
-// ── Clip catalog (read) ───────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn list_clips(filter: ClipFilter) -> Vec<Clip> {
@@ -65,7 +48,6 @@ pub async fn distinct_hashtags() -> Vec<String> {
     blocking(clip_catalog::distinct_hashtags).await
 }
 
-// ── Engine status / recorder control (JSON-RPC to 127.0.0.1:45991) ───────
 
 #[tauri::command]
 pub async fn engine_status() -> Value {
@@ -109,7 +91,6 @@ pub async fn set_selected_game(exe: String, pid: Option<u32>) -> Result<(), Stri
     }
 }
 
-// ── Clip mutations ──────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn clip_set_duration(source: String, id: i64, duration: f64) -> Result<(), String> {
@@ -129,7 +110,6 @@ pub async fn thumb_capture(source: String, id: i64, data_url: String) -> Result<
     })
     .await;
     if let Err(err) = &result {
-        // Surface fallback-thumbnail failures instead of silently no-opping.
         eprintln!("[thumb_capture] {source} clip {id} failed: {err}");
     }
     result
@@ -185,10 +165,7 @@ pub async fn clip_delete(source: String, id: i64) -> Result<(), String> {
     }
 }
 
-// Opens Explorer with the clip's video file pre-selected. `/select,` is an
-// Explorer-native flag (no shell interpretation of the path), so this is safe
-// against injection as long as `path` is a real filesystem path from the
-// catalog rather than arbitrary user text.
+// Explorer requires /select, and the path in separate arguments.
 #[tauri::command]
 pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     blocking_result(move || {
@@ -202,11 +179,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     .await
 }
 
-// Spawns the component updater (Updater.exe) with its window visible - the
-// Settings "Check for updates" action. Resolution mirrors the engine's
-// resolve_tauri_ui() (settings_window.cpp): installed exe next to the app
-// root, then the CMake build output, then a dev cargo tree. The updater has
-// its own single-instance guard, so a double spawn just focuses the window.
+// Resolve Updater.exe beside the recorder or in the development build tree.
 #[tauri::command]
 pub async fn open_updater() -> Result<(), String> {
     blocking_result(move || {
@@ -306,7 +279,6 @@ pub async fn recording_add_bookmark() -> Result<(), String> {
     }
 }
 
-// ── Bookmarks (direct SQLite writes; engine is the writer at save time) ───
 
 #[tauri::command]
 pub async fn clip_list_bookmarks(source: String, id: i64) -> Result<Vec<clip_catalog::BookmarkRow>, String> {
@@ -344,7 +316,6 @@ pub async fn clip_delete_bookmark(source: String, id: i64, seq: i64) -> Result<(
     blocking_result(move || clip_catalog::remove_bookmark(src, id, seq)).await
 }
 
-// ── Collections (global collections.db; see collections.rs) ──────────────
 
 #[tauri::command]
 pub async fn list_collections() -> Result<Vec<crate::collections::CollectionSummary>, String> {
@@ -391,17 +362,13 @@ pub async fn collection_clips(collection_id: i64) -> Result<Vec<Clip>, String> {
     blocking_result(move || crate::collections::collection_clips(collection_id)).await
 }
 
-// ── Settings ───────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn get_settings() -> Value {
     blocking(|| settings_store::read_config().unwrap_or(Value::Null)).await
 }
 
-// Rejects a config document that assigns the same normalized hotkey chord to
-// more than one action. Defense-in-depth mirror of the check the engine's
-// `settings::save()` also runs before persisting - this one catches it before
-// the write even happens. "NONE" (hotkey disabled) never collides with itself.
+// Ignore disabled NONE bindings when checking normalized hotkey conflicts.
 fn find_hotkey_collision(config: &Value) -> Option<String> {
     let hotkeys = config.get("hotkeys")?.as_object()?;
     let entries: [(&str, &str); 5] = [
@@ -450,9 +417,7 @@ pub async fn save_settings(app: tauri::AppHandle, config: Value) -> Result<(), S
         // (it may not be running - it reads the new values at next start).
         eprintln!("engine settings reload failed: {err}");
     }
-    // Output folders may have changed: re-scope the asset protocol so
-    // convertFileSrc() keeps working for the (possibly new) clip/recording
-    // dirs. Cheap in-memory scope update, safe to run on the main thread.
+    // Add asset permissions for the updated output folders.
     crate::asset_scope::refresh(&app);
     Ok(())
 }
@@ -476,7 +441,6 @@ pub async fn pick_folder(current: Option<String>) -> Option<String> {
     .await
 }
 
-// ── Native app icon (PNG extracted from an exe, base64 data URL) ─────────
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
@@ -488,7 +452,6 @@ pub async fn exe_icon(path: String, process: String) -> Option<String> {
     .await
 }
 
-// ── Game catalog / artwork ────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn game_catalog_map() -> BTreeMap<String, CatalogEntry> {

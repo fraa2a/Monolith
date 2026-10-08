@@ -313,9 +313,7 @@ bool DiskSegmentBuffer::save_clip(const std::wstring& out_dir, std::function<voi
             if (result.empty() && !path.empty()) {
                 std::error_code ec; fs::remove(path, ec);
                 if (ec) {
-                    // A failed output unlink is also owned/retryable. Refuse
-                    // further admissions/saves until it can be removed; never
-                    // delete its user-owned output directory.
+                    // Retain failed-output cleanup ownership and block admission until unlink succeeds.
                     auto& failed = failed_output;
                     failed->clip.path = std::move(path); failed->retained = false; failed->owns_parent = false;
                     failed->file_bytes = fs::file_size(failed->clip.path, ec);

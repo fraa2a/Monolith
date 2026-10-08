@@ -74,10 +74,7 @@ fn media_folder(source: ClipSource) -> PathBuf {
     }
 }
 
-// ── Bookmarks ─────────────────────────────────────────────────────────────
-// The engine inserts bookmarks at recording-save time (timestamped live from
-// its own clock); the UI reads/edits them here. Table DDL mirrors
-// engine's storage.cpp so either side can create it (IF NOT EXISTS).
+// Bookmark sequences are 1-based within each clip.
 
 const BOOKMARK_DDL: &str = "CREATE TABLE IF NOT EXISTS clip_bookmarks (
     clip_id INTEGER NOT NULL,
@@ -173,9 +170,7 @@ fn map_clip_row(
     let game_display_name = row.get::<_, Option<String>>(6)?;
     let discord_app_id = row.get::<_, Option<String>>(9)?;
     let game_executable_path = row.get::<_, Option<String>>(10)?;
-    // Cache-only read: the clip grid must never make a synchronous network
-    // call. Artwork not yet cached shows up once the scheduled refresh
-    // (see game_catalog::refresh_stale) has run.
+    // Artwork lookup is cache-only; network refresh runs separately.
     let art = artwork.resolve(discord_app_id.as_deref(), game_process_name.as_deref());
     let video_path = folder.join(&video_file);
     let thumbnail_path = thumbnail_file.as_ref().map(|file| {
@@ -633,8 +628,7 @@ pub fn rename_clip(source: ClipSource, id: i64, new_stem: &str) -> Result<(), St
             id
         ],
     ) {
-        // Roll the filesystem back so the DB never points at files that no
-        // longer exist under their recorded names.
+        // Restore the prior filename if the catalog update fails.
         let _ = fs::rename(folder.join(&new_video), folder.join(&old_video));
         if thumb_renamed {
             let _ = fs::rename(

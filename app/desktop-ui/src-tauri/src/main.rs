@@ -1,10 +1,4 @@
-// Monolith Desktop UI host (Tauri v2 / WebView2). The window loads the bundled
-// Preact frontend directly (native Tauri IPC: invoke/commands/events/asset
-// protocol) instead of navigating to a local loopback HTTP server. The engine
-// (Monolith.exe) is a separate process, reached only over JSON-RPC on
-// 127.0.0.1:45991 for clip mutations / settings reload / recorder control
-// (engine_rpc.rs) - that transport is unchanged and also used by the Stream
-// Deck plugin. See docs/DECISIONS.md (ADR superseding ADR-0011/0012).
+// Tauri hosts bundled frontend assets and the native command/event bridge.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod asset_scope;
@@ -22,9 +16,7 @@ use std::thread;
 use std::time::Duration;
 use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
 
-// Polls the engine's clip-generation counter and emits a `clips` event to the
-// frontend whenever it changes (a clip was saved/stopped). Mirrors the old SSE
-// stream but over a native Tauri event; cheap for a single local user.
+// Emit clips events when the engine generation counter changes.
 fn spawn_clip_watch(app: tauri::AppHandle) {
     thread::spawn(move || {
         let mut last = engine_rpc::clip_generation();
@@ -40,11 +32,7 @@ fn spawn_clip_watch(app: tauri::AppHandle) {
     });
 }
 
-// Discord artwork cache refresh: the clip grid only ever reads
-// game_catalog.db locally (resolve_artwork_cached), so any entry with a known
-// discord_app_id gets re-fetched here in the background on a 72h cadence
-// instead of on the display path. Runs once at startup, then re-checks every
-// 6h so a long-running session doesn't need a restart to pick up refreshes.
+// Refresh artwork in the background; the grid reads only cached rows.
 fn spawn_artwork_refresh() {
     thread::spawn(|| {
         const REFRESH_AGE: Duration = Duration::from_secs(72 * 3600);

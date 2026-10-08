@@ -1,8 +1,4 @@
-// Scopes the Tauri asset protocol (asset://, exposed to the frontend via
-// convertFileSrc()) to the configured clip/recording folders, so <video>/<img>
-// tags can stream straight from disk instead of round-tripping through a local
-// HTTP server. Re-run on startup and whenever settings are saved, since the
-// output folders are user-configurable. See docs/DECISIONS.md.
+// Refresh asset permissions after output-folder changes; include .thumbs.
 
 use tauri::{AppHandle, Manager};
 

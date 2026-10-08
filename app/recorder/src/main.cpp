@@ -51,7 +51,6 @@
 #include <thread>
 #include <vector>
 
-// ── Constants ─────────────────────────────────────────────────────────────────
 
 static constexpr WCHAR kWindowClass[] = L"MonolithMsgWnd";
 static constexpr WCHAR kAppName[]     = L"Monolith";
@@ -72,10 +71,6 @@ enum Cmd : UINT {
     CMD_ADD_BOOKMARK    = 1008,
 };
 
-// ── Logging ───────────────────────────────────────────────────────────────────
-// Implementation lives in libs/logging (disabled by default; toggled via
-// Settings > Advanced > advanced.logging_enabled). These are thin wrappers so
-// call sites across this file don't need to change.
 
 static std::wstring known_folder_path(REFKNOWNFOLDERID folder)
 {
@@ -155,8 +150,7 @@ static void log_path(const char* tag, const char* prefix, const std::wstring& pa
     log_msg(tag, msg);
 }
 
-// Always-on error variants (bypass advanced.logging_enabled) - for failures the
-// user must be able to diagnose even without opting into verbose logging.
+// Error logging bypasses the verbose-logging setting.
 static void log_error(const char* tag, const char* msg)
 {
     logging::log_error(tag, msg);
@@ -175,7 +169,6 @@ static void log_error_path(const char* tag, const char* prefix, const std::wstri
 using platform_win::utf8_to_wide;
 using platform_win::wide_to_utf8;
 
-// ── Globals ───────────────────────────────────────────────────────────────────
 
 static bool apps_use_light_theme()
 {
@@ -196,9 +189,7 @@ static void apply_native_window_theme(HWND hwnd)
 {
     BOOL dark = apps_use_light_theme() ? FALSE : TRUE;
 
-    // Resolve the dwmapi/uxtheme entry points once and cache them - this runs on
-    // every tray right-click and theme change, so repeated LoadLibrary/FreeLibrary
-    // would be pure waste.
+    // Cache theme-library handles for the process lifetime.
     using DwmSetWindowAttributeFn = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
     using SetPreferredAppModeFn   = int (WINAPI*)(int);
     using FlushMenuThemesFn       = void (WINAPI*)();
@@ -211,8 +202,7 @@ static void apply_native_window_theme(HWND hwnd)
             FlushMenuThemesFn       flush_menu      = nullptr;
             SetWindowThemeFn        set_theme       = nullptr;
         } f;
-        // Leaked intentionally for process lifetime - these modules stay loaded
-        // anyway and the handles never need releasing.
+        // The cached modules remain loaded until process exit.
         if (HMODULE dwm = LoadLibraryW(L"dwmapi.dll"))
             f.set_attr = reinterpret_cast<DwmSetWindowAttributeFn>(
                 GetProcAddress(dwm, "DwmSetWindowAttribute"));
@@ -253,15 +243,11 @@ static std::array<encoding::AudioEncoder, 6> g_audio_encoders;
 // their encoder. The mixer's sink forwards summed PCM into that track's encoder.
 static std::array<std::unique_ptr<encoding::TrackMixer>, 7> g_track_mixers;
 
-// One output route for a source: which track, and (when that track is mixed) the
-// source's id within the mixer. mixer_src == -1 means push directly to encoder.
-// gain is the source's linear volume (0.0-1.0), applied to the recorded audio:
-// for mixed tracks it lives in the mixer source; for direct tracks it is applied
-// in-place before push_pcm.
+// mixer_src == -1 routes directly to the encoder. Apply source gain in the
+// mixer or to direct PCM before encoding.
 struct AudioRoute { int track = 0; int mixer_src = -1; float gain = 1.0f; };
 
-// A live capture plus the routes its callback writes to. Routes are kept so that
-// when a capture is removed (e.g. Active Game swap) its mixer slots are released.
+// Retain route IDs to release mixer slots when removing a capture.
 struct ActiveCapture {
     std::unique_ptr<audio::WasapiCapture> capture;
     std::vector<AudioRoute> routes;
@@ -282,7 +268,6 @@ static std::atomic<uint64_t> g_perf_bgra_memcpy_time_us_total{ 0 };
 // Backoff after a failed encoder open: don't re-probe on every captured frame.
 static std::atomic<uint64_t> g_video_enc_retry_after_ms{ 0 };
 static constexpr uint64_t kVideoEncRetryBackoffMs = 2000;
-// ── OBS-style video pacer: fixed-rate thread feeds encoder ──────────────
 static HANDLE               g_pacer_thread       = nullptr;
 static HANDLE               g_pacer_stop_event   = nullptr;
 static std::mutex           g_pacer_mutex;
@@ -307,23 +292,17 @@ static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
 static std::atomic<bool> g_recording_enabled{ true };
 
-// Snapshot of the two output folders, guarded so the IPC thread can resolve the
-// right clip DB for UI-driven mutations without racing settings reloads on the
-// UI thread. Updated in apply_runtime_settings().
+// Guard output-folder snapshots across settings reload and IPC mutation threads.
 static std::mutex    g_dirs_mutex;
 static std::wstring  g_clips_dir_snapshot;
 static std::wstring  g_recs_dir_snapshot;
 static settings::Config g_settings;
 
-// Bumped each time a clip is cataloged (replay save or manual stop). Read by the
-// IPC get_status handler so the UI host can push a live clip-list refresh.
+// Catalog generation is polled by the UI host.
 static std::atomic<uint64_t>     g_clip_generation{0};
 
-// ── Recording elapsed-time clock (QPC-based, pause-aware) ────────────────────
-// Used to timestamp bookmarks at the moment they are added. Written on the
-// UI/tray thread (start/pause/resume/stop), read on the IPC thread - all fields
-// are atomics, and a torn read only shifts a bookmark timestamp by a frame or
-// two. Pause spans are accumulated in QPC units and subtracted at read time.
+// Bookmark time is elapsed QPC time minus accumulated pauses. Control writes
+// on the tray thread; IPC reads the atomic fields.
 static std::atomic<int64_t> g_rec_clock_freq{0};
 static std::atomic<int64_t> g_rec_clock_start_qpc{0};
 static std::atomic<int64_t> g_rec_paused_qpc_total{0};
@@ -379,18 +358,13 @@ static void rec_clock_resume()
     }
 }
 
-// Active-game audio source: re-evaluated every poll_interval_ms by a UI-thread timer
-// and also on foreground-window changes (fast scan, rate-limited).
+// Poll active-game audio on the tray thread and on coalesced foreground changes.
 static constexpr UINT_PTR kActiveGameTimerId = 1;
 
-// Replay-buffer memory budget, fixed internally (no UI knob). 512 MB is a safe
-// ceiling for the encoded-packet ring across supported bitrates/durations.
+// Encoded payload cap: allocator and in-flight snapshot memory are additional.
 static constexpr int64_t kReplayMemoryBudgetMb = 512;
 
-// Active-game detection runs on a fixed 3 s cadence. Detection is DB-gated: a
-// process only counts as a game when its executable is in the locally-cached
-// Discord detectable list (see libs/gamelist). Window facts (foreground/
-// fullscreen) only order candidates and pick the capture target, never gate.
+// Detection admits database-matched executables; window facts rank candidates.
 static constexpr int kActiveGamePollMs = 3000;
 
 static std::vector<int>          g_active_game_tracks;
@@ -423,10 +397,7 @@ static std::string now_local_ts()
     return ts;
 }
 
-// Re-writes AppData\Local\Monolith\runtime-status.json from g_runtime_status,
-// but only when the serialized content actually changed - the active-game poll
-// runs every few seconds and on every foreground change, and most ticks produce
-// identical status, so skipping no-op disk writes avoids needless I/O.
+// Skip unchanged runtime-status writes; cache only successful writes.
 static std::string g_last_runtime_status_json;
 static std::mutex  g_last_runtime_status_mutex;
 
@@ -447,10 +418,7 @@ static void publish_runtime_status()
         log_msg("settings", ("runtime-status write failed: " + error).c_str());
 }
 
-// ── OBS-style video pacer ──────────────────────────────────────────────
-// Fixed-rate video thread feeds encoder exactly like OBS video_output.
-// Producer (WGC callback): copies BGRA to g_pacer_shared under mutex.
-// Consumer (pacer thread): reads latest frame each tick, pushes to encoder.
+// The WGC callback publishes BGRA under a mutex; the pacer consumes the latest frame.
 
 static uint64_t qpc_elapsed_us(const LARGE_INTEGER& start,
                                const LARGE_INTEGER& end);
@@ -509,9 +477,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
         nullptr, nullptr,
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 
-    // One wakeup per frame slot (4 ms floor). The QPC-locked CFR below absorbs
-    // tick jitter with dup/skip, so oversampling the tick 2x only doubles
-    // wakeups (and blocks CPU C-states) without tightening output timing.
+    // Wake once per frame slot, with a 4 ms minimum interval.
     int tick_ms = (g_pacer_fps > 0) ? (1000 / g_pacer_fps) : 4;
     if (tick_ms < 4) tick_ms = 4;
 
@@ -532,11 +498,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
             if (w == WAIT_OBJECT_0 || w == WAIT_FAILED) break;
         }
 
-        // Frozen-frame: when the captured game window is minimized, WGC delivers
-        // no (or degenerate) frames. Deliberately hold the last good frame - the
-        // CFR loop keeps duplicating local_bgra - instead of swapping in whatever
-        // WGC produces while iconic. Applies to both recording and replay since
-        // both consume this pacer -> encoder path.
+        // Hold the last captured frame while the game window is minimized.
         HWND cap_target = g_capture_target_hwnd.load(std::memory_order_relaxed);
         const bool minimized = cap_target && IsIconic(cap_target);
         if (minimized != frozen) {
@@ -545,10 +507,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
                                          : "captured game restored");
         }
 
-        // Pull the latest captured frame (if a new one arrived).  Swap buffers
-        // under the lock instead of copying: the consumer takes ownership of the
-        // shared frame's storage and hands back its own (reused next push), so
-        // there is no per-frame full-frame memcpy on the consumer side.
+        // Swap frame buffers under the mutex; encode outside it.
         if (!minimized) {
             std::lock_guard<std::mutex> lock(g_pacer_mutex);
             if (g_pacer_shared.frame_id != local_last_id) {
@@ -569,10 +528,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
         if (local_bgra.empty())
             continue;
 
-        // ── Clock-locked CFR: emit frames until we've caught up to wall-clock.
-        // target = number of frames that SHOULD exist by now.  Duplicate the
-        // latest frame to fill gaps; this makes playback speed independent of
-        // timer jitter, encode cost, and configured fps.
+        // Derive target frame count from QPC elapsed time and duplicate the latest frame for gaps.
         LARGE_INTEGER now_qpc;
         QueryPerformanceCounter(&now_qpc);
         int64_t target = llround(
@@ -607,10 +563,7 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
 
 static void pacer_start()
 {
-    // media_start can reach pacer_start twice without a stop in between
-    // (video init failure + retry): a second CreateEventW/CreateThread would
-    // leak the first event handle and strand the first thread forever on an
-    // orphaned stop event.
+    // Stop an existing pacer before replacing its event and thread handles.
     if (g_pacer_running.load()) return;
     if (g_settings.video_fps <= 0) return;
     g_pacer_fps          = g_settings.video_fps;
@@ -649,10 +602,7 @@ static void pacer_stop()
     if (g_pacer_stop_event) {
         SetEvent(g_pacer_stop_event);
         if (g_pacer_thread) {
-            // Unbounded join: the loop always exits once the stop event is
-            // set (WAIT_FAILED included), so this cannot hang - and the old
-            // 3 s timeout closed the handles of a possibly-live thread,
-            // leaving a busy-spinning pacer using a closing encoder.
+            // Join before releasing handles or the encoder used by this worker.
             WaitForSingleObject(g_pacer_thread, INFINITE);
             CloseHandle(g_pacer_thread);
             g_pacer_thread = nullptr;
@@ -667,7 +617,6 @@ static void pacer_stop()
     pacer_release_buffers();
 }
 
-// ── Monitor enumeration / selection ──────────────────────────────────────────
 
 struct MonitorEntry {
     HMONITOR hmon = nullptr;
@@ -792,14 +741,8 @@ static void load_app_settings()
     log_path("settings", "config path: ", g_settings.user_config_path);
 }
 
-// Generates the first-frame thumbnail and inserts a row into the co-located
-// clip DB for a freshly written clip. Runs off the UI/tray thread (blocking
-// decode + DB I/O). `video_path` is the full path returned by the writer;
-// `source` is "replay" or "manual". Returns the new row id (> 0) or -1 on
-// failure; on success `on_cataloged` is invoked with the row id (the manual-
-// stop path uses it to flush pending bookmarks). Failures are logged, never
-// fatal - a clip with no DB row/thumb still plays and gets picked up by
-// reconcile later.
+// Blocking thumbnail/catalog work runs off the tray thread. Invoke on_cataloged
+// after insertion to flush pending manual-recording bookmarks.
 static int64_t catalog_clip(std::wstring video_path, std::string source,
                             double duration_seconds,
                             std::function<void(int64_t)> on_cataloged = {})
@@ -818,8 +761,6 @@ static int64_t catalog_clip(std::wstring video_path, std::string source,
     if (encoding::generate_thumbnail(video_path, thumb_path))
         thumb_stored = thumb_base;
     else
-        // Always surfaced (not gated by verbose logging): a missing thumbnail is
-        // the visible symptom, so the cause must be diagnosable by default.
         log_error_path("storage", "thumbnail generation failed for ", video_path);
 
     std::string error;
@@ -860,9 +801,7 @@ static int64_t catalog_clip(std::wstring video_path, std::string source,
     return row_id;
 }
 
-// Self-heal both catalogs on startup: drop rows whose video vanished, rebuild
-// missing thumbnails, and import pre-existing videos that have no row yet.
-// Detached background thread - never blocks startup.
+// Reconcile catalogs on a detached worker; startup does not wait for it.
 static void reconcile_catalogs()
 {
     const std::wstring clips_dir = g_settings.clips_directory;
@@ -889,11 +828,7 @@ static void reconcile_catalogs()
     }).detach();
 }
 
-// ── Pending bookmarks ─────────────────────────────────────────────────────────
-// Bookmarks are timestamped live (hotkey or IPC) while a manual recording runs
-// and flushed into recs.db when the recording stops and its clip row exists.
-// They are written by the engine (single writer) - the UI only reads/edits
-// them afterwards.
+// Timestamp live bookmarks during recording, then attach them after the clip row is inserted.
 struct PendingBookmark {
     double      time_seconds;
     std::string label;
@@ -959,11 +894,7 @@ static std::string add_bookmark_now()
     return {};
 }
 
-// Trims a clip's video file in place: writes a temp file (lossless remux-copy,
-// falling back to a re-encode when the container can't mux the codec), then
-// atomically replaces the original, updates the catalog duration, retimes
-// bookmarks into the new timeline (dropping ones outside the window) and
-// regenerates the thumbnail. Returns "" on success or an error message.
+// Trim into a sibling file, replace the media, then retime bookmarks and refresh the thumbnail.
 static std::string trim_clip(storage::ClipDb* db,
                              const std::wstring& folder,
                              int64_t id, double start, double end)
@@ -982,7 +913,7 @@ static std::string trim_clip(storage::ClipDb* db,
     if (start >= duration) return "start is past the end of the clip";
     const double eff_end = std::min(end, duration);
 
-    // Write to a sibling temp so a crash/power loss never destroys the clip.
+    // Keep the original media while producing the sibling trim file.
     std::wstring stem = p.stem().wstring();
     if (stem.empty()) stem = L"clip";
     const std::wstring tmp_path = folder + L"\\" + stem + L".trimming" + ext;
@@ -1023,22 +954,18 @@ static std::string trim_clip(storage::ClipDb* db,
         if (!updated) return "trim succeeded but bookmark update failed: " + err;
     }
 
-    // Thumbnail now shows the wrong frame; regenerate it (best effort) and
-    // bump the generation so the UI clip-watch reloads the row.
+    // Refresh the thumbnail and notify the UI after replacing the media.
     if (db->regenerate_thumbnail(id, &err)) {
         g_clip_generation.fetch_add(1, std::memory_order_relaxed);
     } else {
-        // Keep the old thumbnail: the clip still plays; reconcile/UI can
-        // regenerate on demand.
+        // Retain the previous thumbnail when regeneration fails.
         log_error("storage", ("clip_trim thumbnail regen failed: " + err).c_str());
         g_clip_generation.fetch_add(1, std::memory_order_relaxed);
     }
     return {};
 }
 
-// Performs a UI-driven clip mutation (favorite/hashtag/delete) on the IPC
-// thread. The recorder is the single writer, so the UI process routes these
-// here instead of writing the DB itself. Returns "" on success or an error message.
+// Catalog mutations run on IPC threads and return an empty string or an error.
 static std::string handle_clip_mutation(const ipc::ClipMutation& m)
 {
     std::wstring folder;
@@ -1069,12 +996,9 @@ static std::string handle_clip_mutation(const ipc::ClipMutation& m)
     else return "unknown mutation: " + m.method;
 
     if (!ok) {
-        // Always-on so a failed thumbnail regen / mutation is diagnosable.
         log_error("storage", ("clip mutation '" + m.method + "' failed: " + err).c_str());
     } else if (m.method == "clip_regen_thumb") {
-        // A regenerated thumbnail changes displayed data but doesn't insert a
-        // row; bump the generation so the UI clip-watch reloads and picks up the
-        // now-populated thumbnail_file.
+        // Notify the UI after changing a thumbnail without inserting a clip row.
         g_clip_generation.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -1087,12 +1011,7 @@ static void media_start(HWND hwnd);
 static void media_stop();
 static void tray_set_recording(bool recording);
 
-// ── Detection / multi-game / auto-record shared state (UI thread only) ─────────
-//
-// poll_active_game() computes these each detection pass; evaluate_capture_mode()
-// consumes them for the capture pipeline + auto-record state machine. Keeping the
-// two split means the inline poll_active_game() calls inside media_start() don't
-// trigger capture churn.
+// Detection, selection and auto-record state below belong to the tray thread.
 static uint64_t g_last_game_seen_ms  = 0;
 static bool     g_capture_mode_stopped = false; // capture idled off by game_only
 static bool     g_auto_recording_active = false;
@@ -1145,7 +1064,7 @@ static bool auto_record_start(HWND hwnd)
     return true;
 }
 
-// Stops + catalogs the current auto recording (never a user manual recording).
+// Stop only the automatically started recording.
 static void auto_record_stop()
 {
     if (!g_auto_recording_active ||
@@ -1177,8 +1096,7 @@ static void auto_record_stop()
 static void evaluate_capture_mode(HWND hwnd)
 {
     if (g_settings.capture_mode != "game_only") {
-        // Screen mode: full-screen capture always runs; detection still happened
-        // (naming/icon/candidates), but capture/auto-record here is a no-op.
+        // Screen mode bypasses game-only capture and auto-record transitions.
         g_capture_mode_stopped  = false;
         return;
     }
@@ -1190,7 +1108,6 @@ static void evaluate_capture_mode(HWND hwnd)
     const bool has_game = g_effective_game_pid != 0;
     const bool clip_without_game = g_settings.capture_clip_without_game;
 
-    // ── A game is available ──────────────────────────────────────────────────
     if (has_game) {
         g_last_game_seen_ms = now;
 
@@ -1202,9 +1119,7 @@ static void evaluate_capture_mode(HWND hwnd)
             g_capture_mode_stopped = false;
         }
 
-        // Auto-next-on-close: the recorded game closed while others remain - the
-        // effective target already moved on; stop the old recording and start the
-        // new target.
+        // When the recorded game exits, restart auto-recording for the new effective target.
         if (g_auto_state == AutoState::AutoRecording &&
             g_recording_game_pid != 0 &&
             g_recording_game_pid != g_effective_game_pid) {
@@ -1234,8 +1149,7 @@ static void evaluate_capture_mode(HWND hwnd)
         return;
     }
 
-    // ── No game detected ─────────────────────────────────────────────────────
-    // Stop an auto recording (never a user-started manual recording).
+    // Stop auto recording; leave user-started recording to its own controls.
     if (g_auto_recording_active) {
         auto_record_stop();
     } else if (g_recording.state() != recording::RecordingState::Idle) {
@@ -1392,7 +1306,6 @@ static void reload_settings_from_disk(HWND hwnd)
     }
 }
 
-// ── Audio routing ─────────────────────────────────────────────────────────────
 
 static settings::RuntimeAudioDevice runtime_audio_device(const audio::DeviceInfo& dev)
 {
@@ -1484,9 +1397,7 @@ static bool open_audio_track(int track)
     return ok;
 }
 
-// Number of enabled sources planned for each track (index 1..6). Used to decide
-// whether a track can be pushed directly (single source) or needs a mixer
-// (multiple sources on the same logical track). Recomputed before audio start.
+// Count routes per track before startup: one source feeds the encoder, multiple sources use a mixer.
 static std::array<int, 7> g_track_plan_count{};
 
 // Ensure a mixer exists for `track`, wired to feed that track's encoder.
@@ -1522,7 +1433,7 @@ static std::vector<AudioRoute> make_routes(const std::vector<int>& requested,
         if (g_track_plan_count[track] > 1) {
             encoding::TrackMixer* mixer = ensure_track_mixer(track);
             if (!mixer) continue;
-            // Mixed track: gain lives in the mixer source so summing is correct.
+            // Mixed-route gain is applied by the mixer.
             r.mixer_src = mixer->add_source(gain);
             if (r.mixer_src < 0) continue;
         }
@@ -1730,11 +1641,8 @@ static uint32_t resolve_configured_process_window(const settings::AudioSourceCon
     return match.process_id;
 }
 
-// Resolve a configured `process` audio source to a live PID. The PID is never
-// trusted as a persistent identity (it dies/recycles across reboots); we always
-// re-resolve from the live render sessions, matching by executable path first
-// and falling back to the process name. The saved process_id is used only as a
-// best-effort hint when it is still alive AND points at the wanted executable.
+// Resolve saved process sources from live sessions by path, then name. Treat
+// the saved PID only as a hint because Windows can recycle it.
 static uint32_t resolve_configured_process(const settings::AudioSourceConfig& source)
 {
     uint32_t window_pid = resolve_configured_process_window(source);
@@ -1814,8 +1722,7 @@ static void stop_audio_system()
 
 static void start_default_audio_system()
 {
-    // start_endpoint_source() already closes its own tracks on failure, so the
-    // return values are only informative here.
+    // Endpoint startup cleans its partial routes on failure.
     std::vector<int> desktop_tracks{1};
     start_endpoint_source(
         audio::WasapiCapture::Mode::Loopback,
@@ -1835,8 +1742,7 @@ static void start_default_audio_system()
 
 static void start_custom_audio_system()
 {
-    // Plan first: count how many enabled sources route to each track so make_routes()
-    // knows which tracks need a mixer (>= 2 sources) vs a direct encoder feed.
+    // Plan route counts before creating mixer sources.
     g_track_plan_count.fill(0);
     for (const auto& source : g_settings.audio_sources) {
         if (!source.enabled) continue;
@@ -1889,10 +1795,7 @@ static void start_custom_audio_system()
         } else if (source.type == "active_game") {
             g_active_game_tracks = tracks;
             g_active_game_gain = source.volume;
-            // Initial acquire: call poll_active_game() inline after audio start to pick
-            // up any game already running.  poll_active_game() uses the configured
-            // blacklist/whitelist and will set g_active_game_pid/capture/mode.
-            // If nothing is found yet the timer/hook will handle acquisition.
+            // Acquire the detected active-game audio source after audio startup.
         }
     }
 }
@@ -1925,8 +1828,7 @@ static audio::DetectConfig build_detect_config()
 {
     audio::DetectConfig cfg;
     cfg.min_confidence = g_settings.active_game.min_confidence;
-    // Keep the live game's foreground bonus stable while a Monolith window
-    // (e.g. Settings) holds focus, so detection isn't invalidated temporarily.
+    // Retain the tracked game foreground bonus while a Monolith window has focus.
     cfg.sticky_foreground_pid = g_active_game_pid;
     for (const auto& s : g_settings.active_game.blacklist_processes)
         cfg.blacklist.push_back(utf8_to_wide(s));
@@ -1957,17 +1859,8 @@ static void drop_active_game_capture(const char* reason_msg)
     log_msg("audio.game", reason_msg);
 }
 
-// Called from the UI thread (via WM_TIMER or WM_FAST_SCAN) to evaluate whether
-// the Active Game source should be acquired, retained, or switched to a new process.
-//
-// Hysteresis: a new candidate must remain the best choice for switch_debounce_ms
-// before the capture is swapped.  Only the Active Game capture is touched; other
-// captures, encoders, and the replay buffer are never restarted.
-// Drives ONLY the Active Game audio process-loopback capture toward `result`
-// (the effective target chosen by poll_active_game()). Does not publish the
-// active_game display block on the no-audio-source path - that is handled by
-// poll_active_game() so the UI shows the game even without an active-game audio
-// source configured.
+// Debounce target changes before swapping the active-game audio capture.
+// Detection publication and video/auto-record transitions belong to separate functions.
 static void poll_active_game_impl(const audio::ActiveGameResult& result)
 {
     if (g_active_game_tracks.empty()) return;
@@ -1979,7 +1872,6 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
 
     uint32_t best_pid = result.process.process_id;
 
-    // ── No valid candidate ────────────────────────────────────────────────────
     if (best_pid == 0) {
         g_pending_game_pid      = 0;
         g_pending_game_first_ms = 0;
@@ -2001,7 +1893,6 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
         return;
     }
 
-    // ── Same as current live capture: refresh status, no change ───────────────
     if (best_pid == g_active_game_pid) {
         g_pending_game_pid      = 0;
         g_pending_game_first_ms = 0;
@@ -2015,7 +1906,6 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
         return;
     }
 
-    // ── No current capture and a valid candidate: acquire immediately ──────────
     if (g_active_game_pid == 0) {
         bool ok = start_process_source(best_pid, g_active_game_tracks,
                                        "audio.game", "active game audio started",
@@ -2050,7 +1940,6 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
         return;
     }
 
-    // ── Different candidate: debounce before switching ────────────────────────
     DWORD now_ms = GetTickCount();
     if (g_pending_game_pid != best_pid) {
         // New pending candidate; reset the debounce timer.
@@ -2064,8 +1953,7 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
     if (elapsed < static_cast<DWORD>(g_settings.active_game.switch_debounce_ms))
         return; // Not yet; keep waiting.
 
-    // Debounce passed → swap the Active Game capture.
-    // Start the new capture first (so there is minimal gap), then stop the old one.
+    // Acquire the new active-game source before releasing the prior capture.
     bool ok = start_process_source(best_pid, g_active_game_tracks,
                                    "audio.game", "active game switched",
                                    g_active_game_gain);
@@ -2079,7 +1967,6 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
 
     audio::WasapiCapture* new_capture = g_audio_captures.back().capture.get();
 
-    // Remove old capture - only the Active Game source, nothing else.
     if (g_active_game_capture != nullptr) {
         for (auto it = g_audio_captures.begin(); it != g_audio_captures.end(); ++it) {
             if (it->capture.get() == g_active_game_capture) {
@@ -2152,11 +2039,8 @@ static const audio::GameCandidateInfo* resolve_effective_target(
     return best;
 }
 
-// Public entry point: run one DB-gated detection pass, resolve the effective
-// target, drive the Active Game audio capture toward it, publish the active game
-// + full candidate list, and flush runtime-status.json. Does NOT touch the
-// capture pipeline / auto-record - evaluate_capture_mode() does, from the shared
-// state this leaves behind.
+// Publish the detected target/candidates and drive active-game audio.
+// evaluate_capture_mode handles video and auto-record transitions.
 static void poll_active_game()
 {
     if (!g_settings.active_game.detection_enabled) {
@@ -2187,9 +2071,7 @@ static void poll_active_game()
 
     const audio::GameCandidateInfo* target = resolve_effective_target(candidates);
     g_effective_game_pid = target ? target->process.process_id : 0;
-    // Only the game_only window-capture path uses this (capture target + pacer
-    // frozen-frame). In screen mode we capture the whole monitor, so leave it
-    // null - a minimized game must NOT freeze full-screen capture.
+    // Only game-window capture freezes when its target is minimized.
     g_capture_target_hwnd.store(
         (target && g_settings.capture_mode == "game_only") ? target->capture_window : nullptr,
         std::memory_order_relaxed);
@@ -2251,9 +2133,7 @@ static void poll_active_game()
     publish_runtime_status();
 }
 
-// WinEvent hook callback - called on the UI thread when the foreground window changes.
-// Rate-limited fast scan: coalesces rapid events by checking g_fast_scan_pending,
-// then posts WM_FAST_SCAN so poll_active_game() runs on the next message-loop turn.
+// Coalesce foreground events and post WM_FAST_SCAN for the next message-loop turn.
 static void CALLBACK active_game_fg_hook(
     HWINEVENTHOOK /*hWinEventHook*/, DWORD /*event*/, HWND /*hwnd*/,
     LONG /*idObject*/, LONG /*idChild*/, DWORD /*dwEventThread*/, DWORD /*dwmsEventTime*/)
@@ -2282,7 +2162,6 @@ static void uninstall_fg_hook()
     g_fg_hook = nullptr;
 }
 
-// ── Media start / stop ────────────────────────────────────────────────────────
 
 struct WindowSearch {
     DWORD pid = 0;
@@ -2312,13 +2191,8 @@ static HWND main_window_for_process(uint32_t pid)
     return search.hwnd;
 }
 
-// Output resolution derives from a preset target height while preserving the
-// source aspect ratio. Never upscales beyond native (a preset taller than the
-// source falls back to source), so no pixels are invented. Shared by the
-// upfront GPU-downscale sizing (CaptureOptions::output_width/height, known
-// before the first frame for monitor capture) and the encoder-open fallback
-// (which resolves against the first captured frame's actual size, needed for
-// game_only window capture where native size isn't known upfront).
+// Use the preset height without upscaling; derive width from the source aspect ratio.
+// Window capture resolves its native size from the first frame.
 static void resolve_target_size(int src_w, int src_h, const std::string& preset,
                                  int* out_w, int* out_h)
 {
@@ -2346,7 +2220,6 @@ static void media_start(HWND hwnd)
     // stays down (replay disabled + recording idle).
     g_main_hwnd = hwnd;
 
-    // ── Replay buffer config ───────────────────────────────────────────────────
     apply_runtime_settings();
 
     // Do not run WGC/pacer/audio when no video output is active. Keep this
@@ -2358,14 +2231,11 @@ static void media_start(HWND hwnd)
         return;
     }
 
-    // ── Capture monitor from config (restart-required setting) ───────────────
     std::vector<MonitorEntry> monitors = enumerate_monitors();
     std::wstring used_device;
     HMONITOR hmon = monitor_from_settings(monitors, &used_device);
 
-    // Screen-mode auto-follow: with no manual monitor pin, capture the screen the
-    // detected game is on. A manual pick (monitor_device set) always wins and is
-    // already returned by monitor_from_settings above.
+    // A pinned monitor takes precedence over following the detected game.
     if (g_settings.capture_mode == "always" && g_settings.monitor_device.empty() &&
         g_effective_game_pid != 0) {
         HWND gw = main_window_for_process(g_effective_game_pid);
@@ -2408,25 +2278,20 @@ static void media_start(HWND hwnd)
     g_perf_bgra_memcpy_frames.store(0, std::memory_order_relaxed);
     g_perf_bgra_memcpy_time_us_total.store(0, std::memory_order_relaxed);
 
-    // ── Video encoder ─────────────────────────────────────────────────────────
     log_msg("encoding", "video encoder deferred until first WGC frame");
 
-    // ── Start pacer thread (OBS-style fixed-rate encoder feed) ────────────────
     pacer_start();
 
-    // ── Audio capture/routing ──────────────────────────────────────────────────
     start_audio_system();
     if (g_settings.active_game.detection_enabled) {
         // Detection runs in ALL modes now (game_only AND screen): it drives
         // naming/icon, the candidate list, and auto-record. Fixed 3 s cadence.
         SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
-        // Foreground-change fast scan is always on for snappy game switches.
         install_fg_hook();
         // Initial detection pass (doesn't wait for first timer tick).
         poll_active_game();
     }
 
-    // ── WGC display capture ───────────────────────────────────────────────────
     if (capture::is_supported()) {
         const settings::Config video_settings = g_settings;
         bool ok = g_video.start(hmon, [video_settings](capture::FrameInfo const& f) {
@@ -2549,15 +2414,12 @@ static void media_start(HWND hwnd)
             }
             // Push BGRA frame to pacer. Pacer thread drives encoder at fixed FPS.
             if (f.bgra_data == nullptr) return;
-            // Replay buffer disabled: encode only while a manual recording
-            // is running, so an idle tray app costs no encoder CPU.
+            // Skip encoding while both replay and manual recording are inactive.
             if (!g_replay_enabled.load(std::memory_order_relaxed) &&
                 g_recording.state() == recording::RecordingState::Idle)
                 return;
             if (!g_video_enc.is_open()) {
-                // Respect the post-failure backoff window so a transient open
-                // failure (e.g. GPU busy / driver reset) doesn't get re-probed on
-                // every single captured frame.
+                // Respect encoder-open backoff before retrying on a later captured frame.
                 if (GetTickCount64() <
                     g_video_enc_retry_after_ms.load(std::memory_order_acquire))
                     return;
@@ -2568,11 +2430,7 @@ static void media_start(HWND hwnd)
                     return;
                 }
 
-                // Resolves against the actually-captured frame size, which is
-                // already the GPU-downscaled size when CaptureOptions below
-                // configured one (this then just confirms it) - and is still
-                // native size in game_only mode (no upfront target there), so
-                // this remains the source of truth either way.
+                // Resolve against the delivered frame size, which may already be GPU-downscaled.
                 int g_enc_w_resolved = 0, g_enc_h_resolved = 0;
                 resolve_target_size(static_cast<int>(f.width), static_cast<int>(f.height),
                                      video_settings.resolution_preset,
@@ -2652,7 +2510,6 @@ static void media_start(HWND hwnd)
                         g_runtime_status.video_encoder_error = err;
                     }
                     publish_runtime_status();
-                    // Re-arm so a later frame can retry after the backoff window.
                     g_video_enc_retry_after_ms.store(
                         GetTickCount64() + kVideoEncRetryBackoffMs,
                         std::memory_order_release);
@@ -2666,16 +2523,12 @@ static void media_start(HWND hwnd)
                              static_cast<int>(f.height));
         }, [&]() {
             capture::CaptureOptions options;
-            // Capture border is always suppressed; the toggle was removed from the
-            // UI and the WGC yellow border is never wanted for a recorder.
+            // Request border suppression for recorder capture.
             options.show_border = false;
             options.max_readback_fps = std::max(1, g_settings.video_fps);
             options.allow_unlimited_readback = false;
 
-            // In game_only, capture the effective target's window (resolved by the
-            // detection poll). When there is no target (no game, or its window is
-            // unavailable) we fall back to full-screen monitor capture - which is
-            // also the clip-without-game path.
+            // Use the resolved game window in game_only mode; otherwise capture the monitor.
             HWND target = nullptr;
             if (g_settings.capture_mode == "game_only") {
                 target = g_capture_target_hwnd.load(std::memory_order_relaxed);
@@ -2693,8 +2546,7 @@ static void media_start(HWND hwnd)
             } else {
                 if (g_settings.capture_mode == "game_only")
                     log_msg("capture", "game_only: no game window, capturing full screen");
-                // Native monitor size is known upfront here (unlike a window
-                // target), so the GPU downscale target can be set before start().
+                // Set the GPU target before startup when native monitor size is known.
                 for (const auto& entry : monitors) {
                     if (entry.hmon == hmon) {
                         resolve_target_size(entry.info.width, entry.info.height,
@@ -2725,9 +2577,7 @@ static void media_start(HWND hwnd)
 
 static void media_stop()
 {
-    // Stop capture FIRST: while WGC delivers frames the pacer keeps swapping
-    // full-frame buffers, and a pacer stalled past its old join timeout could
-    // still touch the encoder we're about to close.
+    // Drain capture before stopping the pacer and closing its encoder.
     g_video.stop();
     pacer_stop();
     stop_audio_system();
@@ -2737,9 +2587,7 @@ static void media_stop()
         g_recording.stop(&path);
         if (!path.empty()) log_path("recording", "recording saved: ", path);
     }
-    // A recording killed here never reaches CMD_RECORDING_STOP, so stop the
-    // bookmark clock and drop any pending bookmarks (no clip row will exist
-    // to flush them into - otherwise they'd leak into the next recording).
+    // Stop the bookmark clock and discard pending entries when no clip will be cataloged.
     rec_clock_stop();
     clear_pending_bookmarks();
     g_video_enc_open_attempted.store(false, std::memory_order_release);
@@ -2751,7 +2599,6 @@ static void media_stop()
     log_msg("app", "capture + audio + encoding stopped");
 }
 
-// ── System tray ───────────────────────────────────────────────────────────────
 
 static NOTIFYICONDATAW g_nid;
 static HICON g_icon_base = nullptr;
@@ -2941,7 +2788,6 @@ static void tray_show_menu(HWND hwnd)
     DestroyMenu(menu);
 }
 
-// ── Hotkeys ───────────────────────────────────────────────────────────────────
 
 struct HotkeySpec {
     std::vector<UINT> keys;
@@ -3209,12 +3055,8 @@ static void hotkeys_unregister(HWND hwnd)
     memset(g_key_down, 0, sizeof(g_key_down));
 }
 
-// ── Command dispatch ──────────────────────────────────────────────────────────
 
-// True when a clip/record command must be blocked: game_only mode, no known game
-// running, and clip-without-game is off (so there is genuinely nothing to
-// capture). When clip-without-game is on we allow it - capture falls back to the
-// full screen.
+// Block game-only capture commands without a target unless screen fallback is enabled.
 static bool game_gate_blocks()
 {
     if (g_settings.capture_mode != "game_only") return false;
@@ -3285,9 +3127,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
             if (path.empty()) log_msg("recording", "recording stopped: no complete output");
             else {
                 log_path("recording", "recording saved: ", path);
-                // Catalog off the UI thread - decode + DB I/O must not block it.
-                // The closure captures the recording folder so pending bookmarks
-                // flush into the right recs.db once the clip row exists.
+                // Catalog on a worker; capture the folder for the pending bookmark flush.
                 const std::wstring folder =
                     std::filesystem::path(path).parent_path().wstring();
                 std::thread(catalog_clip, path, std::string("manual"), 0.0,
@@ -3340,7 +3180,6 @@ static void dispatch(Cmd cmd, HWND hwnd)
     }
 }
 
-// ── Window procedure ──────────────────────────────────────────────────────────
 
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -3371,9 +3210,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         },
         add_bookmark_now,
         [] {
-            // update_close_ui for Updater.exe: close the UI process so ui\*
-            // can be swapped. Blocks until the process is gone; runs on an
-            // IPC client thread exactly like the WM_DESTROY shutdown path.
+            // Block this IPC worker until the UI process exits before replacing its files.
             settings_window::close_running();
         });
         publish_runtime_status();
@@ -3389,9 +3226,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return DefWindowProcW(hwnd, msg, wp, lp);
 
     case WM_FAST_SCAN: {
-        // Foreground-change fast scan, rate-limited to one pass per second. Runs
-        // the capture/auto-record evaluation too, so the startup-focus grace and
-        // auto-record react immediately when the user foregrounds a game.
+        // Coalesce foreground scans at one-second intervals, including capture/auto-record evaluation.
         g_fast_scan_pending = false;
         constexpr DWORD kFastScanMinGapMs = 1000;
         DWORD now_ms = GetTickCount();
@@ -3438,10 +3273,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_REFRESH_AUDIO_SOURCES:
-        // On-demand re-enumeration requested by the Settings UI (e.g. when the
-        // user opens the "Add source" dropdown). Refresh the live audio session
-        // list and rewrite runtime-status.json synchronously so the caller sees
-        // current sessions as soon as this returns.
+        // Re-enumerate sessions/devices on an explicit Settings refresh request.
         refresh_audio_runtime_status();
         publish_runtime_status();
         return 0;
@@ -3451,7 +3283,6 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 {
@@ -3461,7 +3292,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         return 0;
     }
 
-    // OBS-style: per-monitor DPI awareness so WGC returns physical pixels.
+    // Log initialization follows settings loading.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -3473,9 +3304,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     log_init(g_settings.logging_enabled);
     log_msg("app", "initializing (Monolith: replay + manual recording)");
     audio::set_log_sink([](const char* tag, const char* msg) { log_msg(tag, msg); });
-    // Game-list DB: detection is gated on it. Sync failures are surfaced via the
-    // always-on error log. init() kicks a background worker (startup + 72h sync);
-    // the tray/UI loop never blocks on the network or DB.
+    // Initialize the game-list refresh worker after logging is available.
     gamelist::set_log_sink([](const char* tag, const char* msg) { log_error(tag, msg); });
     gamelist::init(app_data_dir());
     reconcile_catalogs(); // self-heal clip catalogs on a background thread

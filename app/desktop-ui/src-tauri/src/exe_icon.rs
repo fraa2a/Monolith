@@ -1,13 +1,4 @@
-// Extracts the embedded icon of a local executable and returns it as PNG bytes.
-// Used by /api/exe-icon so the UI can render the *real* application icon (title
-// bar capture status pattern) instead of remote artwork or a raw process name.
-// Windows-only by definition (SHDefExtractIconW).
-//
-// Cached in game_catalog.db keyed by process name (not install path) - see
-// game_catalog::cached_exe_icon/store_exe_icon - so the same game keeps its
-// icon across reinstalls, relocations, or different machines instead of
-// re-extracting (and never sharing a cache entry) whenever the exe's on-disk
-// path differs.
+// Extract local executable icons as PNG; this path performs no network lookup.
 
 use std::path::Path;
 
@@ -22,11 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, I
 
 const ICON_SIZE: u32 = 64;
 
-/// PNG bytes of the executable's icon, or None when the path is not a
-/// readable executable or carries no extractable icon. `process_name` (the
-/// exe's own basename, e.g. "RocketLeague.exe") is the cache key; when it's
-/// empty the result is extracted fresh every call rather than cached, since
-/// there's no stable key to persist it under.
+/// Return None when extraction fails or the executable has no icon.
 pub fn icon_png(path: &str, process_name: &str) -> Option<Vec<u8>> {
     if process_name.is_empty() {
         return extract(path);

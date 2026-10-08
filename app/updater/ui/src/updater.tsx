@@ -1,7 +1,4 @@
-// Updater window view. All state lives in the Rust host (src-tauri/src):
-// the frontend is a pure projection of the "update-state" events plus a few
-// commands (start / cancel / retry). Phases: checking → upToDate | available
-// → downloading → applying → done | failed.
+// Rust owns updater state; the frontend renders events and invokes actions.
 
 import { useEffect, useState } from "preact/hooks";
 import { invoke } from "@tauri-apps/api/core";
@@ -84,7 +81,6 @@ function prettyTag(tag: string): string {
   return tag.replace(/^v/, "");
 }
 
-// ── Icons (inline SVG, same approach as the main app's shell/icons.tsx) ─────
 
 function IconEngine() {
   return (
@@ -129,7 +125,6 @@ function IconCheck() {
   );
 }
 
-// ── Pieces ────────────────────────────────────────────────────────────────────
 
 function Titlebar({ closable }: { closable: boolean }) {
   const win = getCurrentWindow();
@@ -317,7 +312,6 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
   );
 }
 
-// ── Buffer bar (signature): the window fills like the replay buffer ──────────
 
 function BufferBar({ state }: { state: UpdateState }) {
   const total = state.components.reduce((acc, c) => acc + c.size, 0);
@@ -354,7 +348,6 @@ function BufferBar({ state }: { state: UpdateState }) {
   );
 }
 
-// ── Root ─────────────────────────────────────────────────────────────────────
 
 export function Updater() {
   const [state, setState] = useState<UpdateState | null>(null);
@@ -461,8 +454,6 @@ export function Updater() {
     );
   }
 
-  // Footer varies per phase; the available/downloading phases keep the
-  // primary actions here so the body stays a pure projection of state.
   let foot;
   if (phase === "checking" || phase === "applying" || phase === "failed") {
     foot = null; // ErrorState renders its own actions inline.

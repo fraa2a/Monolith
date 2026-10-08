@@ -6,18 +6,8 @@
 #include <utility>
 #include <vector>
 
-// libs/storage - SQLite-backed clip catalog co-located with each output folder.
-//
-// Layout (auto-contained per output folder chosen in Settings > Output):
-//   <folder>\clips.db   (source "replay")   or   <folder>\recs.db (source "manual")
-//   <folder>\*.mp4|*.mkv                     (the video files, written as before)
-//   <folder>\.thumbs\<base>.png              (first-frame thumbnails)
-//
-// The recorder (the always-on process) is the single writer at clip-save time
-// and for reconcile. UI-driven mutations (favorite/hashtag/delete) also route
-// through the recorder over IPC so there is exactly one writer per DB. The UI
-// process opens the same DB read-only for the grid. All connections use WAL +
-// busy_timeout so reads never block the writer.
+// Each output folder holds its source catalog and .thumbs directory.
+// Paths in rows are relative to that folder.
 
 namespace storage {
 
@@ -25,14 +15,7 @@ namespace storage {
 // need a created_at value at save time.
 std::string now_iso8601_utc();
 
-// ── Global settings store (settings.db, key/value) ──────────────────────────
-//
-// Replaces the old config.json file (ADR-0009 rewrite). Lives at
-// <app_data_dir>\settings.db in WAL mode. A generic string KV table; the caller
-// (settings_config.cpp) owns the schema meaning of keys - this layer stays
-// JSON-agnostic. The UI process reads/writes the same table for the settings popup;
-// writes are user-driven and infrequent, so single-writer contention is a
-// non-issue in practice, and WAL keeps reads non-blocking either way.
+// settings.db is a JSON-agnostic key/value store; settings_config owns key meaning.
 
 // Reads all (key,value) rows. Returns true on success (out may be empty when the
 // DB is new/absent - treated as "no saved settings yet", not an error).
@@ -74,10 +57,7 @@ struct ReconcileStats {
 // A per-folder clip database. Open with ClipDb::open(); never construct directly.
 class ClipDb {
 public:
-    // Opens (creating if absent) the DB for a self-contained output folder.
-    //   source "replay" -> <folder>\clips.db ; source "manual" -> <folder>\recs.db
-    // Returns nullptr (and sets *error) if the folder is empty, or if a file is
-    // present but is NOT a valid Monolith clip DB - it is never overwritten.
+    // Return failure for an invalid existing catalog rather than overwriting it.
     static std::unique_ptr<ClipDb> open(const std::wstring& folder,
                                         const std::string& source,
                                         std::string* error);
@@ -105,11 +85,7 @@ public:
     // the engine to locate the file for clip_trim.
     std::wstring video_file_for(int64_t id) const;
 
-    // ── Bookmarks (manual recordings only) ────────────────────────────────────
-    // Model borrowed from Vice: one bookmark per clip, identified by a 1-based
-    // `seq`, with a wall-clock offset into the file, an editable label and an
-    // optional #rrggbb color. Written by the engine at recording stop, edited
-    // by the UI afterwards.
+    // Bookmark seq is 1-based per clip; time is a seconds offset into the recording.
     struct BookmarkRow {
         int         seq = 0;
         double      time_seconds = 0.0;
@@ -138,24 +114,14 @@ public:
     bool add_hashtag(int64_t id, const std::string& tag, std::string* error);
     bool remove_hashtag(int64_t id, const std::string& tag, std::string* error);
 
-    // Regenerates the first-frame thumbnail for a single clip (used when the UI
-    // finds a thumbnail missing or corrupt). Decodes the video and rewrites the
-    // .png, updating the stored thumbnail_file. Returns false + *error if the
-    // clip/video is missing or decoding fails. Blocking; call off the UI thread.
+    // Blocking decode/thumbnail I/O; call off the UI thread.
     bool regenerate_thumbnail(int64_t id, std::string* error);
 
-    // Renames the clip FILE on disk: moves the video file and its thumbnail to
-    // <new_stem> + original extension (in place, same folder/.thumbs) and updates
-    // the row. new_stem is a base name with no path/extension; invalid or
-    // colliding names fail without touching disk. This is a distinct, optional
-    // action from set_title - the on-screen name is the title, not the filename.
-    // Returns false + *error on any failure.
+    // new_stem has no path or extension; media and thumbnail retain their extensions.
+    // File rename is separate from the display title.
     bool rename_clip(int64_t id, const std::wstring& new_stem, std::string* error);
 
-    // Self-heal + migration. Safe to call from a background thread:
-    //   - row whose video file is gone      -> delete row (+ its thumb)
-    //   - row whose thumbnail is gone/empty  -> regenerate from the video
-    //   - video file on disk with no row     -> import it (+ generate thumb)
+    // Reconcile absent media, missing thumbnails and uncataloged files on a background worker.
     ReconcileStats reconcile(std::string* error);
 
 private:

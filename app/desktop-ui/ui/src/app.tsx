@@ -107,8 +107,7 @@ export function App() {
     return () => document.removeEventListener("contextmenu", block);
   }, []);
 
-  // Stable callbacks: ClipCard is memoized, so inline closures here would
-  // re-render the whole grid on every unrelated state change.
+  // Keep callbacks stable for memoized cards.
   const openMenu = useCallback((e: MouseEvent, clip: Clip) => {
     setMenu({ x: e.clientX, y: e.clientY, clip });
   }, []);

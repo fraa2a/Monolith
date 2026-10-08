@@ -78,11 +78,7 @@ pub fn read_runtime_status() -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-// output_dirs() is on the hot path of every catalog command (db_path +
-// media_folder each call it). Reading settings.db + parsing the full JSON
-// each time showed up with large libraries, so cache the result keyed by the
-// settings.db mtime+size - a stat() instead of a DB round-trip, and still
-// correct when the engine (or anything else) rewrites the file.
+// Fingerprint both SQLite files because WAL writes may leave the database timestamp unchanged.
 struct DirCache {
     path: PathBuf,
     stamps: [(Option<SystemTime>, u64); 2],
