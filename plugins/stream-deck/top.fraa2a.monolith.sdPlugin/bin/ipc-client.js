@@ -39,7 +39,7 @@ export class IpcClient {
             this._scheduleReconnect();
         });
         s.on('error', () => {
-            // handled by 'close' — suppress unhandled error event
+            // handled by 'close' - suppress unhandled error event
         });
     }
     _scheduleReconnect() {
@@ -69,7 +69,7 @@ export class IpcClient {
             }
         }
         catch {
-            // malformed response — ignore
+            // malformed response - ignore
         }
     }
     request(method) {

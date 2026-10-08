@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -24,6 +23,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check repository text
+        run: python scripts/check-text.py
+
+      - name: Test runtime dependency verifier
+        shell: pwsh
+        run: ./tests/packaging/verify-runtime-dlls.tests.ps1
 
       # Pinned to the builtin-baseline commit in vcpkg.json so dependency
       # versions (FFmpeg DLL ABIs etc.) are reproducible across CI runs.

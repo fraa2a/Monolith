@@ -19,7 +19,7 @@ struct PacketInfo {
     uint32_t sample_rate;
     uint16_t channels;
     uint16_t bit_depth;     // bits per sample (from mix format)
-    bool     silent;        // AUDCLNT_BUFFERFLAGS_SILENT — don't feed to encoder
+    bool     silent;        // AUDCLNT_BUFFERFLAGS_SILENT - don't feed to encoder
     bool     is_float;      // true = IEEE 754 float; false = signed integer PCM
     uint32_t seq;
 
@@ -64,21 +64,21 @@ struct DetectConfig {
     std::vector<std::wstring> blacklist;    // processes to reject unconditionally
     std::vector<std::wstring> whitelist;    // processes that receive a strong bonus
     std::vector<std::wstring> manual_games; // user-explicitly-chosen games (strong bonus)
-    int min_confidence = 50;               // 0–100; candidates below this are discarded
+    int min_confidence = 50;               // 0-100; candidates below this are discarded
     // When Monolith's own window (recorder or Settings) is in the foreground,
     // the real game loses its foreground bonus and may drop below
-    // min_confidence — invalidating detection while Settings is open.  Set this
+    // min_confidence - invalidating detection while Settings is open.  Set this
     // to the currently-tracked game pid so its foreground bonus stays "sticky"
     // while a Monolith window holds focus.  0 = no sticky fallback.
     uint32_t sticky_foreground_pid = 0;
 };
 
 // Extended result returned by the config-driven detect_active_game overload.
-// confidence 0–100; reason is a human-readable string of applied scoring factors.
+// confidence 0-100; reason is a human-readable string of applied scoring factors.
 struct ActiveGameResult {
     ProcessInfo process;         // process_id == 0 when nothing qualifies
     int  score       = 0;
-    int  confidence  = 0;        // 0–100
+    int  confidence  = 0;        // 0-100
     std::string reason;
     bool has_session = false;
     bool fullscreen  = false;
@@ -87,7 +87,7 @@ struct ActiveGameResult {
 // One running process whose executable is present in the local game-list DB.
 // Detection is DB-gated: only DB-matched processes ever become candidates. The
 // window facts (foreground/fullscreen/capture_window) only order candidates and
-// select the capture target — they never gate membership. display_name /
+// select the capture target - they never gate membership. display_name /
 // discord_app_id come from the DB (UTF-8).
 struct GameCandidateInfo {
     ProcessInfo process;
@@ -140,7 +140,7 @@ public:
     WasapiCapture& operator=(const WasapiCapture&) = delete;
 
     // COM must be initialized on the calling thread before start().
-    // cb is invoked from the internal capture thread — must be thread-safe.
+    // cb is invoked from the internal capture thread - must be thread-safe.
     bool start(Mode mode, PacketCallback cb);
     bool start_device(Mode mode, const std::wstring& device_id, PacketCallback cb);
     bool start_process_loopback(uint32_t process_id, PacketCallback cb);

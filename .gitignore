@@ -42,7 +42,6 @@ Win32/
 # --- vcpkg ---
 vcpkg/
 vcpkg_installed/
-vcpkg-configuration.json
 
 # --- Windows ---
 Thumbs.db

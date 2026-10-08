@@ -3,7 +3,7 @@
 // Monolith records separate audio streams (game, mic, apps) into one file
 // (see libs/encoding/mux_common.cpp). Chromium/WebView2 exposes every track
 // via `video.audioTracks`, but a single <video>/<audio> element only ever
-// *renders* one enabled track at a time — flipping `audioTracks[i].enabled`
+// *renders* one enabled track at a time - flipping `audioTracks[i].enabled`
 // for more than one track has no effect on what you hear. The only way to
 // hear every track at once is to decode each extra track on its own hidden
 // element and let the OS mixer combine them acoustically, so this hook spins
@@ -11,7 +11,7 @@
 // visible primary element (play/pause, seek, mute, volume, rate).
 //
 // Sync is event-driven (play/pause/seeking mirrored immediately, currentTime
-// drift corrected on timeupdate), not sample-accurate — under heavy CPU
+// drift corrected on timeupdate), not sample-accurate - under heavy CPU
 // contention drift beyond ~150ms is possible before the next correction
 // tick. That's an accepted tradeoff: still strictly better than silently
 // dropping every track but the first.

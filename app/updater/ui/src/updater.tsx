@@ -156,7 +156,7 @@ function Titlebar({ closable }: { closable: boolean }) {
 }
 
 function VersionLine({ c }: { c: ComponentState }) {
-  const from = c.from === "0.0.0" ? "–" : c.from;
+  const from = c.from === "0.0.0" ? "-" : c.from;
   return (
     <div class="comp-vers">
       <span class="from">{from}</span>
@@ -445,7 +445,7 @@ export function Updater() {
           <div class="notice">
             <span>●</span>
             <span>
-              A recording is in progress. Stop it before updating — the engine
+              A recording is in progress. Stop it before updating - the engine
               restarts to apply engine updates.
             </span>
           </div>

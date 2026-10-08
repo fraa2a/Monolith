@@ -125,13 +125,13 @@ bool open_file_and_write_header(AVFormatContext* fmt,
 
     // NB: no "+faststart" for mp4. faststart relocates the moov atom to the
     // front of the file at av_write_trailer() time, which rewrites the ENTIRE
-    // file on stop — for a multi-GB manual recording that is many seconds of
+    // file on stop - for a multi-GB manual recording that is many seconds of
     // disk/CPU on the calling thread and froze the UI/hotkeys. We instead leave
     // the moov at the end (OBS default); local playback and editing are
     // unaffected, and finalizing only writes the index, so stop is near-instant.
     const bool ok = avformat_write_header(fmt, nullptr) >= 0;
     if (!ok) {
-        // avformat_free_context does not close pb — callers that only free the
+        // avformat_free_context does not close pb - callers that only free the
         // context on failure would leak the AVIOContext and the file handle.
         avio_closep(&fmt->pb);
     }

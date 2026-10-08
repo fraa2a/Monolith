@@ -75,7 +75,7 @@ File be architecture decision record index for Monolith.
   - Use WAL and `busy_timeout`.
   - Self-heal on startup: remove rows for missing media, regen missing
     thumbnails, import pre-existing media.
-- Notes: superseded in part by ADR-0015 — UI-driven favorite/hashtag/title/
+- Notes: superseded in part by ADR-0015 - UI-driven favorite/hashtag/title/
   rename/delete ops now write catalog directly from UI process
   (rusqlite, same WAL/busy_timeout discipline) so they work without engine
   running. `clip_regen_thumb` still go through engine IPC cuz thumbnail
@@ -190,7 +190,7 @@ File be architecture decision record index for Monolith.
     `allow-toggle-maximize`/`allow-close`/`allow-start-dragging`.
   - `server.rs` and `media.rs` deleted; `tiny_http`, `include_dir`, `url`,
     and `percent-encoding` dropped from `Cargo.toml`.
-  - `engine_rpc.rs` (JSON-RPC over TCP to `127.0.0.1:45991`) unchanged —
+  - `engine_rpc.rs` (JSON-RPC over TCP to `127.0.0.1:45991`) unchanged -
     out of scope for this migration, still used by `plugins/stream-deck`.
 - Notes: this closes gap identified in ADR-0010/ADR-0012 where UI
   mutations went through engine IPC even though UI process could write
@@ -217,7 +217,7 @@ File be architecture decision record index for Monolith.
   invoke bridge, not this TCP server. Server stays loopback-only
   (`127.0.0.1`) with no request-level auth.
 
-## ADR-0017: Vice Feature Fusion — Collections, Bookmarks, Engine-Side Trim, Disk Replay, AV1
+## ADR-0017: Vice Feature Fusion - Collections, Bookmarks, Engine-Side Trim, Disk Replay, AV1
 
 - Status: accepted (2026-08-11).
 - Decision:
@@ -241,7 +241,7 @@ File be architecture decision record index for Monolith.
     recorder process; new `clip_trim` JSON-RPC mutation (same channel as
     `clip_regen_thumb`) copies packets losslessly (`-c copy` semantics,
     keyframe-backward seek keeps pre-roll), writes `<file>.trimming.<ext>`,
-    then `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` — file replaced
+    then `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` - file replaced
     in place like Vice, original intact on any failure. Re-encode is a
     safety-net fallback only. `duration_seconds` re-probed, thumbnail
     regenerated, `clip_generation` bumped so the UI grid refreshes.
@@ -255,7 +255,7 @@ File be architecture decision record index for Monolith.
   - **AV1**: `VideoCodec::AV1` + `resolve_video_encoder("av1")` cascade
     `av1_nvenc → av1_amf → av1_qsv → libaom-av1` (vcpkg ffmpeg feature
     `libaom`, not GPL). libaom gets only `cpu-used=8` + `rc-end-usage=cbr`
-    (no preset/tune — unknown options fail `avcodec_open2`).
+    (no preset/tune - unknown options fail `avcodec_open2`).
 - Notes: no-10-bit, no-CRF/CQ, no timeline editor (out of scope). Manual
   recordings stay always-on-disk. UI text stays English.
 
@@ -268,8 +268,8 @@ File be architecture decision record index for Monolith.
   DLLs + UI) for every update. A UI-only change therefore required bumping
   the engine version/tag, and clients re-downloaded ~everything for nothing.
   The update UX was WinSparkle's stock native dialog.
-- Decision: a dedicated Tauri v2 process — `Updater.exe` (`app/updater`,
-  deployed at the app root next to `Monolith.exe`) — owns the entire flow:
+- Decision: a dedicated Tauri v2 process - `Updater.exe` (`app/updater`,
+  deployed at the app root next to `Monolith.exe`) - owns the entire flow:
   - Feed: `update-manifest.json` on the stable
     `releases/latest/download/` URL with per-component entries
     (version / url / size / sha256 / EdDSA signature).
@@ -293,7 +293,7 @@ File be architecture decision record index for Monolith.
   wrapper). Two new JSON-RPC methods on the engine (`update_close_ui`,
   `update_engine_exit`). `get_status` now also reports the engine version
   (Settings shows interface + engine versions side by side). No binary
-  delta-patching (component granularity only) and no download resume —
+  delta-patching (component granularity only) and no download resume -
   retry re-downloads; both are accepted v1 limitations.
 
 ## Open Decisions
@@ -301,3 +301,11 @@ File be architecture decision record index for Monolith.
 - Final MP4 remux/finalization policy for interrupted recordings.
 - GPU-resident encoder API shape and fallback contract.
 - Future engine/UI process split boundary.
+
+## ADR-0019: App-local Windows runtime closure
+
+Date: 2026-10-08
+
+The native recorder and vcpkg dependencies retain dynamic MSVC linkage. CMake copies the redistributable runtime beside the engine. Rust UI and updater binaries use a static CRT, matching their independent single-executable component payloads.
+
+The verifier scans the root and sidecars, requires imports beside each binary and never treats VC runtime DLLs installed on a CI host as Windows prerequisites. All component staging directories are checked before packaging. Dynamically loaded driver/WebView2 dependencies and actual loader behavior require a clean Windows 11 smoke test.

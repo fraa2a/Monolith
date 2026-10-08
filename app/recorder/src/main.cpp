@@ -155,7 +155,7 @@ static void log_path(const char* tag, const char* prefix, const std::wstring& pa
     log_msg(tag, msg);
 }
 
-// Always-on error variants (bypass advanced.logging_enabled) — for failures the
+// Always-on error variants (bypass advanced.logging_enabled) - for failures the
 // user must be able to diagnose even without opting into verbose logging.
 static void log_error(const char* tag, const char* msg)
 {
@@ -196,7 +196,7 @@ static void apply_native_window_theme(HWND hwnd)
 {
     BOOL dark = apps_use_light_theme() ? FALSE : TRUE;
 
-    // Resolve the dwmapi/uxtheme entry points once and cache them — this runs on
+    // Resolve the dwmapi/uxtheme entry points once and cache them - this runs on
     // every tray right-click and theme change, so repeated LoadLibrary/FreeLibrary
     // would be pure waste.
     using DwmSetWindowAttributeFn = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
@@ -211,7 +211,7 @@ static void apply_native_window_theme(HWND hwnd)
             FlushMenuThemesFn       flush_menu      = nullptr;
             SetWindowThemeFn        set_theme       = nullptr;
         } f;
-        // Leaked intentionally for process lifetime — these modules stay loaded
+        // Leaked intentionally for process lifetime - these modules stay loaded
         // anyway and the handles never need releasing.
         if (HMODULE dwm = LoadLibraryW(L"dwmapi.dll"))
             f.set_attr = reinterpret_cast<DwmSetWindowAttributeFn>(
@@ -255,7 +255,7 @@ static std::array<std::unique_ptr<encoding::TrackMixer>, 7> g_track_mixers;
 
 // One output route for a source: which track, and (when that track is mixed) the
 // source's id within the mixer. mixer_src == -1 means push directly to encoder.
-// gain is the source's linear volume (0.0–1.0), applied to the recorded audio:
+// gain is the source's linear volume (0.0-1.0), applied to the recorded audio:
 // for mixed tracks it lives in the mixer source; for direct tracks it is applied
 // in-place before push_pcm.
 struct AudioRoute { int track = 0; int mixer_src = -1; float gain = 1.0f; };
@@ -321,7 +321,7 @@ static std::atomic<uint64_t>     g_clip_generation{0};
 
 // ── Recording elapsed-time clock (QPC-based, pause-aware) ────────────────────
 // Used to timestamp bookmarks at the moment they are added. Written on the
-// UI/tray thread (start/pause/resume/stop), read on the IPC thread — all fields
+// UI/tray thread (start/pause/resume/stop), read on the IPC thread - all fields
 // are atomics, and a torn read only shifts a bookmark timestamp by a frame or
 // two. Pause spans are accumulated in QPC units and subtracted at read time.
 static std::atomic<int64_t> g_rec_clock_freq{0};
@@ -424,7 +424,7 @@ static std::string now_local_ts()
 }
 
 // Re-writes AppData\Local\Monolith\runtime-status.json from g_runtime_status,
-// but only when the serialized content actually changed — the active-game poll
+// but only when the serialized content actually changed - the active-game poll
 // runs every few seconds and on every foreground change, and most ticks produce
 // identical status, so skipping no-op disk writes avoids needless I/O.
 static std::string g_last_runtime_status_json;
@@ -533,8 +533,8 @@ static DWORD WINAPI pacer_thread_proc(LPVOID)
         }
 
         // Frozen-frame: when the captured game window is minimized, WGC delivers
-        // no (or degenerate) frames. Deliberately hold the last good frame — the
-        // CFR loop keeps duplicating local_bgra — instead of swapping in whatever
+        // no (or degenerate) frames. Deliberately hold the last good frame - the
+        // CFR loop keeps duplicating local_bgra - instead of swapping in whatever
         // WGC produces while iconic. Applies to both recording and replay since
         // both consume this pacer -> encoder path.
         HWND cap_target = g_capture_target_hwnd.load(std::memory_order_relaxed);
@@ -639,7 +639,7 @@ static void pacer_stop()
         SetEvent(g_pacer_stop_event);
         if (g_pacer_thread) {
             // Unbounded join: the loop always exits once the stop event is
-            // set (WAIT_FAILED included), so this cannot hang — and the old
+            // set (WAIT_FAILED included), so this cannot hang - and the old
             // 3 s timeout closed the handles of a possibly-live thread,
             // leaving a busy-spinning pacer using a closing encoder.
             WaitForSingleObject(g_pacer_thread, INFINITE);
@@ -787,7 +787,7 @@ static void load_app_settings()
 // `source` is "replay" or "manual". Returns the new row id (> 0) or -1 on
 // failure; on success `on_cataloged` is invoked with the row id (the manual-
 // stop path uses it to flush pending bookmarks). Failures are logged, never
-// fatal — a clip with no DB row/thumb still plays and gets picked up by
+// fatal - a clip with no DB row/thumb still plays and gets picked up by
 // reconcile later.
 static int64_t catalog_clip(std::wstring video_path, std::string source,
                             double duration_seconds,
@@ -851,7 +851,7 @@ static int64_t catalog_clip(std::wstring video_path, std::string source,
 
 // Self-heal both catalogs on startup: drop rows whose video vanished, rebuild
 // missing thumbnails, and import pre-existing videos that have no row yet.
-// Detached background thread — never blocks startup.
+// Detached background thread - never blocks startup.
 static void reconcile_catalogs()
 {
     const std::wstring clips_dir = g_settings.clips_directory;
@@ -881,7 +881,7 @@ static void reconcile_catalogs()
 // ── Pending bookmarks ─────────────────────────────────────────────────────────
 // Bookmarks are timestamped live (hotkey or IPC) while a manual recording runs
 // and flushed into recs.db when the recording stops and its clip row exists.
-// They are written by the engine (single writer) — the UI only reads/edits
+// They are written by the engine (single writer) - the UI only reads/edits
 // them afterwards.
 struct PendingBookmark {
     double      time_seconds;
@@ -927,7 +927,7 @@ static void flush_pending_bookmarks(int64_t clip_id, const std::wstring& folder)
 }
 
 // Timestamps and queues one bookmark for the running manual recording. Shared
-// by the IPC handler (IPC thread) and the tray/hotkey path (UI thread) — all
+// by the IPC handler (IPC thread) and the tray/hotkey path (UI thread) - all
 // state touched is atomic or mutex-guarded. Returns "" on success.
 static std::string add_bookmark_now()
 {
@@ -987,7 +987,7 @@ static std::string trim_clip(storage::ClipDb* db,
     }
 
     // Replace the original (MOVEFILE_REPLACE_EXISTING is atomic on the same
-    // volume — same folder here).
+    // volume - same folder here).
     if (!MoveFileExW(tmp_path.c_str(), video_path.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::error_code ec;
@@ -1191,7 +1191,7 @@ static void evaluate_capture_mode(HWND hwnd)
             g_capture_mode_stopped = false;
         }
 
-        // Auto-next-on-close: the recorded game closed while others remain — the
+        // Auto-next-on-close: the recorded game closed while others remain - the
         // effective target already moved on; stop the old recording and start the
         // new target.
         if (g_auto_state == AutoState::AutoRecording &&
@@ -1954,7 +1954,7 @@ static void drop_active_game_capture(const char* reason_msg)
 // captures, encoders, and the replay buffer are never restarted.
 // Drives ONLY the Active Game audio process-loopback capture toward `result`
 // (the effective target chosen by poll_active_game()). Does not publish the
-// active_game display block on the no-audio-source path — that is handled by
+// active_game display block on the no-audio-source path - that is handled by
 // poll_active_game() so the UI shows the game even without an active-game audio
 // source configured.
 static void poll_active_game_impl(const audio::ActiveGameResult& result)
@@ -2048,7 +2048,7 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
         return;
     }
 
-    // Same pending candidate — check whether debounce period has elapsed.
+    // Same pending candidate - check whether debounce period has elapsed.
     DWORD elapsed = now_ms - g_pending_game_first_ms;
     if (elapsed < static_cast<DWORD>(g_settings.active_game.switch_debounce_ms))
         return; // Not yet; keep waiting.
@@ -2068,7 +2068,7 @@ static void poll_active_game_impl(const audio::ActiveGameResult& result)
 
     audio::WasapiCapture* new_capture = g_audio_captures.back().capture.get();
 
-    // Remove old capture — only the Active Game source, nothing else.
+    // Remove old capture - only the Active Game source, nothing else.
     if (g_active_game_capture != nullptr) {
         for (auto it = g_audio_captures.begin(); it != g_audio_captures.end(); ++it) {
             if (it->capture.get() == g_active_game_capture) {
@@ -2121,7 +2121,7 @@ static const audio::GameCandidateInfo* resolve_effective_target(
     if (!sel.empty()) {
         for (const auto& c : candidates)
             if (exe_key_of(c.process.process_name) == sel) return &c;
-        // Selected game not currently running — fall through to auto.
+        // Selected game not currently running - fall through to auto.
     }
 
     const audio::GameCandidateInfo* best = nullptr;
@@ -2144,7 +2144,7 @@ static const audio::GameCandidateInfo* resolve_effective_target(
 // Public entry point: run one DB-gated detection pass, resolve the effective
 // target, drive the Active Game audio capture toward it, publish the active game
 // + full candidate list, and flush runtime-status.json. Does NOT touch the
-// capture pipeline / auto-record — evaluate_capture_mode() does, from the shared
+// capture pipeline / auto-record - evaluate_capture_mode() does, from the shared
 // state this leaves behind.
 static void poll_active_game()
 {
@@ -2178,7 +2178,7 @@ static void poll_active_game()
     g_effective_game_pid = target ? target->process.process_id : 0;
     // Only the game_only window-capture path uses this (capture target + pacer
     // frozen-frame). In screen mode we capture the whole monitor, so leave it
-    // null — a minimized game must NOT freeze full-screen capture.
+    // null - a minimized game must NOT freeze full-screen capture.
     g_capture_target_hwnd.store(
         (target && g_settings.capture_mode == "game_only") ? target->capture_window : nullptr,
         std::memory_order_relaxed);
@@ -2240,7 +2240,7 @@ static void poll_active_game()
     publish_runtime_status();
 }
 
-// WinEvent hook callback — called on the UI thread when the foreground window changes.
+// WinEvent hook callback - called on the UI thread when the foreground window changes.
 // Rate-limited fast scan: coalesces rapid events by checking g_fast_scan_pending,
 // then posts WM_FAST_SCAN so poll_active_game() runs on the next message-loop turn.
 static void CALLBACK active_game_fg_hook(
@@ -2258,7 +2258,7 @@ static void install_fg_hook()
     if (g_fg_hook) return;
     g_fg_hook = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
-        nullptr,               // no DLL — out-of-context callback
+        nullptr,               // no DLL - out-of-context callback
         active_game_fg_hook,
         0, 0,                  // all processes/threads
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
@@ -2558,7 +2558,7 @@ static void media_start(HWND hwnd)
 
                 // Resolves against the actually-captured frame size, which is
                 // already the GPU-downscaled size when CaptureOptions below
-                // configured one (this then just confirms it) — and is still
+                // configured one (this then just confirms it) - and is still
                 // native size in game_only mode (no upfront target there), so
                 // this remains the source of truth either way.
                 int g_enc_w_resolved = 0, g_enc_h_resolved = 0;
@@ -2659,7 +2659,7 @@ static void media_start(HWND hwnd)
 
             // In game_only, capture the effective target's window (resolved by the
             // detection poll). When there is no target (no game, or its window is
-            // unavailable) we fall back to full-screen monitor capture — which is
+            // unavailable) we fall back to full-screen monitor capture - which is
             // also the clip-without-game path.
             HWND target = nullptr;
             if (g_settings.capture_mode == "game_only") {
@@ -2724,7 +2724,7 @@ static void media_stop()
     }
     // A recording killed here never reaches CMD_RECORDING_STOP, so stop the
     // bookmark clock and drop any pending bookmarks (no clip row will exist
-    // to flush them into — otherwise they'd leak into the next recording).
+    // to flush them into - otherwise they'd leak into the next recording).
     rec_clock_stop();
     clear_pending_bookmarks();
     g_video_enc_open_attempted.store(false, std::memory_order_release);
@@ -3067,7 +3067,7 @@ static void register_one_hotkey(
 {
     (void)hwnd;
 
-    // "NONE" means the hotkey is disabled — skip registration entirely
+    // "NONE" means the hotkey is disabled - skip registration entirely
     std::string upper_configured = upper_ascii(configured);
     if (upper_configured == "NONE") {
         log_msg("hotkey", (std::string(name) + " disabled (NONE)").c_str());
@@ -3198,7 +3198,7 @@ static void hotkeys_unregister(HWND hwnd)
 
 // True when a clip/record command must be blocked: game_only mode, no known game
 // running, and clip-without-game is off (so there is genuinely nothing to
-// capture). When clip-without-game is on we allow it — capture falls back to the
+// capture). When clip-without-game is on we allow it - capture falls back to the
 // full screen.
 static bool game_gate_blocks()
 {
@@ -3221,7 +3221,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
         }
         char stats[256];
         snprintf(stats, sizeof(stats),
-            "save_replay — buffer: %zu pkt / %.1f MB",
+            "save_replay - buffer: %zu pkt / %.1f MB",
             g_replay.packet_count(),
             static_cast<double>(g_replay.memory_bytes()) / 1048576.0);
         log_msg("replay", stats);
@@ -3270,7 +3270,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
             if (path.empty()) log_msg("recording", "recording stopped: no packets written");
             else {
                 log_path("recording", "recording saved: ", path);
-                // Catalog off the UI thread — decode + DB I/O must not block it.
+                // Catalog off the UI thread - decode + DB I/O must not block it.
                 // The closure captures the recording folder so pending bookmarks
                 // flush into the right recs.db once the clip row exists.
                 const std::wstring folder =
@@ -3452,7 +3452,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
     // Logging is gated by advanced.logging_enabled, which load_app_settings()
-    // resolves — so settings must load first. Anything load_app_settings()
+    // resolves - so settings must load first. Anything load_app_settings()
     // itself would have logged is lost; acceptable startup-only gap.
     load_app_settings();
     log_init(g_settings.logging_enabled);

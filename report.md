@@ -21,7 +21,7 @@ Stato iniziale: nessuna fase di ottimizzazione ancora implementata; hardening DL
 
 ---
 
-# Monolith — DLL mancanti e audit tecnico
+# Monolith - DLL mancanti e audit tecnico
 
 ## 1. Esito e limiti
 
@@ -88,7 +88,7 @@ L'ordine consigliato è: **sicurezza/integrità e limiti delle risorse → elimi
 
 ## 4. Cattura, encoding e qualità video
 
-### V1 — P1: shutdown della cattura senza attesa dimostrabile dei callback
+### V1 - P1: shutdown della cattura senza attesa dimostrabile dei callback
 
 **Evidenza:** `libs/capture/capture.cpp:323-442,475-510`; `app/recorder/src/main.cpp:2537-2634`.
 
@@ -98,7 +98,7 @@ L'ordine consigliato è: **sicurezza/integrità e limiti delle risorse → elimi
 
 **Beneficio:** meno crash intermittenti su stop, resize, cambio display e riconfigurazione. **Test:** cicli ripetuti start/stop/resize con encoder lento; contatore callback a zero prima del rilascio. La probabilità del problema richiede verifica Windows.
 
-### V2 — P1: fallback encoder può cambiare codec senza consenso
+### V2 - P1: fallback encoder può cambiare codec senza consenso
 
 **Evidenza:** `libs/encoding/encoding.cpp:47-53,132-159,246-253`; `app/recorder/src/main.cpp:2556-2570`.
 
@@ -106,7 +106,7 @@ La risoluzione iniziale rispetta il codec richiesto, ma l'apertura reale aggiung
 
 **Consiglio:** limitare i fallback allo stesso codec, mostrare dispositivo/codec effettivi e rendere esplicito un eventuale cambio. **Beneficio:** compatibilità prevedibile, evita fallback software o formati inattesi. **Test:** forzare fallimenti per ogni codec e controllare l'output con `ffprobe`.
 
-### V3 — P1/P2: HDR non preservato e colore SDR non esplicitamente definito
+### V3 - P1/P2: HDR non preservato e colore SDR non esplicitamente definito
 
 **Evidenza:** `libs/capture/capture.cpp:315-319,403-406`; `libs/encoding/encoding.cpp:273-274,469-487`; `libs/encoding/mux_common.cpp:65-93`.
 
@@ -116,7 +116,7 @@ Il percorso è BGRA8 → YUV420P 8 bit. Non emerge una politica esplicita di mat
 
 **Beneficio:** colori riproducibili, meno highlight tagliati o neri alterati. **Costo:** HDR richiede lavoro significativo e test di compatibilità. **Test:** color bars, gradienti SDR/HDR, valori decodificati e metadata MediaInfo/ffprobe.
 
-### V4 — P2, massimo potenziale CPU: eliminare il percorso GPU→CPU→GPU
+### V4 - P2, massimo potenziale CPU: eliminare il percorso GPU→CPU→GPU
 
 **Evidenza:** `libs/capture/capture.cpp:416-430`; `app/recorder/src/main.cpp:459-473`; `libs/encoding/encoding.cpp:469-492`.
 
@@ -126,7 +126,7 @@ Per frame accettato: copia su staging, Map sincrona, copia BGRA nel pacer, conve
 
 **Beneficio:** meno CPU, banda memoria e stalli, soprattutto UHD/high-FPS. **Costo:** implementazione complessa; più risorse GPU e vincoli interop. **Misura:** ETW/GPUView, tempi readback/memcpy/sws, frame persi, frametime del gioco. Non basta misurare gli FPS nominali del file.
 
-### V5 — P2: apertura/probing encoder nel callback di cattura
+### V5 - P2: apertura/probing encoder nel callback di cattura
 
 **Evidenza:** `app/recorder/src/main.cpp:2415-2634`; `libs/encoding/encoding.cpp:89-112,132-159,201-409`.
 
@@ -136,7 +136,7 @@ La prima immagine attiva prove/apertura codec direttamente nel callback WGC, con
 
 **Beneficio:** avvio/ripristino più prevedibili e meno frame iniziali persi. **Test:** encoder occupato/indisponibile, tempo primo frame→ready e durata p95/p99 callback.
 
-### V6 — P2: pacer con intervalli interi e risvegli relativi
+### V6 - P2: pacer con intervalli interi e risvegli relativi
 
 **Evidenza:** `app/recorder/src/main.cpp:509-531,576-598`.
 
@@ -146,7 +146,7 @@ La prima immagine attiva prove/apertura codec direttamente nel callback WGC, con
 
 **Beneficio:** meno risvegli superflui e jitter di scheduling. **Test:** wakeup/s, distribuzione lateness, frame duplicati/saltati e PTS; non dedurre FPS reali solo dall'intervallo timer.
 
-### V7 — P2: errori e drop poco osservabili
+### V7 - P2: errori e drop poco osservabili
 
 **Evidenza:** `app/recorder/src/main.cpp:459-473,590-598,2443-2518`; `libs/encoding/encoding.cpp:479-493`; `libs/recording/recording.cpp:245`.
 
@@ -156,7 +156,7 @@ Sostituzioni del latest-frame non contate; il contatore submitted sale anche se 
 
 **Beneficio:** permette ottimizzazioni basate su fatti e diagnosi di clip degradate. **Test:** fault injection su encode/mux e riconciliazione dei contatori.
 
-### V8 — P2: mancati controlli sulla creazione thread/event del pacer
+### V8 - P2: mancati controlli sulla creazione thread/event del pacer
 
 **Evidenza:** `app/recorder/src/main.cpp:608-658`.
 
@@ -166,7 +166,7 @@ Event/thread possono fallire ma lo stato può risultare running.
 
 ## 5. Replay, recording, audio e memoria
 
-### R1 — P1: il tetto replay 512 MB non è garantito
+### R1 - P1: il tetto replay 512 MB non è garantito
 
 **Evidenza:** `libs/replay-buffer/replay_buffer.cpp:58-95,171-195`; `app/recorder/src/main.cpp:2402-2415`.
 
@@ -176,7 +176,7 @@ L'espulsione richiede `keyframes > 2`. Se audio parte e video non arriva, fallis
 
 **Beneficio:** RAM stabile e comportamento esplicito quando non è possibile conservare una clip decodificabile. **Tradeoff:** buffer più corto o clip non disponibile in emergenza. **Test:** solo audio, WGC fallita, video senza keyframe, bitrate massimo, save lento.
 
-### R2 — P1: ordine di arrivo scambiato per ordine temporale nel replay
+### R2 - P1: ordine di arrivo scambiato per ordine temporale nel replay
 
 **Evidenza:** `libs/replay-buffer/replay_buffer.cpp:66-95,171-195,238-268,389-394`; `app/recorder/src/main.cpp:1455-1460,1575-1616,2570-2576`.
 
@@ -184,7 +184,7 @@ Audio/video arrivano da produttori distinti; il mutex serializza l'arrivo ma non
 
 **Consiglio:** watermark temporale o reorder limitato per stream; determinare i confini da timestamp validi. **Beneficio:** durata e inizio clip prevedibili. **Costo:** piccola latenza/coda. **Test:** pacchetti fuori ordine con skew, partenza su keyframe e timeline finale.
 
-### R3 — P1: nuovi segmenti disco possono iniziare senza keyframe video
+### R3 - P1: nuovi segmenti disco possono iniziare senza keyframe video
 
 **Evidenza:** `libs/disk-segments/disk_segments.cpp:218-245,264-285`.
 
@@ -192,7 +192,7 @@ Il save chiude il segmento corrente. Il pacchetto successivo, anche audio, può 
 
 **Consiglio:** attendere un keyframe per aprire il nuovo segmento, con preroll audio limitato e politica documentata. **Beneficio:** segmenti indipendentemente decodificabili. **Test:** save a metà GOP, poi audio e frame non-key, quindi nuovo save e decode integrale.
 
-### R4 — P1: retention disco sospesa per tutta la durata del salvataggio
+### R4 - P1: retention disco sospesa per tutta la durata del salvataggio
 
 **Evidenza:** `libs/disk-segments/disk_segments.cpp:154-168,264-314`.
 
@@ -200,7 +200,7 @@ Il save chiude il segmento corrente. Il pacchetto successivo, anche audio, può 
 
 **Consiglio:** proteggere soltanto i segmenti dello snapshot, liberare gli altri e imporre tetto byte/free-space. **Beneficio:** spazio temporaneo limitato anche verso dischi lenti. **Costo:** reference tracking e scelta su abort/drop. **Test:** destinazione bloccata per più finestre replay; crescita disco deve stabilizzarsi.
 
-### R5 — P1: I/O mux sincrono sui produttori realtime e stop sul message loop
+### R5 - P1: I/O mux sincrono sui produttori realtime e stop sul message loop
 
 **Evidenza:** `libs/audio/audio.cpp:240-263`; `libs/recording/recording.cpp:119-143,208-245`; `libs/disk-segments/disk_segments.cpp:218-245`; `app/recorder/src/main.cpp:1575-1616,3251-3268,3374-3386`.
 
@@ -210,7 +210,7 @@ WASAPI chiama l'integrazione prima di ReleaseBuffer. Encode/sink possono arrivar
 
 **Beneficio:** meno gap audio, frame persi e tray bloccata su dischi lenti/pieni. **Test:** latenza ReleaseBuffer, p99 write/stop, code, audio/video e hotkey sotto throttling I/O.
 
-### R6 — P2: copie e allocazioni ripetute dei pacchetti codificati
+### R6 - P2: copie e allocazioni ripetute dei pacchetti codificati
 
 **Evidenza:** `libs/encoding/encoding.cpp:35-43,419-432`; `libs/encoding/mux_common.cpp:147-166`.
 
@@ -220,7 +220,7 @@ Una copia crea il payload posseduto dal progetto; un'altra allocazione/copia avv
 
 **Beneficio:** meno allocator/memcpy; priorità inferiore al readback dei frame grezzi. **Test:** allocazioni/s e CPU a bitrate alto, race/lifetime durante clear/save/stop.
 
-### R7 — P1: filename recording collidenti e buffer MAX_PATH
+### R7 - P1: filename recording collidenti e buffer MAX_PATH
 
 **Evidenza:** `libs/recording/recording.cpp:58-72,180-188`.
 
@@ -228,7 +228,7 @@ Nome preciso solo al secondo, senza prenotazione esclusiva, e costruzione in `wc
 
 **Consiglio:** path dinamici, suffisso univoco, creazione no-overwrite con retry. **Beneficio:** previene sovrascrittura o failure con start/stop ravvicinati e percorsi lunghi. **Test:** due registrazioni nello stesso secondo, directory lunghe, file già esistente.
 
-### R8 — P1: uscita durante recording non percorre il normale completamento catalogo/bookmark
+### R8 - P1: uscita durante recording non percorre il normale completamento catalogo/bookmark
 
 **Evidenza:** `app/recorder/src/main.cpp:2694-2712,3251-3263,3374-3386`.
 
@@ -236,7 +236,7 @@ Nome preciso solo al secondo, senza prenotazione esclusiva, e costruzione in `wc
 
 **Consiglio:** unico completamento per stop/exit/autostop, con persistenza o journal recuperabile. **Test:** bookmark, uscita in recording e restart: file, durata, thumbnail, riga catalogo e bookmark devono sopravvivere.
 
-### R9 — P2: errore WASAPI può lasciare stato running obsoleto
+### R9 - P2: errore WASAPI può lasciare stato running obsoleto
 
 **Evidenza:** `libs/audio/audio.cpp:219-231,748-750`; `libs/audio/audio.h:142-143`.
 
@@ -244,7 +244,7 @@ Un errore `GetNextPacketSize` esce dal loop senza azzerare running.
 
 **Consiglio:** stato terminale su ogni uscita, HRESULT e notifica al controller per restart con backoff. **Beneficio:** recupero endpoint anziché cattura apparentemente attiva ma muta. **Test:** disconnessione/cambio dispositivo ed errori simulati.
 
-### R10 — P2: metadati temporali/discontinuità audio scartati
+### R10 - P2: metadati temporali/discontinuità audio scartati
 
 **Evidenza:** `libs/audio/audio.cpp:238-262`; `app/recorder/src/main.cpp:1575-1616`; `libs/recording/recording.cpp:130-142`.
 
@@ -254,7 +254,7 @@ QPC e flag di discontinuity non vengono propagati nella normale integrazione PCM
 
 **Beneficio:** sincronizzazione recuperabile dopo stalli/device switch. **Test:** almeno un'ora con timecode audiovisivo, stalli e cambio endpoint; misurare offset massimo e dopo il recupero.
 
-### R11 — P2: mixer recupera tutto il ritardo in un unico blocco
+### R11 - P2: mixer recupera tutto il ritardo in un unico blocco
 
 **Evidenza:** `libs/encoding/encoding.cpp:933-952,979-985`.
 
@@ -262,7 +262,7 @@ Il numero di frame da emettere deriva da tempo reale meno frame già emessi, sen
 
 **Consiglio:** chunk massimo, gestione esplicita di salti temporali e underrun, riallineamento dopo suspend/resume. **Beneficio:** meno picchi CPU/RAM e latenza. **Test:** sospendere il worker o rallentare il sink e tracciare dimensione massima del blocco.
 
-### R12 — P3: clipping duro del mix audio
+### R12 - P3: clipping duro del mix audio
 
 **Evidenza:** `libs/encoding/encoding.cpp:958-975`.
 
@@ -272,7 +272,7 @@ Le sorgenti vengono sommate e clippate a [-1,1]. È un comportamento definito, n
 
 ## 6. Trim: ulteriori riscontri diretti
 
-### T1 — P1: remux senza conversione dalla timebase di input a quella di output
+### T1 - P1: remux senza conversione dalla timebase di input a quella di output
 
 **Evidenza:** `libs/encoding/trim.cpp:181-254`, in particolare `237-247`.
 
@@ -282,7 +282,7 @@ Le stream timebase vengono inizialmente copiate, ma il muxer può cambiarle dura
 
 **Beneficio:** durata, velocità, sincronizzazione e concat corretti quando le basi differiscono. **Test:** MP4/MKV con timebase differenti, più segmenti e tracce; `ffprobe -show_packets` e decode completo. Manifestazione dipendente dal muxer/input, non riprodotta qui.
 
-### T2 — P1: trim lossless con preroll ma metadata/bookmark basati sul taglio richiesto
+### T2 - P1: trim lossless con preroll ma metadata/bookmark basati sul taglio richiesto
 
 **Evidenza:** `libs/encoding/trim.cpp:178-205,223-232`; `app/recorder/src/main.cpp:978-1008`.
 
@@ -292,7 +292,7 @@ Il seek backward conserva il keyframe precedente a start, ma il catalogo registr
 
 **Beneficio:** niente durate sbagliate o bookmark spostati di parte di un GOP. **Test:** taglio non-keyframe e confronto contenuto/durata/bookmark, inclusa concatenazione con preroll.
 
-### T3 — P1: fallback reencode salta pacchetti necessari al decoder
+### T3 - P1: fallback reencode salta pacchetti necessari al decoder
 
 **Evidenza:** `libs/encoding/trim.cpp:444-476,480-499`.
 
@@ -302,7 +302,7 @@ Dopo il seek, i pacchetti video prima di start vengono scartati prima di aliment
 
 **Beneficio:** inizio clip integro e meno errori o frame mancanti. **Test:** tagli tra keyframe con B-frame, 59.94 FPS e input VFR.
 
-### T4 — P1/P2: ricodifica trim accumula tutto in RAM e conserva una sola traccia audio
+### T4 - P1/P2: ricodifica trim accumula tutto in RAM e conserva una sola traccia audio
 
 **Evidenza:** `libs/encoding/trim.cpp:326-327,356-378,502-539`.
 
@@ -314,7 +314,7 @@ Dopo il seek, i pacchetti video prima di start vengono scartati prima di aliment
 
 ## 7. UI, catalogo e attività in background
 
-### U1 — P1: tre scansioni complete della libreria per un reload
+### U1 - P1: tre scansioni complete della libreria per un reload
 
 **Evidenza:** `app/desktop-ui/ui/src/app.tsx:55-65`; `app/desktop-ui/src-tauri/src/clip_catalog.rs:110-111,199,278-293`; `commands.rs:57-68`.
 
@@ -324,7 +324,7 @@ Lista, giochi e hashtag invocano percorsi che rimaterializzano l'intera libreria
 
 **Beneficio:** meno DB/stat/serializzazione e ricerca stabile su librerie grandi. **Test:** 100/1.000/10.000 clip, query/stat per reload, tempo prima card e risposte fuori ordine.
 
-### U2 — P1: tutte le card aprono un video anche con thumbnail disponibile
+### U2 - P1: tutte le card aprono un video anche con thumbnail disponibile
 
 **Evidenza:** `app/desktop-ui/ui/src/app.tsx:245-255`; `home/clip-card.tsx:86-150`.
 
@@ -334,7 +334,7 @@ La griglia monta tutte le clip; ciascuna crea un elemento video e chiama load. I
 
 **Beneficio:** meno RAM WebView, I/O e contesa decoder con la cattura. **Test:** 1.000 clip con/senza thumbnail, decoder attivi, private bytes e tempo interattività.
 
-### U3 — P2: collection con query N+1
+### U3 - P2: collection con query N+1
 
 **Evidenza:** `app/desktop-ui/src-tauri/src/collections.rs:173-204`; `clip_catalog.rs:230-243`.
 
@@ -342,7 +342,7 @@ Ogni membro apre/carica dati catalogo, tag, artwork e stat.
 
 **Consiglio:** batch ID per sorgente, dati condivisi caricati una volta, pruning in transazione. **Beneficio:** apertura collection più rapida. **Test:** connessioni/query/stat con 100 e 1.000 membri.
 
-### U4 — P2: polling host attivo con UI nascosta
+### U4 - P2: polling host attivo con UI nascosta
 
 **Evidenza:** `app/desktop-ui/src-tauri/src/main.rs:28-38`; `engine_rpc.rs:19-21`; `ui/src/shell/titlebar.tsx:42-55`.
 
@@ -352,7 +352,7 @@ Il watcher nativo interroga l'engine ogni secondo anche a finestra nascosta; la 
 
 **Beneficio:** meno CPU idle e churn socket/thread. **Test:** CPU/connect/s in stato visibile, minimizzato e nascosto.
 
-### U5 — P2: artwork senza backoff sui fallimenti
+### U5 - P2: artwork senza backoff sui fallimenti
 
 **Evidenza:** `app/desktop-ui/src-tauri/src/main.rs:48-54`; `game_catalog.rs:356-377`.
 
@@ -360,7 +360,7 @@ Elementi stale falliti restano stale e sono ritentati nei successivi startup/cic
 
 **Consiglio:** last_attempt, backoff con jitter e batch limitato. **Beneficio:** meno rete e worker occupati con cache ampia/offline. **Test:** centinaia di elementi irraggiungibili e verifica retry nel tempo.
 
-### U6 — P1/P2: delete/rename non consistenti tra filesystem e DB
+### U6 - P1/P2: delete/rename non consistenti tra filesystem e DB
 
 **Evidenza:** `libs/storage/storage.cpp:432-479,811-845,902-921`; `app/desktop-ui/src-tauri/src/clip_catalog.rs:486-514`.
 
@@ -372,7 +372,7 @@ Cancellazione DB committata prima della rimozione file, con errori filesystem ig
 
 ## 8. IPC, updater, logging e affidabilità
 
-### I1 — P1: thread IPC terminati non recuperati fino allo shutdown
+### I1 - P1: thread IPC terminati non recuperati fino allo shutdown
 
 **Evidenza:** `libs/ipc/ipc_server.cpp:86-95,246-270,337-343`; `app/desktop-ui/src-tauri/src/engine_rpc.rs:19`; `main.rs:28-38`.
 
@@ -382,7 +382,7 @@ Ogni connessione crea uno std::thread conservato nel vector; la fine del client 
 
 **Beneficio:** arresta crescita handle/RAM nelle sessioni lunghe. **Test:** UI idle 1/8/24 ore, handle count/private bytes/vector e latenza RPC. Il polling visibile può generare circa 1,6 connessioni/s, stima da timer, non misura.
 
-### I2 — P1: input e numero connessioni IPC senza limite
+### I2 - P1: input e numero connessioni IPC senza limite
 
 **Evidenza:** `libs/ipc/ipc_server.cpp:86-100,246-270,308`.
 
@@ -390,7 +390,7 @@ Buffer fino a newline illimitato, handler bloccanti per connessione senza cap. B
 
 **Consiglio:** massimo messaggio, massimo client/work item, deadline e send-all. **Beneficio:** disponibilità anche con client difettoso o abuso locale. **Test:** input senza newline, molti client idle, short writes, JSON malformato.
 
-### I3 — P2: IPC locale senza autenticazione
+### I3 - P2: IPC locale senza autenticazione
 
 **Evidenza:** `libs/ipc/ipc_server.cpp:105-239,300-308`.
 
@@ -398,7 +398,7 @@ Scelta già dichiarata dal progetto: un processo locale con accesso alla porta p
 
 **Consiglio:** definire threat model e valutare named pipe con ACL utente/integrity o token con lifecycle adeguato anche al plugin. Prima di tutto imporre limiti I2.
 
-### A1 — P1, blocco consigliato per la release: autenticità update opzionale
+### A1 - P1, blocco consigliato per la release: autenticità update opzionale
 
 **Evidenza:** `app/updater/src-tauri/src/manifest.rs:25-56`; `download.rs:37-54`.
 
@@ -408,13 +408,13 @@ Dimensione/hash/firma hanno default vuoti e controlli saltati se assenti. Un man
 
 **Beneficio:** aggiornamento realmente autenticato. **Costo:** vecchi manifest incompleti devono fallire chiusi. **Test:** campi mancanti/vuoti/malformati, firme invalide, nessuna applicazione su errore.
 
-### A2 — P1: versione updater discordante
+### A2 - P1: versione updater discordante
 
 **Evidenza:** `app/updater/src-tauri/Cargo.toml:3` = 1.0.0; `tauri.conf.json:4` = 1.0.1; `src/versions.rs:22-23` legge CARGO_PKG_VERSION.
 
 **Consiglio:** singola fonte o gate di uguaglianza Cargo/Tauri/manifest. **Beneficio:** evita proposta ripetuta dello stesso aggiornamento. **Test:** manifest della versione corrente deve risultare UpToDate.
 
-### A3 — P1: apply componenti senza rollback completo
+### A3 - P1: apply componenti senza rollback completo
 
 **Evidenza:** `app/updater/src-tauri/src/apply.rs:60-95`; `main.rs:340-361`.
 
@@ -422,15 +422,15 @@ Spostamenti in .old e sostituzioni file avvengono progressivamente; errore inter
 
 **Consiglio:** journal di apply e rollback verificato, swap directory dove possibile; aggiornare versioni persistite solo al completamento effettivo. **Beneficio:** update fallito non rompe l'avvio né reintroduce DLL mancanti. **Test:** errore al file N, crash, file bloccato, disco pieno e riavvio successivo.
 
-### A4 — P2: progress updater emesso per chunk da 64 KiB
+### A4 - P2: progress updater emesso per chunk da 64 KiB
 
 **Evidenza:** `app/updater/src-tauri/src/http.rs:155-168`; `main.rs:261-277`.
 
 Ogni chunk prende mutex, serializza stato completo ed emette evento Tauri. A 100 MiB/s il calcolo teorico è circa 1.600 eventi/s, non un benchmark.
 
-**Consiglio:** contatori continui, notifiche 4–10 Hz e sempre sugli eventi terminali. **Beneficio:** meno CPU/render/churn della coda. **Test:** eventi/s e tempo main thread durante download veloce.
+**Consiglio:** contatori continui, notifiche 4-10 Hz e sempre sugli eventi terminali. **Beneficio:** meno CPU/render/churn della coda. **Test:** eventi/s e tempo main thread durante download veloce.
 
-### A5 — P2: firma update legge l'intero archivio in RAM
+### A5 - P2: firma update legge l'intero archivio in RAM
 
 **Evidenza:** `app/updater/src-tauri/src/download.rs:58-95`.
 
@@ -440,7 +440,7 @@ SHA-256 legge a blocchi, poi `verify_signature` usa `std::fs::read` sull'intero 
 
 **Beneficio:** picchi RAM più prevedibili sugli update grandi. **Test:** private bytes e I/O con pacchetti grandi, limite dichiarato assente/falso, errore firma.
 
-### A6 — P2: quit può attendere rete gamelist
+### A6 - P2: quit può attendere rete gamelist
 
 **Evidenza:** `app/recorder/src/main.cpp:3374-3381`; `libs/gamelist/gamelist.cpp:247-250,493-501`.
 
@@ -448,7 +448,7 @@ Shutdown fa join del worker che può essere dentro WinHTTP sincrono con timeout 
 
 **Consiglio:** cancellazione coordinata request/session e completamento controllato, non detach. **Beneficio:** uscita/update più rapidi sotto errori rete. **Test:** DNS/proxy bloccati e tempo close→exit.
 
-### A7 — P2: log ruota solo all'apertura e flush sincrono per scrittura
+### A7 - P2: log ruota solo all'apertura e flush sincrono per scrittura
 
 **Evidenza:** `libs/logging/logging.cpp:41-63,99-133`.
 
@@ -510,7 +510,7 @@ Per migliorare davvero l'app, le priorità non sono micro-ottimizzazioni isolate
 
 ---
 
-## Phase 1 progress / evidence — R1, I1, I2 (implementation; review pending)
+## Phase 1 progress / evidence - R1, I1, I2 (implementation; review pending)
 
 Only phase 1 is implemented in this working tree. The original audit above is
 preserved verbatim; its historical “not applied” statements describe the audit
@@ -609,13 +609,13 @@ bounds are not fairness/rate-limiting/authentication guarantees (I3 stays pendin
 R2 clip selection/reordering, disk replay R3/R4 and save/mux integration are not
 silently marked fixed by the new retention index.
 
-All other audit IDs remain pending: **V1–V8, R2–R12, T1–T4, U1–U6, I3, A1–A7**,
+All other audit IDs remain pending: **V1-V8, R2-R12, T1-T4, U1-U6, I3, A1-A7**,
 plus the evolutionary experiments in section 9. Parent review is required before
 any phase-2 work or authorization to proceed.
 
 ---
 
-## Phase 2A progress / evidence — R2, R3, R4, T1–T4 (implementation; review pending)
+## Phase 2A progress / evidence - R2, R3, R4, T1-T4 (implementation; review pending)
 
 Phase 1 was independently reviewed and accepted by the parent before this stage;
 its earlier “review pending” text is preserved as historical evidence. This stage
@@ -771,7 +771,7 @@ Existing packet encode sinks/disk finalization/probing remain synchronous (R5).
 
 Phase 2B must address original replacement/temp-path collision and filesystem/DB
 catalog/bookmark durability; T2 here fixes timeline values/error reporting only.
-All other audit IDs remain pending: **V1–V8, R5–R12, U1–U6, I3, A1–A7**, plus
+All other audit IDs remain pending: **V1-V8, R5-R12, U1-U6, I3, A1-A7**, plus
 section-9 experiments and the **phase-5 disk-budget Settings UI control**. No
 phase-2B or later work is authorized by this completion report.
 
@@ -783,7 +783,7 @@ the test target, not a rebuilt/instrumented copy of the system FFmpeg libraries.
 
 ---
 
-## Phase 2B entry checkpoint — reopened phase-2A concat continuity (review pending)
+## Phase 2B entry checkpoint - reopened phase-2A concat continuity (review pending)
 
 Full report and CLAUDE.md read before writing. Parent's retained LOW review had
 accepted phase 2A with a request for continuous-clock disk-save evidence. That
@@ -857,7 +857,7 @@ fix, then resume authorized R7/R8/U6 and the narrow lifecycle prerequisite.
 
 ---
 
-## Phase 2B U6 progress — incomplete, not accepted
+## Phase 2B U6 progress - incomplete, not accepted
 
 A subsequent writer began the approved engine-only delete/rename routing and an
 operation-specific SQLite journal implementation. The Rust UI delete/rename

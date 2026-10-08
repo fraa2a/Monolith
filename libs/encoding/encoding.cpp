@@ -414,7 +414,7 @@ template <typename ImplT>
 static void drain_video(ImplT* impl)
 {
     // Zero-initialised stack packet: receive overwrites it, unref after each
-    // use — no per-frame heap allocation in the hot path.
+    // use - no per-frame heap allocation in the hot path.
     AVPacket pkt{};
     while (avcodec_receive_packet(impl->ctx, &pkt) == 0) {
         EncodedPacket ep;
@@ -441,7 +441,7 @@ static int submit_current_frame(ImplT* impl, int64_t pts)
 {
     // PTS: clock-locked frame index from the pacer (preferred), or fall back
     // to the internal counter when pts < 0.  The pacer is the single source
-    // of timing truth — it emits exactly fps frames per real second (dup/skip),
+    // of timing truth - it emits exactly fps frames per real second (dup/skip),
     // so this PTS advances at wall-clock rate.
     if (pts >= 0) {
         impl->frame->pts = pts;
@@ -572,7 +572,7 @@ struct AudioEncoder::Impl {
     int             swr_src_ch   = 0;
     AVSampleFormat  swr_src_fmt  = AV_SAMPLE_FMT_NONE;
     // Reusable swr output planes (grown on demand). push_pcm runs every
-    // ~10 ms per track — per-call alloc/free is avoidable churn.
+    // ~10 ms per track - per-call alloc/free is avoidable churn.
     uint8_t**       conv_data    = nullptr;
     int             conv_linesize = 0;
     int             conv_cap     = 0; // capacity in samples

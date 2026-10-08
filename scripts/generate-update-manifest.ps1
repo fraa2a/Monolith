@@ -6,14 +6,14 @@ Generate update-manifest.json for a Monolith release: per-component zips
 .DESCRIPTION
 The component updater (Updater.exe, app/updater) fetches
 releases/latest/download/update-manifest.json and downloads ONLY the
-components whose version is higher than the installed one — a UI-only
+components whose version is higher than the installed one - a UI-only
 release never re-downloads the engine. Each component is versioned
 independently (CMakeLists project() for the engine, the two tauri.conf.json
 files for ui/updater); the git tag only names the release and versions the
 full installer.
 
 Signing uses the same Ed25519 key pair WinSparkle used (CI secret
-WINSPARKLE_ED_PRIVATE_KEY, pure Ed25519 over the zip bytes — openssl
+WINSPARKLE_ED_PRIVATE_KEY, pure Ed25519 over the zip bytes - openssl
 pkeyutl -sign -rawin; the public half is embedded in Updater.exe).
 
 .EXAMPLE

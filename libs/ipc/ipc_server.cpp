@@ -25,12 +25,12 @@
 #include <thread>
 #include <vector>
 
-// These match the Cmd enum in main.cpp — kept in sync manually.
+// These match the Cmd enum in main.cpp - kept in sync manually.
 static constexpr UINT kCmdSaveReplay     = 1001;
 static constexpr UINT kCmdRecordingStart = 1002;
 static constexpr UINT kCmdRecordingStop  = 1003;
 static constexpr UINT kCmdPauseResume    = 1004;
-// Matches WM_SETTINGS_RELOAD (WM_APP + 2) in main.cpp — kept in sync manually.
+// Matches WM_SETTINGS_RELOAD (WM_APP + 2) in main.cpp - kept in sync manually.
 static constexpr UINT kMsgSettingsReload = WM_APP + 2;
 
 // Pending accept queue only; kMaxClients separately caps accepted workers.
@@ -184,7 +184,7 @@ void handle_client(SOCKET client)
                         // Updater.exe asks the engine to close the UI process
                         // so ui\* can be swapped on disk. Runs directly on
                         // this IPC thread (blocks up to ~3s: graceful close,
-                        // then terminate) — the reply is the confirmation
+                        // then terminate) - the reply is the confirmation
                         // that the files are safe to replace.
                         if (!g_update_close_ui_fn) {
                             response = make_error(req_id, -32601, "Update control unavailable");
@@ -197,7 +197,7 @@ void handle_client(SOCKET client)
                         // engine files can be swapped. Graceful by design:
                         // WM_CLOSE → WM_DESTROY stops any recording cleanly.
                         // The reply may never arrive (the engine tears its
-                        // IPC server down during shutdown) — the updater
+                        // IPC server down during shutdown) - the updater
                         // polls for the port to close instead.
                         PostMessage(g_hwnd, WM_CLOSE, 0, 0);
                         response = make_result(req_id, {{"status", "accepted"}});
@@ -274,7 +274,7 @@ void handle_client(SOCKET client)
                         response = make_error(req_id, -32601, "Method not found");
                     }
                 } catch (...) {
-                    // Handler failure (bad_alloc, DB error...) — not a parse
+                    // Handler failure (bad_alloc, DB error...) - not a parse
                     // problem; report it as an internal error.
                     response = make_error(req_id, -32603, "Internal error");
                 }

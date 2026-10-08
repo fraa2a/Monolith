@@ -1,8 +1,8 @@
-// Monolith Updater (Updater.exe) — component self-updater.
+// Monolith Updater (Updater.exe) - component self-updater.
 //
 // Owns the whole update flow: fetch update-manifest.json from the releases
 // page, compare per-component versions (engine / ui / updater are versioned
-// independently — a UI-only release never touches the engine), download ONLY
+// independently - a UI-only release never touches the engine), download ONLY
 // the components whose version changed, verify sha256 + Ed25519 (same key
 // pair WinSparkle used), stage and swap files on disk (rename-to-.old dance),
 // and relaunch the engine. The recorder spawns this exe with --auto at
@@ -187,7 +187,7 @@ fn run_check(app: &AppHandle, auto: bool) {
 
 /// While the user decides (Available), mirror the engine's recording state
 /// so Update-now can be disabled during a recording (the engine restarts to
-/// apply engine updates — that would kill an active clip).
+/// apply engine updates - that would kill an active clip).
 fn spawn_recording_watch(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || loop {
@@ -236,7 +236,7 @@ fn run_pipeline(app: &AppHandle) {
 
     let manifest = core().manifest.lock().unwrap().clone();
     let Some(m) = manifest else {
-        fail(app, "manifest missing — check for updates again");
+        fail(app, "manifest missing - check for updates again");
         return;
     };
 
@@ -322,7 +322,7 @@ fn run_pipeline(app: &AppHandle) {
     //    must exit), then relaunch the engine, then self-update last.
     core().state.lock().unwrap().speed_bps = 0;
     if engine_rpc::recording() {
-        fail(app, "a recording is in progress — stop it and retry");
+        fail(app, "a recording is in progress - stop it and retry");
         return;
     }
     set_phase(app, Phase::Applying);
@@ -350,7 +350,7 @@ fn run_pipeline(app: &AppHandle) {
         if engine_was_running {
             engine_rpc::request_engine_exit();
             if !engine_rpc::wait_engine_exit(Duration::from_secs(20)) {
-                fail(app, "the engine did not exit in time — close Monolith and retry");
+                fail(app, "the engine did not exit in time - close Monolith and retry");
                 return;
             }
         }

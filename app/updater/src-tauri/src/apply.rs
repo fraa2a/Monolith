@@ -42,7 +42,7 @@ fn wide(path: &Path) -> Vec<u16> {
 
 fn to_old(path: &Path) -> Result<(), String> {
     // Renaming a running image or a loaded DLL is legal on Windows; deleting
-    // is not. Park replaced files as *.old — swept on the next launch.
+    // is not. Park replaced files as *.old - swept on the next launch.
     let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     name.push(".old");
     let old = path.with_file_name(name);
@@ -75,7 +75,7 @@ fn place_file(staged: &Path, target: &Path) -> Result<(), String> {
 }
 
 /// Moves every file of the extracted component tree into place under dest.
-/// Files already present in dest but not part of the tree are left alone —
+/// Files already present in dest but not part of the tree are left alone -
 /// the app root also hosts Updater.exe and user-adjacent files that are not
 /// part of the engine zip.
 pub fn place_tree(src: &Path, dest: &Path) -> Result<(), String> {

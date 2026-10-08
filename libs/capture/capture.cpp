@@ -67,7 +67,7 @@ struct DisplayCapture::Impl {
 
     // GPU pre-readback downscale (see CaptureOptions::output_width/height).
     // Absent/null when the device doesn't expose D3D11 video support, or
-    // while no downscale is configured — the CopyResource(native) path is
+    // while no downscale is configured - the CopyResource(native) path is
     // then used unconditionally, identical to pre-downscale behavior.
     winrt::com_ptr<ID3D11VideoDevice>              video_device;
     winrt::com_ptr<ID3D11VideoContext>             video_ctx;
@@ -311,7 +311,7 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
         impl_->last_size    = item.Size();
 
         // CreateFreeThreaded: callbacks arrive on the WinRT thread pool regardless
-        // of the calling thread's apartment — required for Win32 desktop apps.
+        // of the calling thread's apartment - required for Win32 desktop apps.
         impl_->pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
             impl_->winrt_device,
             wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -483,7 +483,7 @@ void DisplayCapture::stop()
     // Spike-quality sync: 30ms >> max callback duration at 60fps (16ms).
     Sleep(30);
 
-    // Revoke the handler — no new invocations after this returns.
+    // Revoke the handler - no new invocations after this returns.
     impl_->pool.FrameArrived(impl_->frame_token);
 
     if (impl_->session) { impl_->session.Close(); impl_->session = nullptr; }

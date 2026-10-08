@@ -5,7 +5,19 @@
     "sqlite3",
     {
       "name": "ffmpeg",
-      "features": ["avcodec", "avformat", "swscale", "swresample", "amf", "nvcodec", "qsv", "x264", "x265", "aom", "gpl"]
+      "features": [
+        "avcodec",
+        "avformat",
+        "swscale",
+        "swresample",
+        "amf",
+        "nvcodec",
+        "qsv",
+        "x264",
+        "x265",
+        "aom",
+        "gpl"
+      ]
     }
   ]
 }

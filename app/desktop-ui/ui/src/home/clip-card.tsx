@@ -61,7 +61,7 @@ export const ClipCard = memo(function ClipCard(
   // Icon is always resolved locally: prefer the icon embedded in the game's
   // own executable (no network, no cache dependency), then fall back to
   // whatever list_clips already resolved from the local Discord artwork
-  // cache (game_icon_url) — never fetched here, so opening the library never
+  // cache (game_icon_url) - never fetched here, so opening the library never
   // triggers a network call. A game newly added to the cache picks up its
   // icon on the next scheduled refresh (see game_catalog::refresh_stale).
   useEffect(() => {
@@ -138,7 +138,7 @@ export const ClipCard = memo(function ClipCard(
     };
 
     video.onerror = () => {
-      // Container/codec unsupported by WebView2 (e.g. .mkv) — hand off to the
+      // Container/codec unsupported by WebView2 (e.g. .mkv) - hand off to the
       // engine regenerator instead of silently giving up.
       if (needsThumb) {
         void fallbackToEngine().finally(finish);

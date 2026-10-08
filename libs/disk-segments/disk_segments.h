@@ -9,7 +9,7 @@
 
 namespace disk_segments {
 
-// Rolling keyframe-aligned buffer of clip segments on disk — the "disk"
+// Rolling keyframe-aligned buffer of clip segments on disk - the "disk"
 // storage mode for the replay buffer. Mirrors replay_buffer::ReplayBuffer's
 // public surface so that class can route on its Config::storage. Segments are
 // ~5 s long (rolled on video keyframes); age and payload retention keep
@@ -41,7 +41,7 @@ public:
     void set_audio_params(encoding::AudioStreamParams const& p);
     void set_audio_params(std::vector<encoding::AudioStreamParams> const& p);
 
-    // Thread-safe — call from encoder sink callbacks.
+    // Thread-safe - call from encoder sink callbacks.
     void push(encoding::EncodedPacket pkt);
 
     // Concatenates the retained window [newest − duration, newest] into a

@@ -18,7 +18,7 @@ struct RecordingState {
     uint64_t clip_generation = 0;
     // Engine component version (MONOLITH_VERSION_STRING). Surfaced through
     // get_status so the Settings UI can show engine + interface versions
-    // side by side — the two are versioned independently.
+    // side by side - the two are versioned independently.
     std::string version;
 };
 
@@ -51,7 +51,7 @@ using AddBookmarkFn = std::function<std::string()>;
 // UI-driven selection of which detected game to record/clip when several are
 // running. `exe` is the lowercased executable basename (stable across restarts);
 // `pid` is an optional live hint. Empty exe + pid 0 clears the selection (auto).
-// Called on an IPC client thread — the handler must only touch synchronized
+// Called on an IPC client thread - the handler must only touch synchronized
 // state and defer engine work to the message loop.
 using SelectGameFn = std::function<void(const std::string& exe, uint32_t pid)>;
 
@@ -75,7 +75,7 @@ using UpdateCloseUiFn = std::function<void()>;
 // recording_add_bookmark directly on the IPC thread. `update_close_ui_fn`
 // handles update_close_ui (blocks until the UI process is gone).
 // `reload_settings` posts WM_APP+2 to hwnd; `update_engine_exit` posts
-// WM_CLOSE to hwnd (graceful shutdown — stops any recording first).
+// WM_CLOSE to hwnd (graceful shutdown - stops any recording first).
 void start(HWND hwnd,
            std::function<RecordingState()> status_fn,
            ClipMutationFn mutation_fn = nullptr,

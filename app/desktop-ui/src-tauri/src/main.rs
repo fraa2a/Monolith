@@ -3,7 +3,7 @@
 // protocol) instead of navigating to a local loopback HTTP server. The engine
 // (Monolith.exe) is a separate process, reached only over JSON-RPC on
 // 127.0.0.1:45991 for clip mutations / settings reload / recorder control
-// (engine_rpc.rs) — that transport is unchanged and also used by the Stream
+// (engine_rpc.rs) - that transport is unchanged and also used by the Stream
 // Deck plugin. See docs/DECISIONS.md (ADR superseding ADR-0011/0012).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

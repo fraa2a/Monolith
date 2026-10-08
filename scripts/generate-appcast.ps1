@@ -49,7 +49,7 @@ function Format-Pem([string] $raw) {
         $lines = [regex]::Matches($body, '.{1,64}') | ForEach-Object { $_.Value }
         return "-----BEGIN $label-----`n" + ($lines -join "`n") + "`n-----END $label-----`n"
     }
-    # No recognizable markers — pass through unchanged (openssl will report the real error).
+    # No recognizable markers - pass through unchanged (openssl will report the real error).
     return $t + "`n"
 }
 

@@ -1,9 +1,9 @@
-/* Monolith Updater — component self-update window.
+/* Monolith Updater - component self-update window.
    Design tokens inherited from the main app's styles.css (dark monochrome,
    desaturated lavender-ice accent, Bahnschrift + Cascadia Mono) so the window
    reads as part of the product. The signature element is the buffer bar: a
    hairline meter pinned to the window's bottom edge that fills as update
-   bytes arrive — the updater window "fills" like the replay buffer. */
+   bytes arrive - the updater window "fills" like the replay buffer. */
 
 :root {
   --bg: #000000;

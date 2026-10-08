@@ -65,7 +65,7 @@ public:
     DisplayCapture(const DisplayCapture&)            = delete;
     DisplayCapture& operator=(const DisplayCapture&) = delete;
 
-    // cb is invoked from the WGC thread pool — must be thread-safe.
+    // cb is invoked from the WGC thread pool - must be thread-safe.
     // show_border = false requests yellow-border suppression via
     // GraphicsCaptureSession::IsBorderRequired(false); the OS may deny it.
     bool start(HMONITOR hmon, FrameCallback cb, bool show_border = false);

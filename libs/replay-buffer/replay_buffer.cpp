@@ -257,14 +257,14 @@ static std::wstring write_clip(
 
 void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
 {
-    // Drop concurrent save requests — don't queue.
+    // Drop concurrent save requests - don't queue.
     bool expected = false;
     if (!impl_->saving.compare_exchange_strong(expected, true))
         return;
 
     // Disk mode: hand off to the segment buffer (it owns its own save
     // thread); the facade's saving flag mirrors it so stats() stays honest.
-    // Read cfg/disk under the lock — configure() can swap storage modes and
+    // Read cfg/disk under the lock - configure() can swap storage modes and
     // reset the disk buffer concurrently (settings reload thread). RAM mode
     // (disk == nullptr, the normal configuration) falls through to the
     // snapshot path below.

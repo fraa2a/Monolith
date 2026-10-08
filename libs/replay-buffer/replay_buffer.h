@@ -53,7 +53,7 @@ public:
     void set_audio_params(encoding::AudioStreamParams const& p);
     void set_audio_params(std::vector<encoding::AudioStreamParams> const& p);
 
-    // Thread-safe — call from encoder sink callbacks.
+    // Thread-safe - call from encoder sink callbacks.
     void push(encoding::EncodedPacket pkt);
 
     // Snapshot the ring buffer and save a clip asynchronously.

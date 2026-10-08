@@ -112,7 +112,7 @@ export function App() {
   }, [clips]);
 
   // Card-level mutations (favorite, thumbnail capture, duration fix) are all
-  // patched optimistically via updateClip — a full catalog reload per event
+  // patched optimistically via updateClip - a full catalog reload per event
   // caused a reload storm when many cards were missing thumbnails.
   const handleCardChanged = useCallback((next: Clip) => {
     updateClip(next);
