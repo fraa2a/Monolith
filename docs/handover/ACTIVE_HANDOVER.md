@@ -2,14 +2,15 @@
 
 Updated: 2026-10-09
 
-## Current checkpoint: audit correction PR #8 in progress
+## Current checkpoint: audit correction PR #8, local integration
 
-- User authorized the complete 2026-10-09 audit corrections in one PR: https://github.com/fraa2a/Monolith/pull/8. Branch `fix/audit-errors`, baseline `2e8c4ec1616215344b968a5f09a004cf9df6d494`. No merge or release is requested.
-- Remote checkpoint `3b77da296507f6f68b0888efeb9da9f3158b8d0a` preserves initial engine helpers, host/UI/updater and logger changes. Core CI passed on that checkpoint. Windows CI exposed asymmetric process-path normalization and obsolete Tauri protocol-asset configuration; followups are being integrated.
-- Local worktrees were reset twice by the execution environment before final integration was published. Recover from the remote branch; commit and push each subsequent correction promptly. Do not infer final verification from tests of an earlier local tree.
-- The 45-finding implementation scope and runtime limits are in `docs/audit/2026-10-09-fixes.md`. Decisions ADR-0022/0023 describe changed contracts. Engine 1.6.3, UI 1.5.1, updater 1.0.3, Stream Deck 1.4.1.
-- Final native mutation routing, storage journal and recording lifecycle integration are pending reconstruction and fresh checks at this checkpoint. Keep PR draft until final review and verification are assessed.
-- Actual Windows capture/audio hardware, WebView2 media behavior, power loss and clean installation remain release checks. Historical entries below do not override this checkpoint or the user's current authorization.
+- User requested direct continuation without subagents and only essential remaining fixes/commits. No subagents were used in this continuation.
+- Branch `fix/audit-errors` retains remote checkpoint `3b77da2`. Recovered engine/UI/host/updater commits were cherry-picked. Local version/documentation commits were preserved.
+- Integrated recorder auto-start with replay disabled, deferred settings/target restarts, timestamped direct audio, operational IPC status, session bookmark publication/retry and shutdown drains. Storage now validates identities/revisions, serializes recoverable trims and restores bookmark sidecars. Added the missing `clip_capture_thumb` engine route and removed obsolete Tauri asset-protocol configuration.
+- Native suites, Rust suites, Windows-target updater check, both frontend builds, browser fixtures, Stream Deck and updater ordering checks pass locally. Exact scope/limits are in `docs/audit/2026-10-09-fixes.md`.
+- M05 full asynchronous recording writes/lifecycle and M06 automatic audio device recovery remain open. Abrupt exit before a finalization sidecar is written can still lose live bookmarks. Native Windows recorder/Tauri compilation, hardware recording/playback and clean update/install tests remain pending.
+- The automatic approval reviewer rejected `git push origin fix/audit-errors`, interpreting the current authorization as local commits only. Do not bypass it. User approval for publishing is needed before updating https://github.com/fraa2a/Monolith/pull/8. No merge or release was requested.
+- Engine 1.6.3, UI 1.5.1, updater 1.0.3, Stream Deck 1.4.1. Historical entries below do not override this checkpoint.
 
 
 ## Current checkpoint: screenshot-based desktop UI redesign

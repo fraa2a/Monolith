@@ -353,3 +353,9 @@ Retain legacy ZIP signatures and field compatibility. Add a separate Ed25519 sig
 Sync a stable updater recovery copy outside the replacement plan before journaling. The engine detects pending recovery and launches that entry. Retain actual engine process handles, resolve executable path aliases consistently, and require version readiness from a live restarted child. Serialize cancellation against Applying and order snapshots/events using monotonic revisions.
 
 Old clients accept the compatible manifest, but their first upgrade still runs old transaction code. New recovery cannot fix an interruption before the stable entry has been installed; reinstall remains the migration fallback. Clean Windows installation and power-loss tests remain release requirements.
+
+### Audit continuation: native mutation and publication integration
+
+The recorder now verifies catalog/clip identity while holding the catalog mutation lock; trim, bookmark edits and captured thumbnails also require the current media revision. Trim journals the original media backup and updates duration, revision and bookmarks in one SQLite transaction. A prepared operation restores the original on recovery; a committed operation cleans its workspace. Recovery does not imply filesystem/SQLite atomicity or certified power-loss durability.
+
+Manual recording publication owns the media and a bounded session bookmark batch until catalog/bookmark writes complete. Failed publication retains its finalization state for retry and gates new recording starts. Recovery sidecars are attached by reconciliation; live markers before finalization are not crash-durable. Captured thumbnails use a validated 32-hex token under the fixed local `Monolith/thumb-upload` root and are copied into the catalog thumbnail folder by the engine. Rust remains a read-only catalog consumer.
