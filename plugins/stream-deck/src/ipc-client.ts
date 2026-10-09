@@ -78,13 +78,15 @@ export class IpcClient {
     private onLine(line: string): void {
         if (!line) return;
         try {
-            const msg = JSON.parse(line) as { id?: number; result?: unknown; error?: unknown };
+            const msg = JSON.parse(line) as { jsonrpc?: string; id?: number; result?: unknown; error?: unknown };
             if (!msg || typeof msg.id !== 'number') return;
             const handlers = this.pending.get(msg.id);
             if (!handlers) return;
             this.pending.delete(msg.id);
             clearTimeout(handlers[2]);
-            if (msg.error !== undefined) {
+            if (msg.jsonrpc !== '2.0' || Object.prototype.hasOwnProperty.call(msg, 'result') === Object.prototype.hasOwnProperty.call(msg, 'error')) {
+                handlers[1](new Error('IPC: invalid response envelope'));
+            } else if (msg.error !== undefined) {
                 handlers[1](msg.error);
             } else {
                 handlers[0](msg.result);
@@ -118,7 +120,11 @@ export class IpcClient {
 
     async getStatus(): Promise<RecordingStatus | null> {
         try {
-            return (await this.request('get_status')) as RecordingStatus;
+            const status = await this.request('get_status');
+            if (!status || typeof status !== 'object') return null;
+            const fields = ['recording', 'paused', 'replay_enabled', 'recording_enabled'] as const;
+            if (!fields.every(key => typeof (status as Record<string, unknown>)[key] === 'boolean')) return null;
+            return status as RecordingStatus;
         } catch {
             return null;
         }

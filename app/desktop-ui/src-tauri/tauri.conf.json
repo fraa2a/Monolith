@@ -12,9 +12,9 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self'; img-src 'self' media: http://media.localhost data:; media-src 'self' media: http://media.localhost; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'",
       "assetProtocol": {
-        "enable": true,
+        "enable": false,
         "scope": []
       }
     }
@@ -22,6 +22,8 @@
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": ["../../../app/assets/exeicon.ico"]
+    "icon": [
+      "../../../app/assets/exeicon.ico"
+    ]
   }
 }

@@ -39,12 +39,14 @@ param(
     [Parameter(Mandatory)] [string] $BaseUrl,
     [string] $Tag = "",
     [string] $NotesUrl = "",
-    # PEM text of the Ed25519 private key (not a path); empty = unsigned manifest.
+    # PEM text of the Ed25519 private key (not a path).
     [string] $PrivateKeyPem = "",
-    [string] $OutputPath = "update-manifest.json"
+    [string] $OutputPath = "update-manifest.json",
+    [string] $PublicKeyBase64 = "GgyaSRupUFn5Omaa90w0H2xDTrqff2DdzRDtbeplvKA="
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($PrivateKeyPem)) { throw "The release signing key is required." }
 
 # Reconstruct canonical PEM from a potentially whitespace-mangled value.
 # GitHub secrets pasted as a single line lose their newlines; openssl's PEM
@@ -74,6 +76,7 @@ function Resolve-Openssl {
 function Get-EdSignature([string] $FilePath, [string] $openssl) {
     $keyFile = New-TemporaryFile
     $sigFile = New-TemporaryFile
+    $pubFile = New-TemporaryFile
     try {
         [System.IO.File]::WriteAllText($keyFile.FullName, (Format-Pem $PrivateKeyPem))
         & $openssl pkey -in $keyFile.FullName -noout 2>&1 | Out-Null
@@ -88,9 +91,16 @@ function Get-EdSignature([string] $FilePath, [string] $openssl) {
         if ($sigBytes.Length -ne 64) {
             throw "Unexpected Ed25519 signature length: $($sigBytes.Length) (want 64)"
         }
+        $public = [Convert]::FromBase64String($PublicKeyBase64)
+        if ($public.Length -ne 32) { throw "Invalid release public key" }
+        [byte[]] $prefix = 0x30,0x2a,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x03,0x21,0x00
+        [System.IO.File]::WriteAllBytes($pubFile.FullName, [byte[]]($prefix + $public))
+        & $openssl pkeyutl -verify -pubin -keyform DER -inkey $pubFile.FullName -rawin `
+            -in $FilePath -sigfile $sigFile.FullName | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Release signature does not match the updater public key." }
         return [Convert]::ToBase64String($sigBytes)
     } finally {
-        Remove-Item $keyFile.FullName, $sigFile.FullName -Force -ErrorAction SilentlyContinue
+        Remove-Item $keyFile.FullName, $sigFile.FullName, $pubFile.FullName -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -98,33 +108,37 @@ function Get-Component([string] $Key, [string] $Version, [string] $Zip, [string]
     if (-not (Test-Path $Zip)) { throw "Component zip not found: $Zip" }
     $item = Get-Item $Zip
     $sha256 = (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLowerInvariant()
-    $edSignature = ""
-    if ($PrivateKeyPem -ne "") {
-        $edSignature = Get-EdSignature $Zip $openssl
-        Write-Host "$Key signed (edSignature: $($edSignature.Substring(0,16))...)"
-    } else {
-        Write-Warning "No private key supplied - emitting UNSIGNED manifest entry for $Key. Updater.exe clients with the public key configured will reject it."
-    }
+    $edSignature = Get-EdSignature $Zip $openssl
+    $metadataFile = New-TemporaryFile
+    try {
+        $message = "monolith-component-v1`n$Key`n$Version`n$($item.Length)`n$sha256`n"
+        [System.IO.File]::WriteAllText($metadataFile.FullName, $message, [System.Text.UTF8Encoding]::new($false))
+        $metadataSignature = Get-EdSignature $metadataFile.FullName $openssl
+    } finally { Remove-Item $metadataFile.FullName -Force -ErrorAction SilentlyContinue }
     return [ordered] @{
         version     = $Version
         url         = "$BaseUrl/$(Split-Path $Zip -Leaf)"
         size        = $item.Length
         sha256      = $sha256
+        # Compatibility with installed schema-1 clients that expected snake_case.
+        ed_signature = $edSignature
         edSignature = $edSignature
+        metadataSignature = $metadataSignature
     }
 }
 
-$openssl = $null
-if ($PrivateKeyPem -ne "") { $openssl = Resolve-Openssl }
+$openssl = Resolve-Openssl
 
+$publishedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
 $manifest = [ordered] @{
     schema       = 1
-    publishedAt  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'",
-                    [System.Globalization.CultureInfo]::InvariantCulture)
+    publishedAt  = $publishedAt
     release      = [ordered] @{
         tag      = $Tag
         notesUrl = $NotesUrl
+        notes_url = $NotesUrl
     }
+    published_at = $publishedAt
     components   = [ordered] @{
         engine  = Get-Component "engine"  $EngineVersion  $EngineZip  $openssl
         ui      = Get-Component "ui"      $UiVersion      $UiZip      $openssl

@@ -22,15 +22,9 @@ export function CollectionPicker({ clip, onClose, onChanged }: {
     setLoading(true);
     setError(null);
     try {
-      const list = await collectionsApi.list();
-      const flags = await Promise.all(
-        list.map(async (c) => {
-          const items = await collectionsApi.clips(c.id);
-          return items.some((item) => item.source === clip.source && item.id === clip.id);
-        }),
-      );
+      const [list, ids] = await Promise.all([collectionsApi.list(), collectionsApi.memberships(clip)]);
       setCollections(list);
-      setMembership(new Set(list.filter((_, i) => flags[i]).map((c) => c.id)));
+      setMembership(new Set(ids));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -97,6 +91,7 @@ export function CollectionPicker({ clip, onClose, onChanged }: {
       <div class="modal" onMouseDown={(e) => e.stopPropagation()}>
         <h3 class="modal-title">Add to collection</h3>
 
+        {collections.some((c) => (c.unresolved_count ?? 0) > 0) && <p class="modal-msg" role="status">Legacy memberships need confirmation. Re-add the intended clips to restore them.</p>}
         <div class="collection-picker">
           {loading
             ? <span class="loading-dots"><i /><i /><i /></span>

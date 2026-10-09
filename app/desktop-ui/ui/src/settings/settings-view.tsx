@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { getVersion } from "@tauri-apps/api/app";
-import { type Config, getConfig, getRuntimeStatus, type RuntimeStatus, saveConfig } from "../lib/settings-api.ts";
+import { type Config, getConfig, getRuntimeStatus, type RuntimeStatus, editConfig, flushConfig, settingsDraft, settingsSaveState, settingsError } from "../lib/settings-api.ts";
 import { fetchEngineStatus, openUpdater } from "../lib/api.ts";
 import { monitorDisplayName } from "../lib/format.ts";
 import { AudioSettings } from "./audio-settings.tsx";
@@ -69,26 +69,12 @@ const BITRATE_PRESETS = [3, 5, 7, 10, 15, 20, 25, 30, 35, 40, 50, 70, 100];
 const FPS_PRESETS = [24, 30, 60, 120, 144];
 const REPLAY_PRESETS = [15, 30, 60, 120];
 
-type SaveState = "idle" | "saving" | "saved" | "error";
-
 interface Props {
   onClose: () => void;
 }
 
 function getPath(obj: any, path: string): any {
   return path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
-}
-
-function setPath(obj: any, path: string, value: any): any {
-  const copy = structuredClone(obj);
-  const keys = path.split(".");
-  let cur: any = copy;
-  for (let i = 0; i < keys.length - 1; i++) {
-    if (cur[keys[i]] == null || typeof cur[keys[i]] !== "object") cur[keys[i]] = {};
-    cur = cur[keys[i]];
-  }
-  cur[keys[keys.length - 1]] = value;
-  return copy;
 }
 
 function encoderLabel(
@@ -130,12 +116,12 @@ function findHotkeyConflicts(entries: { label: string; value: string }[]): Set<s
 }
 
 export function SettingsView({ onClose }: Props) {
-  const [draft, setDraft] = useState<Config | null>(null);
+  const draft = settingsDraft.value;
   const [rs, setRs] = useState<RuntimeStatus>({});
   const [page, setPage] = useState<Page>("general");
   const [query, setQuery] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const saveState = settingsSaveState.value;
+  const error = settingsError.value;
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [engineVersion, setEngineVersion] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -157,16 +143,10 @@ export function SettingsView({ onClose }: Props) {
     }
   };
 
-  const skipSave = useRef(true);
-  const saveTimer = useRef<number | undefined>(undefined);
-  const savedTimer = useRef<number | undefined>(undefined);
-
   useEffect(() => {
-    (async () => {
-      const [cfg, status] = await Promise.all([getConfig(), getRuntimeStatus()]);
-      setDraft(cfg);
-      setRs(status);
-    })();
+    void getConfig();
+    getRuntimeStatus().then(setRs);
+    return () => { void flushConfig(); };
   }, []);
 
   // Poll capabilities while Settings is open to reflect new devices and audio sessions.
@@ -185,31 +165,13 @@ export function SettingsView({ onClose }: Props) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  useEffect(() => {
-    if (!draft || skipSave.current) return;
-    setSaveState("saving");
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      const res = await saveConfig(draft);
-      if (res.ok) {
-        setSaveState("saved");
-        setError(null);
-        clearTimeout(savedTimer.current);
-        savedTimer.current = setTimeout(() => setSaveState("idle"), 1600) as unknown as number;
-      } else {
-        setSaveState("error");
-        setError(res.error ?? "save failed");
-      }
-    }, 500) as unknown as number;
-    return () => clearTimeout(saveTimer.current);
-  }, [draft]);
-
-  // Don't let the "saved" reset timer fire on an unmounted view.
-  useEffect(() => () => clearTimeout(savedTimer.current), []);
-
   const update = (path: string, value: any) => {
-    skipSave.current = false;
-    setDraft((d) => (d ? setPath(d, path, value) : d));
+    editConfig((config) => {
+      const keys = path.split(".");
+      let cur = config;
+      for (const key of keys.slice(0, -1)) cur = cur[key] ??= {};
+      cur[keys[keys.length - 1]] = value;
+    });
   };
 
   const current = PAGE_GROUPS.flatMap((group) => group.pages).find((entry) => entry.id === page)!;

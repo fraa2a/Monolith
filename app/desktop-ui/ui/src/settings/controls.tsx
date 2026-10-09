@@ -1,7 +1,14 @@
-import type { ComponentChildren } from "preact";
-import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { createContext, type ComponentChildren } from "preact";
+import { useContext, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../shell/icons.tsx";
 import { pickFolder } from "../lib/settings-api.ts";
+
+const FieldContext = createContext<{ label: string; description?: string } | null>(null);
+
+function useFieldLabel() {
+  const field = useContext(FieldContext);
+  return { "aria-labelledby": field?.label, "aria-describedby": field?.description };
+}
 
 // A settings page is a stack of Sections; each Section is a titled card holding
 // a set of Fields. This gives every group a consistent frame, divider and rhythm.
@@ -34,14 +41,17 @@ export function Field(
     htmlFor?: string;
   },
 ) {
+  const id = useId();
   return (
-    <div class="set-field">
-      <div class="set-field-label">
-        <label for={htmlFor}>{label}</label>
-        {help && <span class="set-field-help">{help}</span>}
+    <FieldContext.Provider value={{ label: `${id}-label`, description: help ? `${id}-help` : undefined }}>
+      <div class="set-field">
+        <div class="set-field-label">
+          <label id={`${id}-label`} for={htmlFor}>{label}</label>
+          {help && <span id={`${id}-help`} class="set-field-help">{help}</span>}
+        </div>
+        <div class="set-field-control">{control}</div>
       </div>
-      <div class="set-field-control">{control}</div>
-    </div>
+    </FieldContext.Provider>
   );
 }
 
@@ -52,6 +62,7 @@ export function Toggle(
   return (
     <button
       type="button"
+      {...useFieldLabel()}
       role="switch"
       aria-checked={checked}
       class={`toggle ${checked ? "on" : ""}`}
@@ -72,6 +83,7 @@ export function Select(
 ) {
   return (
     <select
+      {...useFieldLabel()}
       class="select"
       value={value}
       disabled={disabled}
@@ -99,6 +111,7 @@ export function TextInput(
 ) {
   return (
     <input
+      {...useFieldLabel()}
       class="input"
       type={type}
       min={min}
@@ -124,7 +137,7 @@ export function FolderPicker(
   };
   return (
     <div class="folder-picker">
-      <input class="input folder-path" value={value} readOnly title={value} />
+      <input {...useFieldLabel()} class="input folder-path" value={value} readOnly title={value} />
       <button type="button" class="btn btn-ghost" onClick={browse} disabled={busy}>
         <Icon name="folder-open" size={15} />
         <span>Browse</span>
@@ -142,7 +155,7 @@ export function Segmented(
   },
 ) {
   return (
-    <div class="segmented" role="tablist">
+    <div {...useFieldLabel()} class="segmented" role="tablist">
       {options.map((o) => (
         <button
           key={o.value}
@@ -172,6 +185,7 @@ export function VolumeSlider(
   return (
     <div class={`volume ${disabled ? "disabled" : ""}`}>
       <input
+        {...useFieldLabel()}
         type="range"
         min={0}
         max={100}
@@ -241,6 +255,7 @@ export function HotkeyCapture(
   return (
     <button
       ref={ref}
+      {...useFieldLabel()}
       type="button"
       class={`hotkey-capture ${capturing ? "capturing" : ""} ${invalid ? "invalid" : ""}`}
       onClick={() => setCapturing(true)}

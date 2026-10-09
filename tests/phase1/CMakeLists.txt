@@ -32,3 +32,7 @@ add_executable(bounded_worker_test bounded_worker_test.cpp)
 target_include_directories(bounded_worker_test PRIVATE ../../libs)
 target_link_libraries(bounded_worker_test PRIVATE Threads::Threads)
 add_test(NAME bounded_worker COMMAND bounded_worker_test)
+
+add_executable(segment_session_test segment_session_test.cpp)
+target_include_directories(segment_session_test PRIVATE ../../libs)
+add_test(NAME segment_session COMMAND segment_session_test)

@@ -338,6 +338,25 @@ impl Transaction {
                 next: digest(src)?,
             });
         }
+        if entries
+            .iter()
+            .any(|entry| entry.path == Path::new("Updater.exe") && entry.prior.is_some())
+        {
+            let recovery = root.join(".update-recovery");
+            mkdir(&recovery)?;
+            let launcher = recovery.join("Updater.exe");
+            if plain(&launcher)?.is_none() {
+                let temporary = recovery.join("Updater.tmp");
+                let mut input = File::open(root.join("Updater.exe")).map_err(|e| e.to_string())?;
+                let mut output = File::create(&temporary).map_err(|e| e.to_string())?;
+                std::io::copy(&mut input, &mut output)
+                    .and_then(|_| output.sync_all())
+                    .map_err(|e| e.to_string())?;
+                drop(output);
+                verify(&temporary, &digest(&root.join("Updater.exe"))?)?;
+                move_file(&temporary, &launcher, false)?;
+            }
+        }
         mkdir(&dir)?;
         for ((src, rel), e) in files.iter().zip(&entries) {
             let new = dir.join("new").join(rel);
@@ -511,6 +530,30 @@ mod tests {
     }
 
     #[test]
+    fn updater_recovery_entry_survives_missing_normal_executable() {
+        let f = Fixture::new();
+        let tx = Transaction::prepare(
+            &f.root,
+            &[(f.stage.join("Updater.exe"), "Updater.exe".into())],
+        )
+        .unwrap();
+        tx.place(&mut |step| {
+            if step == 1 {
+                Err("interrupted".into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(!f.root.join("Updater.exe").exists());
+        assert_eq!(
+            fs::read(f.root.join(".update-recovery/Updater.exe")).unwrap(),
+            b"old-Updater.exe"
+        );
+        recover(&f.root).unwrap();
+        f.original();
+    }
+    #[test]
     fn every_interrupted_move_restores_all_components_and_versions() {
         for fail_at in 1..=9 {
             let f = Fixture::new();
@@ -648,6 +691,54 @@ mod tests {
         std::os::unix::fs::symlink(&other, f.root.join("ui")).unwrap();
         assert!(Transaction::prepare(&f.root, &f.plan).is_err());
         assert!(!other.join("UI.exe").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn recovery_launcher_child() {
+        let root = crate::paths::app_dir();
+        assert_eq!(
+            root,
+            PathBuf::from(std::env::var_os("MONOLITH_RECOVERY_ROOT").unwrap())
+        );
+        recover(&root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn interrupted_self_update_can_launch_recovery_from_installation() {
+        for stop in [1, 2] {
+            let f = Fixture::new();
+            let exe = f.root.join("Updater.exe");
+            fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+            let original = digest(&exe).unwrap();
+            let tx = Transaction::prepare(
+                &f.root,
+                &[(f.stage.join("Updater.exe"), "Updater.exe".into())],
+            )
+            .unwrap();
+            tx.place(&mut |step| {
+                if step == stop {
+                    Err("interrupted".into())
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            let status = std::process::Command::new(f.root.join(".update-recovery/Updater.exe"))
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "install::tests::recovery_launcher_child",
+                ])
+                .env("MONOLITH_RECOVERY_ROOT", &f.root)
+                .env_remove("MONOLITH_APP_DIR")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            assert_eq!(digest(&exe).unwrap(), original);
+        }
     }
 
     #[cfg(windows)]

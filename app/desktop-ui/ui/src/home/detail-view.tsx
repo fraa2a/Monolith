@@ -1,9 +1,11 @@
+import { AudioTrackNotice } from "./audio-track-notice.tsx";
+import { ownsPlayerKeys } from "../lib/player.ts";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type BookmarkRow, type Clip, clipApi, mediaUrl } from "../lib/api.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { useMultiTrackAudio } from "../lib/multitrack.ts";
-import { appWindow } from "../lib/window.ts";
+import { usePlayerWindow } from "../lib/window.ts";
 import { FullscreenChrome } from "./fullscreen.tsx";
 
 interface Props {
@@ -236,6 +238,8 @@ export function DetailView(
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (editing || fsMode || editingSeq !== null) return;
+      if (ownsPlayerKeys(e) && e.key !== "Escape") return;
+      if ((e.target as HTMLElement)?.closest?.(".modal, [role=dialog], [role=alertdialog]")) return;
       if (trimming) {
         // While trimming, Esc cancels trim mode; arrow keys belong to the
         // focused trim handle, so don't navigate clips with them.
@@ -281,12 +285,7 @@ export function DetailView(
     return () => { cancelled = true; };
   }, [clip?.id, clip?.source]);
 
-  // Reuse the detail video element when changing fullscreen chrome.
-  useEffect(() => {
-    if (!fsMode) return;
-    appWindow.maximize();
-    return () => { appWindow.unmaximize(); };
-  }, [fsMode]);
+  usePlayerWindow(fsMode);
 
   if (!clip) return null;
 
@@ -698,6 +697,7 @@ export function DetailView(
               )}
           </div>
           {actionError && <div class="err">{actionError}</div>}
+          {multitrack.unsupported && <AudioTrackNotice clip={clip} />}
           <div class="detail-filename" title={clip.video_file}>{clip.video_file}</div>
 
           <div class="detail-meta">

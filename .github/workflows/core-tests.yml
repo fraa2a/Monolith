@@ -40,6 +40,8 @@ jobs:
           npm ci --ignore-scripts --no-audit
           npm run build
           node --test ../../tests/stream-deck/ipc-client.test.mjs
+      - name: Test updater state ordering
+        run: node --experimental-strip-types --test tests/updater/state-stream.test.mjs
       - name: Check and build frontends
         run: |
           for app in desktop-ui updater; do

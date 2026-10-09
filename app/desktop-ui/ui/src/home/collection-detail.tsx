@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { type Clip, type CollectionSummary, clipApi, collectionsApi } from "../lib/api.ts";
+import { type Clip, clipKey, subscribeClips, type CollectionSummary, clipApi, collectionsApi } from "../lib/api.ts";
 import { Icon } from "../shell/icons.tsx";
 import { ClipCard } from "./clip-card.tsx";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
@@ -30,7 +30,9 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
   const [confirmDel, setConfirmDel] = useState<Clip | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<Clip | null>(null);
   const [fullscreen, setFullscreen] = useState<{ clip: Clip; initialTime: number } | null>(null);
-  const [detailIndex, setDetailIndex] = useState<number | null>(null);
+  const [detailKey, setDetailKey] = useState<string | null>(null);
+  const detailIndex = detailKey === null ? -1 : clips.findIndex((clip) => clipKey(clip) === detailKey);
+  useEffect(() => { if (detailKey !== null && detailIndex < 0) setDetailKey(null); }, [detailKey, detailIndex]);
   const [renaming, setRenaming] = useState(false);
   const [confirmDeleteCol, setConfirmDeleteCol] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -57,13 +59,15 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
     return () => { ++loadId.current; };
   }, [refetch]);
 
+  useEffect(() => subscribeClips(() => { void refetch(true); }), [refetch]);
+
   const updateClip = (next: Clip) => {
     setClips((items) => items.map((item) => (
-      item.source === next.source && item.id === next.id ? next : item
+      clipKey(item) === clipKey(next) ? next : item
     )));
-    setTagDialog((item) => item && item.source === next.source && item.id === next.id ? next : item);
+    setTagDialog((item) => item && clipKey(item) === clipKey(next) ? next : item);
     setFullscreen((item) => (
-      item && item.clip.source === next.source && item.clip.id === next.id
+      item && clipKey(item.clip) === clipKey(next)
         ? { ...item, clip: next }
         : item
     ));
@@ -125,7 +129,7 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
     setBusy(false);
     if (res.ok) {
       setConfirmRemove(null);
-      setDetailIndex(null);
+      setDetailKey(null);
       await refetch();
       onChanged();
     }
@@ -138,7 +142,7 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
     setBusy(false);
     if (res.ok) {
       setConfirmDel(null);
-      setDetailIndex(null);
+      setDetailKey(null);
       await refetch();
       onChanged();
     }
@@ -171,6 +175,7 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
         </span>
       </div>
 
+      {(collection.unresolved_count ?? 0) > 0 && <p class="muted" role="status">Legacy memberships need confirmation. Re-add the intended clips to restore them.</p>}
       {error && <p class="err">{error}</p>}
 
       {loading
@@ -197,7 +202,7 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
                 onChanged={updateClip}
                 onContextMenu={openMenu}
                 onFullscreen={(c, t) => setFullscreen({ clip: c, initialTime: t })}
-                onOpenDetail={() => setDetailIndex(i)}
+                onOpenDetail={() => setDetailKey(clipKey(c))}
               />
             ))}
           </div>
@@ -256,13 +261,13 @@ export function CollectionDetail({ collection, allHashtags, onBack, onChanged }:
         />
       )}
 
-      {detailIndex !== null && clips.length > 0 && (
+      {detailIndex >= 0 && (
         <DetailView
           clips={clips}
-          index={Math.min(detailIndex, clips.length - 1)}
+          index={detailIndex}
           allHashtags={allHashtags}
-          onIndex={setDetailIndex}
-          onClose={() => setDetailIndex(null)}
+          onIndex={(i) => setDetailKey(clipKey(clips[i]))}
+          onClose={() => setDetailKey(null)}
           onChanged={refetch}
           onClipUpdate={updateClip}
           onDelete={setConfirmDel}

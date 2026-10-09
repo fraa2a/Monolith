@@ -18,3 +18,10 @@ export function resetPlayer(video: HTMLVideoElement | null): void {
     /* ignore */
   }
 }
+
+export function ownsPlayerKeys(event: KeyboardEvent): boolean {
+  const target = event.target;
+  return target instanceof HTMLElement && !!target.closest(
+    "input, textarea, select, button, [contenteditable]:not([contenteditable=false]), [role=slider], [role=dialog], [role=alertdialog], .modal, .ctx-menu",
+  );
+}
