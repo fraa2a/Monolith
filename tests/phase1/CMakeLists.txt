@@ -36,3 +36,7 @@ add_test(NAME bounded_worker COMMAND bounded_worker_test)
 add_executable(segment_session_test segment_session_test.cpp)
 target_include_directories(segment_session_test PRIVATE ../../libs)
 add_test(NAME segment_session COMMAND segment_session_test)
+
+add_executable(finalization_test finalization_test.cpp)
+target_include_directories(finalization_test PRIVATE ../../libs)
+add_test(NAME finalization COMMAND finalization_test)
