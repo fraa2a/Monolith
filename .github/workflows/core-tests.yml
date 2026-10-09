@@ -23,7 +23,7 @@ jobs:
         run: python3 scripts/check-text.py
       - name: Run portable native regressions
         run: |
-          for suite in phase1 phase2 u6; do
+          for suite in phase1 phase2 u6 logging; do
             cmake -S "tests/$suite" -B "build-tests/$suite" -DCMAKE_CXX_FLAGS='-Werror'
             cmake --build "build-tests/$suite" --parallel 2
             ctest --test-dir "build-tests/$suite" --output-on-failure
