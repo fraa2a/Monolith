@@ -17,10 +17,12 @@ target_compile_definitions(storage
 
 # SQLite from vcpkg (target name is unofficial::sqlite3::sqlite3).
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 target_link_libraries(storage
     PRIVATE
         encoding
+        nlohmann_json::nlohmann_json
         platform_win
         unofficial::sqlite3::sqlite3
 )

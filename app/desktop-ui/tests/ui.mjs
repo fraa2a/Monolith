@@ -33,9 +33,9 @@ try {
     return route.fulfill({ contentType: "image/svg+xml", body: `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="hsl(${hue},40%,24%)"/><stop offset="1" stop-color="#101820"/></linearGradient></defs><rect width="640" height="360" fill="url(#bg)"/><path d="M0 300 160 130 270 240 410 80 640 280V360H0Z" fill="#141c23"/><text x="24" y="42" fill="#eee" font-family="sans-serif" font-size="20">UI test fixture ${id}</text></svg>` });
   });
   await page.addInitScript((config) => {
-    const clips = Array.from({ length: 15 }, (_, i) => ({ id: i + 1, source: "replay", video_file: `video${i + 1}.mkv`, title: `Match ${String(i + 1).padStart(2, "0")}`, thumbnail_file: `thumb${i + 1}.svg`, video_path: `video${i + 1}.mkv`, thumbnail_path: `thumb${i + 1}.svg`, created_at_utc: "2026-10-08T10:00:00Z", duration_seconds: 30, game_process_name: "arena.exe", game_display_name: "Arena", favorite: false, hashtags: ["gameplay"], size_bytes: 12000000 }));
+    const clips = Array.from({ length: 15 }, (_, i) => ({ id: i + 1, source: "replay", catalog_uid: "catalog-replay", clip_uid: `clip${i + 1}`, media_revision: 0, video_file: `video${i + 1}.mkv`, title: `Match ${String(i + 1).padStart(2, "0")}`, thumbnail_file: `thumb${i + 1}.svg`, video_path: `video${i + 1}.mkv`, thumbnail_path: `thumb${i + 1}.svg`, created_at_utc: "2026-10-08T10:00:00Z", duration_seconds: 30, game_process_name: "arena.exe", game_display_name: "Arena", favorite: false, hashtags: ["gameplay"], size_bytes: 12000000 }));
     const collections = [{ id: 1, name: "Best moments", color: "#c4ff42", clip_count: 3, created_at_utc: "2026-10-08T10:00:00Z" }];
-    let engine = { connected: true, recording: false, replay_enabled: true, version: "1.6.2" };
+    let engine = { connected: true, recording: false, replay_enabled: true, capture_running: true, replay_running: true, recording_error: "", version: "1.6.2" };
     const calls = [];
     window.__uiTest = { calls, config, engine, clips, collections, failCommand: false, unknown: [] };
     let callback = 0;
@@ -113,7 +113,7 @@ try {
   await page.keyboard.press("Enter");
   await until(async () => await page.locator(".detail").count() === 1, "keyboard clip opening");
   await page.keyboard.press("Escape");
-  await until(async () => await count() === 15, "detail close");
+  await until(async () => await page.locator(".detail").count() === 0, "detail close");
   await page.getByRole("button", { name: "Collections", exact: true }).click();
   await page.getByRole("button", { name: "New collection", exact: true }).first().click();
   await page.getByPlaceholder("Collection name").fill("Highlights");

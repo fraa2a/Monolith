@@ -50,8 +50,32 @@ static void audio_log(const char* tag, const char* msg)
 
 // Impl
 
+class EndpointNotifications final : public IMMNotificationClient {
+    std::atomic<ULONG> refs_{1};
+public:
+    std::atomic<bool> changed{false};
+    EDataFlow flow = eRender;
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+    ULONG STDMETHODCALLTYPE Release() override { const auto refs = --refs_; if (!refs) delete this; return refs; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (iid != __uuidof(IUnknown) && iid != __uuidof(IMMNotificationClient)) return E_NOINTERFACE;
+        *out = static_cast<IMMNotificationClient*>(this); AddRef(); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow value, ERole role, LPCWSTR) override {
+        if (value == flow && role == eConsole) changed.store(true);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) override { return S_OK; }
+};
+
 struct WasapiCapture::Impl {
     winrt::com_ptr<IMMDeviceEnumerator> enumerator;
+    winrt::com_ptr<EndpointNotifications> notifications;
     winrt::com_ptr<IMMDevice>           device;
     winrt::com_ptr<IAudioClient>        client;
     winrt::com_ptr<IAudioCaptureClient> cap_client;
@@ -225,7 +249,7 @@ static void capture_thread(ImplT* impl)
         UINT32 packet_size = 0;
         HRESULT hr = impl->cap_client->GetNextPacketSize(&packet_size);
         if (FAILED(hr)) {
-            OutputDebugStringA("[audio] GetNextPacketSize failed - stopping\n");
+            audio_log("audio", "GetNextPacketSize failed; scheduling source recovery");
             impl->running.store(false, std::memory_order_release);
             break;
         }
@@ -237,7 +261,10 @@ static void capture_thread(ImplT* impl)
             UINT64 qpc    = 0;
 
             hr = impl->cap_client->GetBuffer(&data, &frames, &flags, nullptr, &qpc);
-            if (FAILED(hr)) break;
+            if (FAILED(hr)) {
+                audio_log("audio", "GetBuffer failed; scheduling source recovery");
+                impl->running.store(false, std::memory_order_release); break;
+            }
 
             const bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
             const uint32_t bytes = frames
@@ -246,6 +273,13 @@ static void capture_thread(ImplT* impl)
 
             PacketInfo pkt{};
             pkt.timestamp_qpc = static_cast<int64_t>(qpc);
+            if (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) {
+                LARGE_INTEGER now{}, freq{};
+                QueryPerformanceCounter(&now); QueryPerformanceFrequency(&freq);
+                pkt.timestamp_qpc = (now.QuadPart / freq.QuadPart) * 10000000 +
+                    (now.QuadPart % freq.QuadPart) * 10000000 / freq.QuadPart -
+                    static_cast<int64_t>(frames) * 10000000 / impl->mix_fmt->nSamplesPerSec;
+            }
             pkt.frame_count   = frames;
             pkt.sample_rate   = impl->mix_fmt->nSamplesPerSec;
             pkt.channels      = static_cast<uint16_t>(impl->mix_fmt->nChannels);
@@ -675,6 +709,9 @@ ActiveGameResult detect_active_game(const DetectConfig& cfg)
 WasapiCapture::WasapiCapture() : impl_(new Impl()) {}
 WasapiCapture::~WasapiCapture() { stop(); delete impl_; }
 bool WasapiCapture::running() const { return impl_->running.load(std::memory_order_relaxed); }
+bool WasapiCapture::needs_restart() const {
+    return !running() || (impl_->notifications && impl_->notifications->changed.load());
+}
 
 bool WasapiCapture::start(Mode mode, PacketCallback cb)
 {
@@ -699,6 +736,10 @@ bool WasapiCapture::start_device(Mode mode, const std::wstring& device_id_value,
     // Loopback: render endpoint + AUDCLNT_STREAMFLAGS_LOOPBACK.
     // Microphone: capture endpoint, no extra flags.
     if (device_id_value.empty()) {
+        impl_->notifications.attach(new EndpointNotifications);
+        impl_->notifications->flow = mode == Mode::Loopback ? eRender : eCapture;
+        if (FAILED(impl_->enumerator->RegisterEndpointNotificationCallback(impl_->notifications.get())))
+            impl_->notifications = nullptr;
         EDataFlow flow = (mode == Mode::Loopback) ? eRender : eCapture;
         hr = impl_->enumerator->GetDefaultAudioEndpoint(
             flow, eConsole, impl_->device.put());
@@ -911,6 +952,9 @@ void WasapiCapture::stop()
     impl_->cap_client = nullptr;
     impl_->client     = nullptr;
     impl_->device     = nullptr;
+    if (impl_->enumerator && impl_->notifications)
+        impl_->enumerator->UnregisterEndpointNotificationCallback(impl_->notifications.get());
+    impl_->notifications = nullptr;
     impl_->enumerator = nullptr;
     impl_->cb         = nullptr;
     impl_->seq.store(0, std::memory_order_relaxed);

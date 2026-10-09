@@ -68,10 +68,27 @@ int main() {
     CHECK(!ipc::send_response(pair[0], "disconnected\n"));
     ipc::g_running = false; closesocket(pair[0]);
 
-    ipc::start(nullptr, [] { return ipc::RecordingState{false, false, true, true, 0, "test"}; });
+    ipc::start(nullptr, [] { return ipc::RecordingState{false, false, true, true, 0, "test", true, true, "disk failure"}; },
+        [](const ipc::ClipMutation& m) {
+            CHECK(m.catalog_uid == "catalog" && m.clip_uid == "clip");
+            CHECK(m.media_revision == 7 && m.id == 1);
+            if (m.method == "clip_set_duration") CHECK(m.duration == 5.0);
+            if (m.method == "clip_capture_thumb") CHECK(m.upload_token == std::string(32, 'a'));
+            if (m.method == "clip_add_bookmark") CHECK(m.time_seconds == 1.5 && m.label == "marker");
+            if (m.method == "clip_update_bookmark" || m.method == "clip_delete_bookmark") CHECK(m.seq == 3);
+            return std::string{};
+        });
     CHECK(ipc::g_running);
     SOCKET persistent = connect_client();
     CHECK(status(persistent).find("result") != std::string::npos);
+    CHECK(status(persistent).find("disk failure") != std::string::npos);
+    for (const char* method : {"clip_trim", "clip_add_bookmark", "clip_update_bookmark", "clip_delete_bookmark", "clip_capture_thumb", "clip_set_duration"}) {
+        const auto request = nlohmann::json{{"id",2},{"method",method},{"params",{
+            {"source","manual"},{"id",1},{"catalog_uid","catalog"},{"clip_uid","clip"},
+            {"duration",5.0},{"media_revision",7},{"seq",3},{"time_seconds",1.5},{"label","marker"},{"upload_token",std::string(32,'a')}}}};
+        write_bytes(persistent, request.dump()+"\n");
+        CHECK(read_line(persistent).find("result") != std::string::npos);
+    }
     std::this_thread::sleep_for(6s); // longer than Stream Deck's five-second poll
     CHECK(status(persistent).find("result") != std::string::npos);
     write_bytes(persistent, "not json\n{\"id\":2,\"method\":\"unknown\"}\r\n");
@@ -103,9 +120,11 @@ int main() {
     for (SOCKET s : clients) closesocket(s);
     std::this_thread::sleep_for(300ms);
 
+    SOCKET silent = connect_client();
     SOCKET slow = connect_client(); write_bytes(slow, "{");
     std::this_thread::sleep_for(16s); write_bytes(slow, " "); // must not reset first-byte deadline
     CHECK(read_line(slow, 17s).empty()); closesocket(slow);
+    CHECK(read_line(silent).empty()); closesocket(silent);
     CHECK(status(persistent).find("result") != std::string::npos); // >30s idle survives
     closesocket(persistent);
     std::this_thread::sleep_for(400ms);

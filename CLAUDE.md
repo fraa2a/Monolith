@@ -43,8 +43,9 @@ Desktop UI live in `app/desktop-ui`:
 
 ## Tests And Verification
 
-No full auto test suite yet. No claim test verification
-unless specific command run.
+Portable native, Rust, browser UI, Stream Deck and Windows updater recovery
+regressions run in GitHub Actions. Report exact commands and results; portable
+tests do not establish real-device or clean-install behavior.
 
 Useful checks:
 
@@ -77,7 +78,7 @@ Main modules:
 - `app/recorder`: `Monolith.exe`, Win32 tray, message-only window, hotkeys,
   lifecycle, recording/replay orchestration, runtime status, updater.
 - `app/desktop-ui`: `Monolith.UI.exe`, Tauri v2/WebView2 host + Preact UI.
-  Rust modules serve bundled frontend, expose local HTTP APIs, read clip
+  Rust modules serve the bundled frontend, expose Tauri commands, read clip
   catalogs read-only, write settings, call engine JSON-RPC.
 - `libs/capture`: Windows.Graphics.Capture D3D11 capture w/ CPU-readable BGRA
   staging path.

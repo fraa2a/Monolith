@@ -1,5 +1,7 @@
 #include "disk_segments.h"
 #include "disk_budget.h"
+#include "session_directory.h"
+#include <encoding/media_ownership.h>
 #include <encoding/mux_common.h>
 #include <encoding/trim.h>
 extern "C" {
@@ -19,13 +21,14 @@ namespace mux = encoding::mux;
 namespace fs = std::filesystem;
 namespace {
 constexpr double kSegmentSeconds = 5.0;
-std::atomic<uint64_t> directory_sequence{0};
 struct Segment {
     encoding::ClipSegment clip;
     uint64_t payload = 0;
     uint64_t file_bytes = 0;
     bool retained = true;
     bool owns_parent = true;
+    std::shared_ptr<SessionDirectory> session;
+    std::shared_ptr<encoding::MediaWriteGuard> guard;
 };
 }
 struct DiskSegmentBuffer::Impl {
@@ -42,6 +45,9 @@ struct DiskSegmentBuffer::Impl {
     std::shared_ptr<Segment> current;
     std::vector<std::shared_ptr<Segment>> files; // includes pinned/failed-delete files
     fs::path owned_dir;
+    std::shared_ptr<SessionDirectory> session;
+    std::chrono::steady_clock::time_point space_checked{};
+    uint64_t available_space = 0;
     uint64_t sequence = 0;
     uint64_t payload = 0;
     uint64_t dropped = 0;
@@ -131,24 +137,27 @@ struct DiskSegmentBuffer::Impl {
         std::error_code ec;
         fs::create_directories(cfg.segment_dir, ec);
         if (ec) return false;
-        for (int i = 0; i < 16; ++i) {
-            const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-            auto path = fs::path(cfg.segment_dir) / (L"monolith-segments-" + std::to_wstring(stamp) + L"-" +
-                                                     std::to_wstring(directory_sequence.fetch_add(1)));
-            if (fs::create_directory(path, ec)) { owned_dir = std::move(path); return true; }
-            if (ec) return false;
-        }
-        return false;
+        if (!SessionDirectory::reclaim(cfg.segment_dir)) { pressure = true; return false; }
+        session = std::make_shared<SessionDirectory>();
+        if (!session->create(cfg.segment_dir)) return false;
+        owned_dir = session->path(); return true;
     }
     bool free_space(uint64_t bytes) {
         std::error_code ec;
-        auto space = fs::space(owned_dir, ec);
-        return !ec && space.available >= kFreeSpaceReserve && bytes <= space.available - kFreeSpaceReserve;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - space_checked > std::chrono::seconds(1)) {
+            const auto space = fs::space(owned_dir, ec); if (ec) return false;
+            available_space = space.available; space_checked = now;
+        }
+        if (available_space < kFreeSpaceReserve || bytes > available_space - kFreeSpaceReserve) return false;
+        available_space -= bytes; return true;
     }
     bool open_segment(const encoding::EncodedPacket& key) {
         if (!ensure_directory()) return false;
         auto file = std::make_shared<Segment>();
         file->clip.path = (owned_dir / (L"seg_" + std::to_wstring(sequence++) + L"." + mux::file_extension(cfg.container))).wstring();
+        file->session = session;
+        file->guard = std::make_shared<encoding::MediaWriteGuard>(file->clip.path);
         file->clip.start_seconds = static_cast<double>(key.dts_usec) / 1000000.0;
         file->clip.end_seconds = file->clip.start_seconds;
         // DTS zero is the common mux origin. Preserve composition delay and
@@ -171,7 +180,8 @@ struct DiskSegmentBuffer::Impl {
         close_segment();
         if (!owned_dir.empty() && owned_dir.parent_path() != fs::path(cfg.segment_dir)) {
             std::error_code ec; fs::remove(owned_dir, ec); // empty only; pinned files keep their parent
-            owned_dir.clear();
+            owned_dir.clear(); session.reset();
+            available_space = 0; space_checked = {};
         }
         reconfigure = false;
     }
@@ -188,6 +198,10 @@ struct DiskSegmentBuffer::Impl {
 };
 DiskSegmentBuffer::DiskSegmentBuffer() : impl_(new Impl) {}
 DiskSegmentBuffer::~DiskSegmentBuffer() { delete impl_; }
+void DiskSegmentBuffer::wait_for_saves() {
+    std::lock_guard lifecycle(impl_->lifecycle);
+    if (impl_->save_thread.joinable()) impl_->save_thread.join();
+}
 void DiskSegmentBuffer::configure(Config const& cfg) {
     std::lock_guard lk(impl_->mutex);
     impl_->reconfigure = impl_->reconfigure || cfg.container != impl_->cfg.container || cfg.segment_dir != impl_->cfg.segment_dir;
@@ -203,6 +217,10 @@ void DiskSegmentBuffer::clear() {
     impl_->stop_save();
     std::lock_guard lk(impl_->mutex);
     impl_->close_segment(true); impl_->purge(true); impl_->newest = 0;
+    if (impl_->files.empty()) {
+        impl_->session.reset(); impl_->owned_dir.clear();
+        impl_->available_space = 0; impl_->space_checked = {};
+    }
 }
 void DiskSegmentBuffer::set_video_params(encoding::VideoStreamParams const& p) {
     std::lock_guard lk(impl_->mutex);
@@ -297,6 +315,7 @@ bool DiskSegmentBuffer::save_clip(const std::wstring& out_dir, std::function<voi
         impl_->save_thread = std::thread([this, pinned = std::move(pinned), failed_output = std::move(failed_output), cfg, newest, out_dir, cb = std::move(cb)]() mutable {
             try {
             std::wstring result, path;
+            std::shared_ptr<encoding::MediaWriteGuard> guard;
             try {
                 std::vector<encoding::ClipSegment> segs;
                 for (const auto& file : pinned) segs.push_back(file->clip);
@@ -304,6 +323,7 @@ bool DiskSegmentBuffer::save_clip(const std::wstring& out_dir, std::function<voi
                     std::error_code ec; fs::create_directories(out_dir, ec);
                     if (!ec) {
                         path = mux::generate_clip_path(out_dir, cfg.duration_sec, cfg.container);
+                        guard = std::make_shared<encoding::MediaWriteGuard>(path);
                         const double start = std::max(segs.front().start_seconds, newest - cfg.duration_sec);
                         std::string err;
                         if (encoding::concat_clip_segments(segs, start, newest, path, &err, nullptr, &impl_->cancel)) result = path;

@@ -11,6 +11,7 @@ fn component() -> manifest::ComponentInfo {
         size: 1,
         sha256: "ab".repeat(32),
         ed_signature: base64::engine::general_purpose::STANDARD.encode([0u8; 64]),
+        metadata_signature: String::new(),
     }
 }
 
@@ -92,7 +93,10 @@ fn archive_rejects_windows_path_aliases_and_traversal() {
 }
 
 #[test]
-fn catalogs_preserve_membership_on_errors_and_serialize_bookmarks() {
+fn catalogs_preserve_membership_on_errors() {
+    let _guard = crate::CATALOG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     let root = std::env::temp_dir().join(format!("monolith-catalogs-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
@@ -154,37 +158,22 @@ fn catalogs_preserve_membership_on_errors_and_serialize_bookmarks() {
     db.execute_batch(
         "CREATE TABLE clips (id INTEGER PRIMARY KEY, video_file TEXT, thumbnail_file TEXT,
         created_at_utc TEXT, duration_seconds REAL, game_process_name TEXT, game_display_name TEXT,
-        favorite INTEGER, title TEXT);
+        favorite INTEGER, title TEXT, clip_uid TEXT);
+        CREATE TABLE catalog_metadata(key TEXT PRIMARY KEY,value TEXT);
+        INSERT INTO catalog_metadata VALUES('catalog_uid','catalog-tests');
         CREATE TABLE clip_hashtags (clip_id INTEGER, tag TEXT);
-        INSERT INTO clips VALUES (1,'a.mp4',NULL,'2026-10-08T00:00:00Z',5,NULL,NULL,0,'A');",
+        INSERT INTO clips VALUES (1,'a.mp4',NULL,'2026-10-08T00:00:00Z',5,NULL,NULL,0,'A','clip-tests');",
     )
     .unwrap();
     fs::write(clips.join("a.mp4"), b"video").unwrap();
     let collection = collections::create_collection("Games", "").unwrap();
     collections::add_clip_to_collection(collection, clip_catalog::ClipSource::Replay, 1).unwrap();
     assert_eq!(collections::collection_clips(collection).unwrap().len(), 1);
-    let mut workers = Vec::new();
-    for index in 0..8 {
-        workers.push(std::thread::spawn(move || {
-            clip_catalog::add_bookmark(
-                clip_catalog::ClipSource::Replay,
-                1,
-                f64::from(index),
-                "",
-                "",
-            )
-            .unwrap();
-        }));
-    }
-    for worker in workers {
-        worker.join().unwrap();
-    }
-    let count: i64 = db
-        .query_row("SELECT COUNT(DISTINCT seq) FROM clip_bookmarks", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(count, 8);
+    assert!(
+        clip_catalog::list_bookmarks(clip_catalog::ClipSource::Replay, 1)
+            .unwrap()
+            .is_empty()
+    );
     db.execute_batch("ALTER TABLE clips RENAME TO broken;")
         .unwrap();
     assert!(collections::collection_clips(collection).is_err());

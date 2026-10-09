@@ -1,4 +1,4 @@
-// Collection members use (source, clip_id); IDs can overlap across catalogs.
+// Catalog and clip identities survive row ID reuse and folder changes.
 
 use crate::clip_catalog::{self, ClipSource};
 use crate::paths;
@@ -17,8 +17,11 @@ CREATE TABLE IF NOT EXISTS collection_clips (
     source TEXT NOT NULL,
     clip_id INTEGER NOT NULL,
     added_at_utc TEXT NOT NULL,
-    PRIMARY KEY (collection_id, source, clip_id)
-);";
+    catalog_uid TEXT NOT NULL,
+    clip_uid TEXT NOT NULL,
+    PRIMARY KEY (collection_id, source, catalog_uid, clip_uid)
+);
+CREATE INDEX IF NOT EXISTS collection_member_identity ON collection_clips(source,catalog_uid,clip_uid);";
 
 fn open() -> Result<Connection, String> {
     let dir = paths::monolith_data_dir();
@@ -27,6 +30,27 @@ fn open() -> Result<Connection, String> {
     let _ = conn.busy_timeout(std::time::Duration::from_millis(4000));
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|err| err.to_string())?;
+    let legacy: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('collection_clips') WHERE name='catalog_uid'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| err.to_string())?
+        == 0;
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='collection_clips'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| err.to_string())?
+        != 0;
+    if exists && legacy {
+        conn.execute_batch("ALTER TABLE collection_clips RENAME TO collection_clips_legacy;")
+            .map_err(|err| err.to_string())?;
+    }
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS collection_clips_legacy(collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE, source TEXT NOT NULL, clip_id INTEGER NOT NULL, added_at_utc TEXT NOT NULL, PRIMARY KEY(collection_id,source,clip_id));").map_err(|err| err.to_string())?;
     conn.execute_batch(DDL).map_err(|err| err.to_string())?;
     Ok(conn)
 }
@@ -61,6 +85,7 @@ pub struct CollectionSummary {
     pub color: String,
     pub created_at_utc: String,
     pub clip_count: i64,
+    pub unresolved_count: i64,
 }
 
 pub fn list_collections() -> Result<Vec<CollectionSummary>, String> {
@@ -69,7 +94,9 @@ pub fn list_collections() -> Result<Vec<CollectionSummary>, String> {
         .prepare(
             "SELECT c.id, c.name, c.color, c.created_at_utc,
                     (SELECT COUNT(*) FROM collection_clips cc
-                      WHERE cc.collection_id = c.id) AS clip_count
+                      WHERE cc.collection_id = c.id) +
+                    (SELECT COUNT(*) FROM collection_clips_legacy l WHERE l.collection_id=c.id) AS clip_count,
+                    (SELECT COUNT(*) FROM collection_clips_legacy l WHERE l.collection_id=c.id)
              FROM collections c ORDER BY c.created_at_utc, c.id",
         )
         .map_err(|err| err.to_string())?;
@@ -81,6 +108,7 @@ pub fn list_collections() -> Result<Vec<CollectionSummary>, String> {
                 color: row.get(2)?,
                 created_at_utc: row.get(3)?,
                 clip_count: row.get(4)?,
+                unresolved_count: row.get(5)?,
             })
         })
         .map_err(|err| err.to_string())?;
@@ -132,25 +160,35 @@ pub fn add_clip_to_collection(
     source: ClipSource,
     clip_id: i64,
 ) -> Result<(), String> {
-    let conn = open()?;
-    // Only accept clips that exist in the catalog right now.
-    if !clip_catalog::clips_by_ids(source, &[clip_id])?.contains_key(&clip_id) {
-        return Err("clip not found".to_string());
+    let identity = clip_catalog::identity(source, clip_id)?;
+    add_clip_with_identity(collection_id, source, clip_id, identity)
+}
+
+pub fn add_clip_with_identity(
+    collection_id: i64,
+    source: ClipSource,
+    clip_id: i64,
+    identity: clip_catalog::ClipIdentity,
+) -> Result<(), String> {
+    let current = clip_catalog::identity(source, clip_id)?;
+    if current.catalog_uid != identity.catalog_uid || current.clip_uid != identity.clip_uid {
+        return Err("clip identity changed; refresh the library".into());
     }
+    let conn = open()?;
     let exists: bool = conn
         .query_row(
-            "SELECT 1 FROM collections WHERE id = ?1",
+            "SELECT 1 FROM collections WHERE id=?1",
             params![collection_id],
             |_| Ok(()),
         )
         .is_ok();
     if !exists {
-        return Err("collection not found".to_string());
+        return Err("collection not found".into());
     }
+    conn.execute("INSERT OR IGNORE INTO collection_clips(collection_id,source,clip_id,added_at_utc,catalog_uid,clip_uid) VALUES(?1,?2,?3,?4,?5,?6)",params![collection_id,source.as_str(),clip_id,now_iso8601_utc(),identity.catalog_uid,identity.clip_uid]).map_err(|err|err.to_string())?;
     conn.execute(
-        "INSERT OR IGNORE INTO collection_clips (collection_id, source, clip_id, added_at_utc)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![collection_id, source.as_str(), clip_id, now_iso8601_utc()],
+        "DELETE FROM collection_clips_legacy WHERE collection_id=?1 AND source=?2 AND clip_id=?3",
+        params![collection_id, source.as_str(), clip_id],
     )
     .map_err(|err| err.to_string())?;
     Ok(())
@@ -161,78 +199,67 @@ pub fn remove_clip_from_collection(
     source: ClipSource,
     clip_id: i64,
 ) -> Result<(), String> {
+    let identity = clip_catalog::identity(source, clip_id)?;
+    remove_clip_with_identity(collection_id, source, identity)
+}
+
+pub fn remove_clip_with_identity(
+    collection_id: i64,
+    source: ClipSource,
+    identity: clip_catalog::ClipIdentity,
+) -> Result<(), String> {
     let conn = open()?;
-    conn.execute(
-        "DELETE FROM collection_clips WHERE collection_id = ?1 AND source = ?2 AND clip_id = ?3",
-        params![collection_id, source.as_str(), clip_id],
-    )
-    .map_err(|err| err.to_string())?;
+    conn.execute("DELETE FROM collection_clips WHERE collection_id=?1 AND source=?2 AND catalog_uid=?3 AND clip_uid=?4",params![collection_id,source.as_str(),identity.catalog_uid,identity.clip_uid]).map_err(|err|err.to_string())?;
     Ok(())
 }
 
-// Prune absent clips only after all required catalogs have been read.
-pub fn collection_clips(collection_id: i64) -> Result<Vec<clip_catalog::Clip>, String> {
+pub fn collection_memberships(source: ClipSource, id: i64) -> Result<Vec<i64>, String> {
+    let identity = clip_catalog::identity(source, id)?;
     let conn = open()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT source, clip_id FROM collection_clips
-             WHERE collection_id = ?1 ORDER BY datetime(added_at_utc) DESC, clip_id DESC",
+    let mut stmt=conn.prepare("SELECT collection_id FROM collection_clips WHERE source=?1 AND catalog_uid=?2 AND clip_uid=?3 ORDER BY collection_id").map_err(|err|err.to_string())?;
+    let rows = stmt
+        .query_map(
+            params![source.as_str(), identity.catalog_uid, identity.clip_uid],
+            |row| row.get(0),
         )
         .map_err(|err| err.to_string())?;
-    let rows = stmt
-        .query_map(params![collection_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
+}
 
-    let entries = rows
+pub fn collection_clips(collection_id: i64) -> Result<Vec<clip_catalog::Clip>, String> {
+    let conn = open()?;
+    let mut stmt=conn.prepare("SELECT source,clip_id,catalog_uid,clip_uid FROM collection_clips WHERE collection_id=?1 ORDER BY added_at_utc DESC,clip_id DESC").map_err(|err|err.to_string())?;
+    let entries = stmt
+        .query_map(params![collection_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|err| err.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
-    let replay_ids: Vec<_> = entries
-        .iter()
-        .filter(|(source, _)| source == "replay")
-        .map(|(_, id)| *id)
-        .collect();
-    let manual_ids: Vec<_> = entries
-        .iter()
-        .filter(|(source, _)| source == "manual")
-        .map(|(_, id)| *id)
-        .collect();
-    let mut replay = if replay_ids.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        clip_catalog::clips_by_ids(ClipSource::Replay, &replay_ids)?
-    };
-    let mut manual = if manual_ids.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        clip_catalog::clips_by_ids(ClipSource::Manual, &manual_ids)?
-    };
     let mut clips = Vec::new();
-    let mut stale = Vec::new();
-    for (source, id) in entries {
-        let clip = match source.as_str() {
-            "replay" => replay.remove(&id),
-            "manual" => manual.remove(&id),
-            _ => None,
-        };
-        if let Some(clip) = clip {
-            clips.push(clip);
-        } else {
-            stale.push((source, id));
+    for source in [ClipSource::Replay, ClipSource::Manual] {
+        let members: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.0 == source.as_str())
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        let ids: Vec<_> = members.iter().map(|entry| entry.1).collect();
+        let available = clip_catalog::clips_by_ids(source, &ids)?;
+        for member in members {
+            if let Some(clip) = available.get(&member.1) {
+                if clip.catalog_uid == member.2 && clip.clip_uid == member.3 {
+                    clips.push(clip.clone());
+                }
+            }
         }
     }
-    drop(stmt);
-    // Prune only after both catalogs were read without errors.
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|err| err.to_string())?;
-    for (source, id) in stale {
-        tx.execute(
-            "DELETE FROM collection_clips WHERE collection_id = ?1 AND source = ?2 AND clip_id = ?3",
-            params![collection_id, source, id],
-        ).map_err(|err| err.to_string())?;
-    }
-    tx.commit().map_err(|err| err.to_string())?;
     Ok(clips)
 }

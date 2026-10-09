@@ -1,25 +1,63 @@
 // Settings persist through the native host and trigger an engine reload.
 
+import { signal } from "@preact/signals";
 import { invoke } from "@tauri-apps/api/core";
 
 export type Config = Record<string, any>;
 
-export async function getConfig(): Promise<Config | null> {
-  try {
-    const config = await invoke<Config | null>("get_settings");
-    return config ?? null;
-  } catch {
-    return null;
-  }
+export const settingsDraft = signal<Config | null>(null);
+export const settingsSaveState = signal<"idle" | "saving" | "saved" | "error">("idle");
+export const settingsError = signal<string | null>(null);
+let loading: Promise<Config | null> | null = null;
+let revision = 0;
+let savedRevision = 0;
+let timer: ReturnType<typeof setTimeout> | undefined;
+let writing: Promise<void> | null = null;
+
+export function getConfig(): Promise<Config | null> {
+  if (settingsDraft.value) return Promise.resolve(settingsDraft.value);
+  loading ??= invoke<Config | null>("get_settings").then((config) => {
+    settingsDraft.value = config;
+    return config;
+  }).catch(() => null).finally(() => { loading = null; });
+  return loading;
 }
 
-export async function saveConfig(config: Config): Promise<{ ok: boolean; error?: string }> {
-  try {
-    await invoke("save_settings", { config });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+export function editConfig(mutate: (config: Config) => void, immediate = false): void {
+  if (!settingsDraft.value) return;
+  const draft = structuredClone(settingsDraft.value);
+  mutate(draft);
+  settingsDraft.value = draft;
+  ++revision;
+  settingsSaveState.value = "saving";
+  settingsError.value = null;
+  clearTimeout(timer);
+  if (immediate) void flushConfig();
+  else timer = setTimeout(() => { void flushConfig(); }, 500);
+}
+
+export function flushConfig(): Promise<void> {
+  clearTimeout(timer);
+  if (writing) return writing;
+  writing = (async () => {
+    while (savedRevision < revision && settingsDraft.value) {
+      const current = revision;
+      const config = structuredClone(settingsDraft.value);
+      try {
+        await invoke("save_settings", { config });
+        savedRevision = current;
+        if (current === revision) {
+          settingsSaveState.value = "saved";
+          settingsError.value = null;
+        }
+      } catch (error) {
+        settingsSaveState.value = "error";
+        settingsError.value = String(error);
+        break;
+      }
+    }
+  })().finally(() => { writing = null; });
+  return writing;
 }
 
 // Engine capabilities are best-effort snapshots from runtime-status.json.

@@ -9,7 +9,7 @@
     "dev": "vite",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "test:ui": "node tests/ui.mjs"
+    "test:ui": "node tests/ui.mjs && node tests/audit.mjs"
   },
   "dependencies": {
     "@preact/signals": "^1.3.0",

@@ -110,14 +110,15 @@ void handle_client(SOCKET client)
     std::string buf;
     char tmp[4096];
     auto partial_started = std::chrono::steady_clock::now();
+    bool received_request = false;
 
     while (g_running) {
-        if (!buf.empty() && std::chrono::steady_clock::now() - partial_started >=
+        if ((!received_request || !buf.empty()) && std::chrono::steady_clock::now() - partial_started >=
             detail::kPartialRequestTimeout) return;
         const int ready = wait_socket(client, false);
         if (ready < 0) return;
         if (ready == 0) continue;
-        if (!buf.empty() && std::chrono::steady_clock::now() - partial_started >=
+        if ((!received_request || !buf.empty()) && std::chrono::steady_clock::now() - partial_started >=
             detail::kPartialRequestTimeout) return;
         const int n = recv(client, tmp, static_cast<int>(sizeof(tmp)), 0);
         if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) continue;
@@ -135,6 +136,7 @@ void handle_client(SOCKET client)
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
 
+            received_request = true;
             int         req_id   = -1;
             std::string response;
 
@@ -171,6 +173,9 @@ void handle_client(SOCKET client)
                             {"recording_enabled", st.recording_enabled},
                             {"clip_generation",   st.clip_generation},
                             {"version",           st.version},
+                            {"capture_running", st.capture_running},
+                            {"replay_running", st.replay_running},
+                            {"recording_error", st.recording_error},
                         });
                     } else if (method == "reload_settings") {
                         PostMessage(g_hwnd, kMsgSettingsReload, 0, 0);
@@ -221,7 +226,9 @@ void handle_client(SOCKET client)
                                method == "clip_set_title" ||
                                method == "clip_regen_thumb" ||
                                method == "clip_delete" ||
-                               method == "clip_trim") {
+                               method == "clip_trim" || method == "clip_add_bookmark" ||
+                               method == "clip_update_bookmark" || method == "clip_delete_bookmark" ||
+                               method == "clip_capture_thumb" || method == "clip_set_duration") {
                         if (!g_mutation_fn) {
                             response = make_error(req_id, -32601, "Mutations unavailable");
                         } else {
@@ -237,6 +244,15 @@ void handle_client(SOCKET client)
                             m.method   = method;
                             m.source   = get_or("source", std::string("replay"));
                             m.id       = get_or("id", static_cast<int64_t>(0));
+                            m.catalog_uid = get_or("catalog_uid", std::string());
+                            m.clip_uid = get_or("clip_uid", std::string());
+                            m.media_revision = get_or("media_revision", int64_t{-1});
+                            m.seq = get_or("seq", 0);
+                            m.time_seconds = get_or("time_seconds", 0.0);
+                            m.label = get_or("label", std::string());
+                            m.color = get_or("color", std::string());
+                            m.upload_token = get_or("upload_token", std::string());
+                            m.duration = get_or("duration", 0.0);
                             m.tag      = get_or("tag", std::string());
                             m.favorite = get_or("favorite", false);
                             m.new_name = get_or("new_name", std::string());

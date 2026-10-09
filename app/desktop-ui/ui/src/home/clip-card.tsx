@@ -1,6 +1,7 @@
 import { memo } from "preact/compat";
-import { useEffect, useRef, useState } from "preact/hooks";
-import { type Clip, clipApi, exeIconUrl, mediaUrl, thumbUrl } from "../lib/api.ts";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { type Clip, clipApi, clipKey, exeIconUrl, mediaUrl, thumbUrl } from "../lib/api.ts";
+import { enqueueMediaProbe } from "../lib/media-probes.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
 import { Icon } from "../shell/icons.tsx";
 import { useMultiTrackAudio } from "../lib/multitrack.ts";
@@ -43,21 +44,29 @@ export const ClipCard = memo(function ClipCard(
   const [muted, setMuted] = useState(true);
   const [thumbBroken, setThumbBroken] = useState(false);
   const [thumbBust, setThumbBust] = useState(0);
-  const [localThumb, setLocalThumb] = useState<string | null>(clip.thumbnail_file);
+  const [visible, setVisible] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const latest = useRef({ clip, onChanged });
+  latest.current = { clip, onChanged };
   const [displayDuration, setDisplayDuration] = useState<number | null>(clip.duration_seconds);
   const [exeIcon, setExeIcon] = useState<string | null>(null);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const hoverTimer = useRef<number | undefined>(undefined);
   const regenTried = useRef(false);
+  const thumbAttempts = useRef(0);
+  const thumbRetryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const thumbRepair = useRef<(() => void) | undefined>(undefined);
+  const mounted = useRef(true);
 
   const multitrack = useMultiTrackAudio(preview ? videoEl : null, preview ? mediaUrl(clip) : null);
 
-  useEffect(() => {
-    setLocalThumb(clip.thumbnail_file);
+  useLayoutEffect(() => {
+    clearTimeout(thumbRetryTimer.current);
+    thumbAttempts.current = 0;
     setDisplayDuration(clip.duration_seconds);
     setThumbBroken(false);
     regenTried.current = false;
-  }, [clip.id, clip.source, clip.thumbnail_file, clip.duration_seconds]);
+  }, [clipKey(clip), clip.thumbnail_path, clip.thumbnail_file, clip.duration_seconds]);
 
   // Prefer the executable icon, then cached artwork; avoid network lookup per card.
   useEffect(() => {
@@ -77,78 +86,105 @@ export const ClipCard = memo(function ClipCard(
   const gameIcon = exeIcon ?? clip.game_icon_url ?? null;
   const hasGame = !!(clip.game_process_name || clip.game_display_name);
 
-  useEffect(() => () => clearTimeout(hoverTimer.current), []);
+  useEffect(() => () => {
+    mounted.current = false;
+    clearTimeout(hoverTimer.current);
+    clearTimeout(thumbRetryTimer.current);
+    thumbRepair.current?.();
+  }, []);
 
   useEffect(() => {
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting));
+    if (cardRef.current) observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  async function refreshMedia(): Promise<void> {
+    const updated = await clipApi.snapshot(clip);
+    if (!mounted.current) return;
+    const current = latest.current.clip;
+    if (clipKey(updated) !== clipKey(current) || (updated.media_revision ?? 0) < (current.media_revision ?? 0)) return;
+    latest.current.onChanged({
+      ...current,
+      thumbnail_file: updated.thumbnail_file,
+      thumbnail_path: updated.thumbnail_path,
+      duration_seconds: updated.duration_seconds,
+      media_revision: updated.media_revision,
+    });
+    setThumbBroken(false);
+    setThumbBust(Date.now());
+  }
+
+  useEffect(() => {
+    const needsThumb = !clip.thumbnail_path;
+    const needsDuration = !(typeof clip.duration_seconds === "number" && Number.isFinite(clip.duration_seconds) && clip.duration_seconds > 0);
+    if (!visible || (!needsThumb && !needsDuration)) return;
     let cancelled = false;
-    const needsThumb = !clip.thumbnail_file;
-    const video = document.createElement("video");
-    video.preload = needsThumb ? "auto" : "metadata";
-    video.muted = true;
-    video.playsInline = true;
-
-    const finish = () => {
-      video.removeAttribute("src");
+    let finish = () => {};
+    const cancelQueued = enqueueMediaProbe(() => new Promise<void>((resolve) => {
+      if (cancelled) { resolve(); return; }
+      const video = document.createElement("video");
+      video.preload = needsThumb ? "auto" : "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      let working = false;
+      const timeout = setTimeout(() => { finish(); }, 10000);
+      finish = () => {
+        clearTimeout(timeout);
+        video.onloadedmetadata = null;
+        video.onloadeddata = null;
+        video.onerror = null;
+        video.removeAttribute("src");
+        video.load();
+        resolve();
+      };
+      const repairDuration = async () => {
+        const duration = video.duration;
+        if (needsDuration && Number.isFinite(duration) && duration > 0 && !sameDuration(clip.duration_seconds, duration)) {
+          await clipApi.setDuration(clip, duration);
+        }
+      };
+      const fallback = async () => {
+        if (cancelled || regenTried.current) return;
+        regenTried.current = true;
+        const result = await clipApi.regenThumb(clip);
+        if (!cancelled && result.ok) await refreshMedia();
+      };
+      video.onloadedmetadata = () => {
+        if (cancelled || needsThumb || working) return;
+        working = true;
+        void repairDuration().then(() => { if (!cancelled) return refreshMedia(); }).catch((error) => console.error("Metadata refresh failed", error)).finally(finish);
+      };
+      video.onloadeddata = () => {
+        if (cancelled || !needsThumb || working) return;
+        working = true;
+        void (async () => {
+          await repairDuration();
+          if (cancelled) return;
+          const dataUrl = drawVideoThumb(video);
+          if (!dataUrl) await fallback();
+          else {
+            const result = await clipApi.saveCapturedThumb(clip, dataUrl);
+            if (!cancelled && result.ok) await refreshMedia();
+          }
+        })().catch((error) => console.error("Thumbnail repair failed", error)).finally(finish);
+      };
+      video.onerror = () => {
+        if (working) return;
+        working = true;
+        void (needsThumb ? fallback() : Promise.resolve()).catch((error) => console.error("Thumbnail refresh failed", error)).finally(finish);
+      };
+      video.src = mediaUrl(clip);
       video.load();
-    };
-
-    // Use engine thumbnail generation when WebView2 cannot decode the container.
-    const fallbackToEngine = async () => {
-      if (cancelled || regenTried.current) return;
-      regenTried.current = true;
-      const res = await clipApi.regenThumb(clip);
-      if (!cancelled && res.ok) {
-        setThumbBust(Date.now());
-      }
-    };
-
-    video.onloadedmetadata = async () => {
-      if (cancelled) return;
-      const duration = video.duration;
-      if (Number.isFinite(duration) && duration > 0 && !sameDuration(clip.duration_seconds, duration)) {
-        setDisplayDuration(duration);
-        const res = await clipApi.setDuration(clip, duration);
-        if (!cancelled && res.ok) onChanged({ ...clip, duration_seconds: duration });
-      }
-      if (!needsThumb) finish();
-    };
-
-    video.onloadeddata = async () => {
-      if (cancelled || !needsThumb) return;
-      const dataUrl = drawVideoThumb(video);
-      if (!dataUrl) {
-        await fallbackToEngine();
-        finish();
-        return;
-      }
-      const res = await clipApi.saveCapturedThumb(clip, dataUrl);
-      if (!cancelled && res.ok && typeof res.thumbnail_file === "string") {
-        setLocalThumb(res.thumbnail_file);
-        setThumbBust(Date.now());
-        onChanged({ ...clip, thumbnail_file: res.thumbnail_file });
-      }
-      finish();
-    };
-
-    video.onerror = () => {
-      // Container/codec unsupported by WebView2 (e.g. .mkv) - hand off to the
-      // engine regenerator instead of silently giving up.
-      if (needsThumb) {
-        void fallbackToEngine().finally(finish);
-      } else {
-        finish();
-      }
-    };
-    video.src = mediaUrl(clip);
-    video.load();
-
+    }));
     return () => {
       cancelled = true;
+      cancelQueued();
       finish();
     };
-  }, [clip.id, clip.source, clip.video_file]);
+  }, [visible, clipKey(clip), clip.video_file, clip.thumbnail_path, clip.duration_seconds, clip.media_revision]);
 
-  const thumb = localThumb ? thumbUrl({ ...clip, thumbnail_file: localThumb }) : null;
+  const thumb = thumbUrl(clip);
   const showPlaceholder = !thumb || thumbBroken;
   const thumbSrc = thumb ? `${thumb}${thumbBust ? `?v=${thumbBust}` : ""}` : null;
 
@@ -176,19 +212,25 @@ export const ClipCard = memo(function ClipCard(
     setMuted(true);
   }
 
-  async function onThumbError() {
+  function onThumbError() {
+    if (thumbAttempts.current < 3) {
+      const attempt = ++thumbAttempts.current;
+      clearTimeout(thumbRetryTimer.current);
+      thumbRetryTimer.current = setTimeout(() => setThumbBust(Date.now()), attempt * 1000);
+      return;
+    }
     if (regenTried.current) {
       setThumbBroken(true);
       return;
     }
     regenTried.current = true;
-    const res = await clipApi.regenThumb(clip);
-    if (res.ok) {
-      setThumbBust(Date.now());
-      onChanged(clip);
-    } else {
-      setThumbBroken(true);
-    }
+    thumbRepair.current = enqueueMediaProbe(async () => {
+      if (!mounted.current || !visible) return;
+      const result = await clipApi.regenThumb(clip);
+      if (!mounted.current) return;
+      if (result.ok) await refreshMedia();
+      else setThumbBroken(true);
+    });
   }
 
   async function toggleFavorite(e: MouseEvent) {
@@ -203,6 +245,7 @@ export const ClipCard = memo(function ClipCard(
   return (
     <div
       class="card"
+      ref={cardRef}
       onContextMenu={(e) => {
         e.preventDefault();
         onContextMenu(e as unknown as MouseEvent, clip);

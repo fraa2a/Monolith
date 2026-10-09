@@ -23,7 +23,7 @@ jobs:
         run: python3 scripts/check-text.py
       - name: Run portable native regressions
         run: |
-          for suite in phase1 phase2 u6; do
+          for suite in phase1 phase2 u6 logging; do
             cmake -S "tests/$suite" -B "build-tests/$suite" -DCMAKE_CXX_FLAGS='-Werror'
             cmake --build "build-tests/$suite" --parallel 2
             ctest --test-dir "build-tests/$suite" --output-on-failure
@@ -40,6 +40,8 @@ jobs:
           npm ci --ignore-scripts --no-audit
           npm run build
           node --test ../../tests/stream-deck/ipc-client.test.mjs
+      - name: Test updater state ordering
+        run: node --experimental-strip-types --test tests/updater/state-stream.test.mjs
       - name: Check and build frontends
         run: |
           for app in desktop-ui updater; do

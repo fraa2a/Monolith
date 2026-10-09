@@ -329,3 +329,33 @@ Replace the independent component swaps with one app-local transaction containin
 Recover before querying installed versions. Preserve unexpectedly changed files and surface recovery errors. Keep transaction backups until commit or complete rollback; retry cleanup if loaded images prevent removal. Read installed updater version resources and report engine spawn errors. Do not start a restored engine while recovery is still pending.
 
 This provides recoverable disk installation, not instantaneous multi-file visibility or certified power-loss durability. A missing updater executable between its two moves can require a retained updater/reinstallation to invoke recovery. Stable file identity, concurrent external writers, engine readiness and clean Windows installer execution remain separate work. See `docs/audit/2026-10-08-followup.md` for test evidence.
+
+## ADR-0022: Owned recording work and stable media identity
+
+Date: 2026-10-09
+
+The engine remains the only media/catalog writer. Persistent catalog and clip UIDs guard identity; media revisions guard duration, thumbnail and timeline updates. Collections quarantine ambiguous legacy membership rather than attaching it to reused IDs. Read-only UI hydration uses one settings-folder snapshot for both database and media paths.
+
+Trim uses catalog mutation locking and a recoverable operation journal covering media, metadata and bookmark retiming. Reconciliation preserves unavailable rows and excludes owned/temporary media. Publication ownership spans catalog insertion and final bookmark batches, rejecting competing destructive edits until complete.
+
+Shared capture epochs, bounded encoded-write jobs, an owned lifecycle worker and session bookmark recovery batches replace global session state and synchronous producer writes. Optional audio arriving after the mux header waits for the next session. Failed finalization preserves valid partial media, exposes an error and blocks a new session until retained work is resolved. Replay callbacks, catalog tasks and logging drain before teardown.
+
+The UI stages thumbnail bytes in a fixed upload directory and sends an opaque token over RPC. The engine validates size, PNG signature, identity and revision before publication. Media reads use a bounded custom protocol checking current canonical roots rather than an accumulating asset scope.
+
+This preserves the native engine and Tauri sidecars. Queue bounds and recovery journals do not imply unlimited throughput, instantaneous multi-resource atomicity or certified power-loss durability.
+
+## ADR-0023: Signed release identity and stable updater recovery
+
+Date: 2026-10-09
+
+Retain legacy ZIP signatures and field compatibility. Add a separate Ed25519 signature over exact UTF-8 `monolith-component-v1\n{key}\n{version}\n{size}\n{lowercase_sha256}\n`. New clients require the identity signature, validate payload version resources and reject downgrades. Release generation without a valid matching key fails; verification streams bounded chunks and observes cancellation.
+
+Sync a stable updater recovery copy outside the replacement plan before journaling. The engine detects pending recovery and launches that entry. Retain actual engine process handles, resolve executable path aliases consistently, and require version readiness from a live restarted child. Serialize cancellation against Applying and order snapshots/events using monotonic revisions.
+
+Old clients accept the compatible manifest, but their first upgrade still runs old transaction code. New recovery cannot fix an interruption before the stable entry has been installed; reinstall remains the migration fallback. Clean Windows installation and power-loss tests remain release requirements.
+
+### Audit continuation: native mutation and publication integration
+
+The recorder now verifies catalog/clip identity while holding the catalog mutation lock; trim, bookmark edits and captured thumbnails also require the current media revision. Trim journals the original media backup and updates duration, revision and bookmarks in one SQLite transaction. A prepared operation restores the original on recovery; a committed operation cleans its workspace. Recovery does not imply filesystem/SQLite atomicity or certified power-loss durability.
+
+Manual recording publication owns the media and a bounded session bookmark batch until catalog/bookmark writes complete. Failed publication retains its finalization state for retry and gates new recording starts. Recovery sidecars are attached by reconciliation; live markers before finalization are not crash-durable. Captured thumbnails use a validated 32-hex token under the fixed local `Monolith/thumb-upload` root and are copied into the catalog thumbnail folder by the engine. Rust remains a read-only catalog consumer.

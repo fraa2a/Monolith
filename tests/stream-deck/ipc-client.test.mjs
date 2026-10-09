@@ -33,7 +33,7 @@ test('IPC handles UTF-8 splits, disconnects, response limits and shutdown', { ti
     const data = once(peer, 'data');
     const reply = client.request('get_status');
     const request = JSON.parse((await data)[0].toString());
-    const response = Buffer.from(JSON.stringify({ id: request.id, result: 'caffè' }) + '\n');
+    const response = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: 'caffè' }) + '\n');
     const split = response.indexOf(Buffer.from('è')) + 1;
     peer.write(response.subarray(0, split));
     await delay(10);
@@ -50,7 +50,7 @@ test('IPC handles UTF-8 splits, disconnects, response limits and shutdown', { ti
     const nextData = once(peer, 'data');
     const next = client.request('get_status');
     const nextRequest = JSON.parse((await nextData)[0].toString());
-    peer.write(JSON.stringify({ id: nextRequest.id, result: 42 }) + '\n');
+    peer.write(JSON.stringify({ jsonrpc: '2.0', id: nextRequest.id, result: 42 }) + '\n');
     assert.equal(await next, 42);
     peer.write('x'.repeat(65537));
     await until(() => !client.isConnected());
@@ -67,5 +67,35 @@ test('IPC handles UTF-8 splits, disconnects, response limits and shutdown', { ti
     for (const socket of peers) socket.destroy();
     server.close();
     await once(server, 'close');
+  }
+});
+
+
+test('IPC rejects malformed envelopes and status objects', async () => {
+  let peer;
+  const server = net.createServer(socket => { peer = socket; });
+  server.listen(45991, '127.0.0.1');
+  await once(server, 'listening');
+  const client = new IpcClient();
+  try {
+    client.connect();
+    await until(() => client.isConnected() && peer);
+    for (const fields of [{}, { result: null, error: {} }, { jsonrpc: '1.0', result: true }]) {
+      const data = once(peer, 'data');
+      const reply = client.request('save_replay');
+      const rejected = assert.rejects(reply, /invalid.*response/);
+      const request = JSON.parse((await data)[0].toString());
+      peer.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...fields }) + '\n');
+      await rejected;
+    }
+    for (const result of [null, {}, { recording: true }, { recording: true, paused: false, replay_enabled: true, recording_enabled: 'yes' }]) {
+      const data = once(peer, 'data');
+      const reply = client.getStatus();
+      const request = JSON.parse((await data)[0].toString());
+      peer.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
+      assert.equal(await reply, null);
+    }
+  } finally {
+    client.destroy(); peer?.destroy(); server.close(); await once(server, 'close');
   }
 });

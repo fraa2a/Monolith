@@ -175,7 +175,7 @@ public:
     // is_float: true for IEEE float (32-bit), false for signed PCM.
     void push_pcm(const uint8_t* data, int bytes,
                   int sample_rate, int channels,
-                  int bit_depth, bool is_float);
+                  int bit_depth, bool is_float, int64_t capture_us = -1);
 
     void flush();
     void close();
