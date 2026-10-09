@@ -129,15 +129,15 @@ export const clipApi = {
   },
   revealInExplorer: (c: Clip) => ok(invoke("reveal_in_explorer", { path: c.video_path })),
   trim: (c: Clip, start: number, end: number) =>
-    ok(invoke("clip_trim", { ...clipIdentity(c), start, end })),
+    ok(invoke("clip_trim", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, start, end })),
   listBookmarks: (c: Clip) =>
     invoke<BookmarkRow[]>("clip_list_bookmarks", { ...clipIdentity(c) }),
   addBookmark: (c: Clip, timeSeconds: number, label: string, color: string) =>
-    ok(invoke("clip_add_bookmark", { ...clipIdentity(c), timeSeconds, label, color })),
+    ok(invoke("clip_add_bookmark", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, timeSeconds, label, color })),
   updateBookmark: (c: Clip, seq: number, label: string, color: string) =>
-    ok(invoke("clip_update_bookmark", { ...clipIdentity(c), seq, label, color })),
+    ok(invoke("clip_update_bookmark", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, seq, label, color })),
   deleteBookmark: (c: Clip, seq: number) =>
-    ok(invoke("clip_delete_bookmark", { ...clipIdentity(c), seq })),
+    ok(invoke("clip_delete_bookmark", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, seq })),
   recordingAddBookmark: () => ok(invoke("recording_add_bookmark")),
 };
 

@@ -1,5 +1,5 @@
 import { memo } from "preact/compat";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { type Clip, clipApi, clipKey, exeIconUrl, mediaUrl, thumbUrl } from "../lib/api.ts";
 import { enqueueMediaProbe } from "../lib/media-probes.ts";
 import { appLabel, formatDate, formatDuration, formatSize } from "../lib/format.ts";
@@ -60,7 +60,7 @@ export const ClipCard = memo(function ClipCard(
 
   const multitrack = useMultiTrackAudio(preview ? videoEl : null, preview ? mediaUrl(clip) : null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     clearTimeout(thumbRetryTimer.current);
     thumbAttempts.current = 0;
     setDisplayDuration(clip.duration_seconds);

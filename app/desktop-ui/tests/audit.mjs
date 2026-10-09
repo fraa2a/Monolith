@@ -36,6 +36,7 @@ try {
     const clips = Array.from({ length: 15 }, (_, i) => ({ id: i + 1, source: "replay", catalog_uid: "catalog-replay", clip_uid: `clip${i + 1}`, media_revision: 0, video_file: `video${i + 1}.mkv`, title: `Match ${String(i + 1).padStart(2, "0")}`, thumbnail_file: `thumb${i + 1}.svg`, video_path: `video${i + 1}.mkv`, thumbnail_path: `thumb${i + 1}.svg`, created_at_utc: "2026-10-08T10:00:00Z", duration_seconds: 30, game_process_name: "arena.exe", game_display_name: "Arena", favorite: false, hashtags: ["gameplay"], size_bytes: 12000000 }));
     const collections = [{ id: 1, name: "Best moments", color: "#c4ff42", clip_count: 3, created_at_utc: "2026-10-08T10:00:00Z" }];
     let engine = { connected: true, recording: false, replay_enabled: true, capture_running: true, replay_running: true, recording_error: "", version: "1.6.2" };
+    const bookmarks = [];
     const calls = [];
     window.__uiTest = { calls, config, engine, clips, collections, failCommand: false, unknown: [] };
     window.__uiTest.maximized=false; window.__uiTest.mediaLoads=0; window.__uiTest.saveDelay=0; window.__uiTest.activeSaves=0; window.__uiTest.maxSaves=0;
@@ -75,7 +76,19 @@ try {
           case "game_icon":
           case "exe_icon": return null;
           case "game_artwork": return { icon: null, cover: null };
-          case "clip_list_bookmarks": return [];
+          case "clip_list_bookmarks": return structuredClone(bookmarks);
+          case "clip_add_bookmark":
+          case "clip_update_bookmark":
+          case "clip_delete_bookmark":
+          case "clip_trim": {
+            const clip = clips.find((clip) => clip.id === args.id && clip.source === args.source);
+            if (args.mediaRevision !== clip.media_revision) throw new Error("Stale media revision");
+            if (command === "clip_add_bookmark") bookmarks.push({seq:1,time_seconds:args.timeSeconds,label:args.label,color:args.color});
+            if (command === "clip_update_bookmark") Object.assign(bookmarks.find((bm)=>bm.seq===args.seq), {label:args.label,color:args.color});
+            if (command === "clip_delete_bookmark") bookmarks.splice(bookmarks.findIndex((bm)=>bm.seq===args.seq),1);
+            if (command === "clip_trim") { clip.duration_seconds=args.end-args.start; clip.media_revision++; }
+            return;
+          }
           case "clip_set_favorite": clips.find((clip) => clip.id === args.id).favorite = args.favorite; return;
           case "list_collections": return structuredClone(collections);
           case "collection_clips": return structuredClone(clips.slice(0, 3));
@@ -223,13 +236,30 @@ try {
     assert.equal(await page.evaluate(()=>window.__uiTest.calls.filter(c=>c.command==='collection_clips').length),0);
     assert.equal(await page.evaluate(()=>window.__uiTest.calls.filter(c=>c.command==='collection_memberships').length),1);
   });
+  await check('S03 timeline mutations use the clip media revision',async()=>{
+    await page.evaluate(()=>{window.__uiTest.clips[0].media_revision=7;window.__uiTest.emit();});
+    await page.getByRole('button',{name:'Open Match 01',exact:true}).click();
+    await page.evaluate(()=>{Object.defineProperty(HTMLMediaElement.prototype,'duration',{get:()=>30});document.querySelector('.detail video').dispatchEvent(new Event('loadedmetadata'));});
+    await page.getByTitle('Add bookmark at current time',{exact:true}).click();
+    await until(async()=>await page.getByTitle('Edit bookmark',{exact:true}).count()===1,'bookmark added');
+    await page.getByTitle('Edit bookmark',{exact:true}).click();await page.locator('.bm-label-input').fill('Edited');await page.keyboard.press('Enter');
+    await until(async()=>await page.locator('.bm-label').textContent()==='Edited','bookmark updated');
+    await page.getByTitle('Delete bookmark',{exact:true}).click();await until(async()=>await page.getByTitle('Edit bookmark',{exact:true}).count()===0,'bookmark deleted');
+    await page.getByTitle('Trim',{exact:true}).click();await page.locator('.trim-start').focus();await page.keyboard.press('ArrowRight');await page.getByRole('button',{name:'Apply',exact:true}).click();
+    await until(async()=>await page.evaluate(()=>window.__uiTest.clips[0].media_revision)===8,'clip trimmed');
+  });
   await check('Q02 transient media saturation retries thumbnail without regeneration',async()=>{
+    await page.evaluate(() => {
+      window.__retryFrame = window.requestAnimationFrame;
+      window.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 250);
+    });
     let requests=0;
     await page.route('**/flaky.svg*',route=>{requests++;return requests===1?route.fulfill({status:503}):route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="white"/></svg>'});});
     await page.evaluate(()=>{window.__uiTest.clips[0].thumbnail_path='flaky.svg';window.__uiTest.emit();});
     await until(async()=>requests>=2&&await page.locator('.card').first().locator('.card-thumb').evaluate(img=>img.complete&&img.naturalWidth>0),'thumbnail retry');
     assert.equal(await page.evaluate(()=>window.__uiTest.calls.filter(c=>c.command==='clip_regen_thumb').length),0);
     await page.unroute('**/flaky.svg*');
+    await page.evaluate(() => { window.requestAnimationFrame = window.__retryFrame; });
   });
   await check('F06 engine fallback restores missing thumbnail path',async()=>{
     await page.evaluate(()=>{const c=window.__uiTest.clips[0];c.thumbnail_file=null;c.thumbnail_path=null;c.video_file='unsupported-video.mkv';window.__uiTest.emit();});
