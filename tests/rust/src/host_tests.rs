@@ -101,3 +101,40 @@ fn memberships_survive_missing_media_and_reject_reused_ids_and_catalogs() {
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
+
+fn switched_roots(name: &str) -> (std::path::PathBuf,std::path::PathBuf) {
+    let root=std::env::temp_dir().join(format!("monolith-root-{name}-{}",std::process::id()));
+    let _=fs::remove_dir_all(&root);fs::create_dir_all(&root).unwrap();std::env::set_var("LOCALAPPDATA",&root);
+    for (name,content) in [("a",b"aaaa".as_slice()),("b",b"bbbbbbbbb".as_slice())] {
+        let folder=root.join(name);fs::create_dir_all(folder.join(".thumbs")).unwrap();
+        fs::write(folder.join("a.mp4"),content).unwrap();fs::write(folder.join(".thumbs/a.png"),content).unwrap();
+        let db=Connection::open(folder.join("clips.db")).unwrap();
+        db.execute_batch("CREATE TABLE catalog_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          CREATE TABLE clips(id INTEGER PRIMARY KEY,video_file TEXT,thumbnail_file TEXT,created_at_utc TEXT,duration_seconds REAL,game_process_name TEXT,game_display_name TEXT,favorite INTEGER,title TEXT,clip_uid TEXT NOT NULL);
+          CREATE TABLE clip_hashtags(clip_id INTEGER,tag TEXT);
+          INSERT INTO clips VALUES(1,'a.mp4','a.png','2026-10-08T00:00:00Z',5,NULL,NULL,0,'A','clip-one');").unwrap();
+        db.execute("INSERT INTO catalog_metadata VALUES('catalog_uid',?1)",[name]).unwrap();
+    }
+    let pinned=root.join("a");
+    settings_store::write_config(&json!({"output":{"clips_directory":pinned,"recordings_directory":root.join("recs")}})).unwrap();
+    settings_store::write_config(&json!({"output":{"clips_directory":root.join("b"),"recordings_directory":root.join("recs")}})).unwrap();
+    (root,pinned)
+}
+fn assert_pinned(clip: &clip_catalog::Clip,folder: &std::path::Path) {
+    assert_eq!(clip.catalog_uid,"a");assert_eq!(clip.video_path,folder.join("a.mp4").to_string_lossy());
+    assert_eq!(clip.thumbnail_path.as_deref(),Some(folder.join(".thumbs/a.png").to_string_lossy().as_ref()));assert_eq!(clip.size_bytes,4);
+}
+#[test]
+fn listing_keeps_catalog_and_media_in_the_resolved_folder() {
+    let _guard=crate::CATALOG_ENV_LOCK.lock().unwrap_or_else(|err|err.into_inner());
+    let (root,pinned)=switched_roots("list");
+    let clips=clip_catalog::read_source_in(clip_catalog::ClipSource::Replay,&clip_catalog::ClipFilter::default(),&pinned);
+    assert_eq!(clips.len(),1);assert_pinned(&clips[0],&pinned);fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn id_reads_keep_catalog_and_media_in_the_resolved_folder() {
+    let _guard=crate::CATALOG_ENV_LOCK.lock().unwrap_or_else(|err|err.into_inner());
+    let (root,pinned)=switched_roots("ids");
+    let clips=clip_catalog::clips_by_ids_in(clip_catalog::ClipSource::Replay,&[1],&pinned).unwrap();
+    assert_pinned(&clips[&1],&pinned);fs::remove_dir_all(root).unwrap();
+}

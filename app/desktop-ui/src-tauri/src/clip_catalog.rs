@@ -60,12 +60,8 @@ pub struct Clip {
     pub thumbnail_path: Option<String>,
 }
 
-fn db_path(source: ClipSource) -> PathBuf {
-    let dirs = settings_store::output_dirs();
-    match source {
-        ClipSource::Replay => dirs.clips.join("clips.db"),
-        ClipSource::Manual => dirs.recs.join("recs.db"),
-    }
+fn catalog_path(source: ClipSource, folder: &Path) -> PathBuf {
+    folder.join(match source { ClipSource::Replay=>"clips.db",ClipSource::Manual=>"recs.db" })
 }
 
 fn media_folder(source: ClipSource) -> PathBuf {
@@ -78,7 +74,7 @@ fn media_folder(source: ClipSource) -> PathBuf {
 
 fn open(source: ClipSource) -> Option<Connection> {
     let conn =
-        Connection::open_with_flags(db_path(source), OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+        Connection::open_with_flags(catalog_path(source,&media_folder(source)),OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     conn.busy_timeout(std::time::Duration::from_millis(4000))
         .ok()?;
     Some(conn)
@@ -230,11 +226,15 @@ fn map_clip_row(
     })
 }
 
-fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
-    let Some(conn) = open(source) else {
+fn read_source(source: ClipSource,filter: &ClipFilter) -> Vec<Clip> {
+    read_source_in(source,filter,&media_folder(source))
+}
+
+pub(crate) fn read_source_in(source: ClipSource,filter: &ClipFilter,folder: &Path) -> Vec<Clip> {
+    let Ok(conn)=Connection::open_with_flags(catalog_path(source,folder),OpenFlags::SQLITE_OPEN_READ_ONLY) else {
         return Vec::new();
     };
-    let folder = media_folder(source);
+    let _=conn.busy_timeout(std::time::Duration::from_millis(4000));
     let tags = clip_hashtags(&conn);
     let artwork = game_catalog::ArtworkCache::load();
     // ISO-8601 strings sort lexicographically; list_clips re-sorts the merged
@@ -246,7 +246,7 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
     };
 
     let Ok(rows) = stmt.query_map([], |row| {
-        map_clip_row(row, source, &folder, &tags, &artwork)
+        map_clip_row(row,source,folder,&tags,&artwork)
     }) else {
         return Vec::new();
     };
@@ -256,15 +256,18 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
         .collect()
 }
 
-pub fn clips_by_ids(source: ClipSource, ids: &[i64]) -> Result<HashMap<i64, Clip>, String> {
-    let path = db_path(source);
+pub fn clips_by_ids(source: ClipSource,ids: &[i64]) -> Result<HashMap<i64,Clip>,String> {
+    clips_by_ids_in(source,ids,&media_folder(source))
+}
+
+pub(crate) fn clips_by_ids_in(source: ClipSource,ids: &[i64],folder: &Path) -> Result<HashMap<i64,Clip>,String> {
+    let path=catalog_path(source,folder);
     path.metadata()
         .map_err(|err| format!("catalog unavailable: {err}"))?;
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|err| err.to_string())?;
     conn.busy_timeout(std::time::Duration::from_millis(4000))
         .map_err(|err| err.to_string())?;
-    let folder = media_folder(source);
     let tags = clip_hashtags(&conn);
     let artwork = game_catalog::ArtworkCache::load();
     let sql = format!("{} WHERE id = ?1", clip_select_sql(&conn));
@@ -273,7 +276,7 @@ pub fn clips_by_ids(source: ClipSource, ids: &[i64]) -> Result<HashMap<i64, Clip
     for &id in ids {
         let clip = stmt
             .query_row(params![id], |row| {
-                map_clip_row(row, source, &folder, &tags, &artwork)
+                map_clip_row(row,source,folder,&tags,&artwork)
             })
             .optional()
             .map_err(|err| err.to_string())?;

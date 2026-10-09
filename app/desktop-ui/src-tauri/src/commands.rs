@@ -319,23 +319,9 @@ pub async fn clip_regen_thumb(
     .await
 }
 #[tauri::command]
-pub async fn clip_trim(
-    source: String,
-    id: i64,
-    catalog_uid: String,
-    clip_uid: String,
-    start: f64,
-    end: f64,
-) -> Result<(), String> {
-    clip_mutation(
-        "clip_trim",
-        source,
-        id,
-        catalog_uid,
-        clip_uid,
-        serde_json::json!({"start":start,"end":end}),
-    )
-    .await
+pub async fn clip_trim(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,start: f64,end: f64) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_trim",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"start":start,"end":end}))).await
 }
 
 // Adds a bookmark at the current position of the running manual recording.
@@ -366,63 +352,21 @@ pub async fn clip_list_bookmarks(
 }
 
 #[tauri::command]
-pub async fn clip_add_bookmark(
-    source: String,
-    id: i64,
-    catalog_uid: String,
-    clip_uid: String,
-    time_seconds: f64,
-    label: String,
-    color: String,
-) -> Result<(), String> {
-    clip_mutation(
-        "clip_add_bookmark",
-        source,
-        id,
-        catalog_uid,
-        clip_uid,
-        serde_json::json!({"time_seconds":time_seconds,"label":label,"color":color}),
-    )
-    .await
+pub async fn clip_add_bookmark(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,time_seconds: f64,label: String,color: String) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_add_bookmark",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"time_seconds":time_seconds,"label":label,"color":color}))).await
 }
 #[tauri::command]
-pub async fn clip_update_bookmark(
-    source: String,
-    id: i64,
-    catalog_uid: String,
-    clip_uid: String,
-    seq: i64,
-    label: String,
-    color: String,
-) -> Result<(), String> {
-    clip_mutation(
-        "clip_update_bookmark",
-        source,
-        id,
-        catalog_uid,
-        clip_uid,
-        serde_json::json!({"seq":seq,"label":label,"color":color}),
-    )
-    .await
+pub async fn clip_update_bookmark(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,seq: i64,label: String,color: String) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_update_bookmark",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"seq":seq,"label":label,"color":color}))).await
 }
 #[tauri::command]
-pub async fn clip_delete_bookmark(
-    source: String,
-    id: i64,
-    catalog_uid: String,
-    clip_uid: String,
-    seq: i64,
-) -> Result<(), String> {
-    clip_mutation(
-        "clip_delete_bookmark",
-        source,
-        id,
-        catalog_uid,
-        clip_uid,
-        serde_json::json!({"seq":seq}),
-    )
-    .await
+pub async fn clip_delete_bookmark(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,seq: i64) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_delete_bookmark",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"seq":seq}))).await
 }
+
 #[tauri::command]
 pub async fn clip_snapshot(source: String, id: i64) -> Result<Clip, String> {
     let src = parse_source(&source)?;

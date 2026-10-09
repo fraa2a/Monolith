@@ -23,6 +23,15 @@ pub fn send(method: &str, params: Value) -> Result<(), String> {
     }
 }
 
+pub fn timeline(method: &str,source: &str,id: i64,catalog_uid: &str,clip_uid: &str,media_revision: i64,mut fields: Value) -> Result<(),String> {
+    fields["source"]=serde_json::json!(source);
+    fields["id"]=serde_json::json!(id);
+    fields["catalog_uid"]=serde_json::json!(catalog_uid);
+    fields["clip_uid"]=serde_json::json!(clip_uid);
+    fields["media_revision"]=serde_json::json!(media_revision);
+    send(method,fields)
+}
+
 fn stage(root: &Path, data_url: &str) -> Result<(String, PathBuf), String> {
     if data_url.len() > 12 * 1024 * 1024 {
         return Err("thumbnail too large".into());
@@ -101,6 +110,36 @@ pub fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timeline_requests_send_identity_revision_and_edit_fields_over_rpc() {
+        use std::{io::{BufRead,BufReader,Write},net::TcpListener};
+        let listener=TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,45991)).unwrap();
+        let server=std::thread::spawn(move || {
+            let mut received=Vec::new();
+            for _ in 0..4 {
+                let (mut stream,_)=listener.accept().unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(4))).unwrap();
+                let mut line=String::new();BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+                let request: Value=serde_json::from_str(&line).unwrap();
+                writeln!(stream,"{}",serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":null})).unwrap();received.push(request);
+            }
+            received
+        });
+        let edits=[
+            ("clip_trim",serde_json::json!({"start":2.0,"end":4.0})),
+            ("clip_add_bookmark",serde_json::json!({"time_seconds":3.0,"label":"Marker","color":"red"})),
+            ("clip_update_bookmark",serde_json::json!({"seq":2,"label":"New label","color":"blue"})),
+            ("clip_delete_bookmark",serde_json::json!({"seq":2})),
+        ];
+        for (method,fields) in &edits {timeline(method,"manual",9,"catalog-one","clip-one",11,fields.clone()).unwrap();}
+        for (request,(method,fields)) in server.join().unwrap().iter().zip(edits) {
+            assert_eq!(request["method"],method);let params=&request["params"];
+            assert_eq!(params["source"],"manual");assert_eq!(params["id"],9);
+            assert_eq!(params["catalog_uid"],"catalog-one");assert_eq!(params["clip_uid"],"clip-one");assert_eq!(params["media_revision"],11);
+            for (key,value) in fields.as_object().unwrap() {assert_eq!(&params[key],value);}
+        }
+    }
+
     #[test]
     fn staging_bounds_validates_and_creates_unique_uploads() {
         let root = std::env::temp_dir().join(format!("monolith-upload-{}", std::process::id()));
