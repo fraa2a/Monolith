@@ -237,7 +237,7 @@ try {
     assert.equal(await page.evaluate(()=>window.__uiTest.calls.filter(c=>c.command==='collection_memberships').length),1);
   });
   await check('S03 timeline mutations use the clip media revision',async()=>{
-    await page.evaluate(()=>{window.__uiTest.clips[0].media_revision=7;window.__uiTest.emit();});
+    await page.evaluate(()=>{window.__uiTest.clips[0].media_revision=7;window.__uiTest.clips[0].source="manual";window.__uiTest.emit();});
     await page.getByRole('button',{name:'Open Match 01',exact:true}).click();
     await page.evaluate(()=>{Object.defineProperty(HTMLMediaElement.prototype,'duration',{get:()=>30});document.querySelector('.detail video').dispatchEvent(new Event('loadedmetadata'));});
     await page.getByTitle('Add bookmark at current time',{exact:true}).click();

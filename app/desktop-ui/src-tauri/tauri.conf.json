@@ -12,11 +12,7 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' media: http://media.localhost data:; media-src 'self' media: http://media.localhost; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'",
-      "assetProtocol": {
-        "enable": false,
-        "scope": []
-      }
+      "csp": "default-src 'self'; img-src 'self' media: http://media.localhost data:; media-src 'self' media: http://media.localhost; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
