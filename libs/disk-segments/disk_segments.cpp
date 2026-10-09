@@ -198,6 +198,10 @@ struct DiskSegmentBuffer::Impl {
 };
 DiskSegmentBuffer::DiskSegmentBuffer() : impl_(new Impl) {}
 DiskSegmentBuffer::~DiskSegmentBuffer() { delete impl_; }
+void DiskSegmentBuffer::wait_for_saves() {
+    std::lock_guard lifecycle(impl_->lifecycle);
+    if (impl_->save_thread.joinable()) impl_->save_thread.join();
+}
 void DiskSegmentBuffer::configure(Config const& cfg) {
     std::lock_guard lk(impl_->mutex);
     impl_->reconfigure = impl_->reconfigure || cfg.container != impl_->cfg.container || cfg.segment_dir != impl_->cfg.segment_dir;

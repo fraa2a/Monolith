@@ -15,6 +15,7 @@ class DiskSegmentBuffer {
 public:
      DiskSegmentBuffer();
     ~DiskSegmentBuffer();
+    void wait_for_saves();
     DiskSegmentBuffer(const DiskSegmentBuffer&)            = delete;
     DiskSegmentBuffer& operator=(const DiskSegmentBuffer&) = delete;
 

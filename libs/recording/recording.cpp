@@ -300,8 +300,14 @@ RecordingState ManualRecorder::state() const
 
 void ManualRecorder::fail(std::string error)
 {
-    { std::lock_guard lk(impl_->error_mutex); impl_->error = std::move(error); }
-    impl_->state = RecordingState::Failed;
+    auto state = impl_->state.load();
+    while (state != RecordingState::Idle) {
+        if (impl_->state.compare_exchange_weak(state, RecordingState::Failed)) {
+            std::lock_guard lk(impl_->error_mutex);
+            impl_->error = std::move(error);
+            return;
+        }
+    }
 }
 std::string ManualRecorder::error() const {
     std::lock_guard lk(impl_->error_mutex); return impl_->error;

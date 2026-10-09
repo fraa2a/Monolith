@@ -53,6 +53,13 @@ struct ReplayBuffer::Impl : detail::PacketRing {
 
 
 ReplayBuffer::ReplayBuffer()  : impl_(new Impl()) {}
+void ReplayBuffer::wait_for_saves() {
+    if (impl_->save_thread.joinable()) impl_->save_thread.join();
+    disk_segments::DiskSegmentBuffer* disk = nullptr;
+    { std::lock_guard lock(impl_->mutex); disk = impl_->disk.get(); }
+    if (disk) disk->wait_for_saves();
+}
+
 ReplayBuffer::~ReplayBuffer()
 {
     if (impl_->save_thread.joinable())
