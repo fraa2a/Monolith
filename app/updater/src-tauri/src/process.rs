@@ -1,4 +1,3 @@
-#[cfg(windows)]
 use std::path::Path;
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -29,9 +28,54 @@ pub fn wait_ready(
     }
 }
 
+fn image_path(path: &Path) -> Result<String, String> {
+    let parent = std::fs::canonicalize(path.parent().ok_or("engine path has no parent")?)
+        .map_err(|e| format!("engine directory: {e}"))?;
+    let path = parent.join(path.file_name().ok_or("engine path has no filename")?);
+    Ok(path
+        .to_string_lossy()
+        .trim_start_matches("\\\\?\\")
+        .to_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
+    #[test]
+    fn image_identity_resolves_parent_aliases_when_executable_is_missing() {
+        let root = std::env::temp_dir().join(format!("monolith-image-path-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("installation")).unwrap();
+        std::os::unix::fs::symlink(root.join("installation"), root.join("alias")).unwrap();
+        let expected = image_path(&root.join("installation/Monolith.exe")).unwrap();
+        let actual = image_path(&root.join("alias/Monolith.exe")).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(actual, expected);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn image_identity_expands_short_directory_names_when_executable_is_missing() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+        let root =
+            std::env::temp_dir().join(format!("monolith image directory {}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wide: Vec<u16> = root
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut short = vec![0u16; 32768];
+        let length = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut short)) } as usize;
+        assert!(length > 0 && length < short.len());
+        let alias = std::path::PathBuf::from(String::from_utf16_lossy(&short[..length]));
+        let expected =
+            image_path(&std::fs::canonicalize(&root).unwrap().join("Monolith.exe")).unwrap();
+        let actual = image_path(&alias.join("Monolith.exe")).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(actual, expected);
+    }
     #[test]
     #[ignore]
     fn short_lived_child() {
@@ -72,7 +116,7 @@ mod tests {
             .env("MONOLITH_PROCESS_TEST", &root)
             .spawn()
             .unwrap();
-        let result = std::panic::catch_unwind(|| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for _ in 0..500 {
                 if root.join("ready").exists() {
                     break;
@@ -80,12 +124,21 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
             assert!(root.join("ready").exists());
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "fixture exited before discovery"
+            );
             let processes = EngineProcesses::capture(&exe).unwrap();
-            assert!(processes.running());
+            assert!(
+                processes.running(),
+                "live child {} at {:?} was not discovered",
+                child.id(),
+                exe
+            );
             std::fs::write(root.join("exit"), b"exit").unwrap();
             assert!(processes.wait_exit(Duration::from_millis(50)).is_err());
             processes.wait_exit(Duration::from_secs(5)).unwrap();
-        });
+        }));
         let _ = child.kill();
         let _ = child.wait();
         std::fs::remove_dir_all(root).unwrap();
@@ -135,13 +188,7 @@ impl EngineProcesses {
             OpenProcess, QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32,
             PROCESS_QUERY_LIMITED_INFORMATION,
         };
-        let expected = std::fs::canonicalize(exe.parent().ok_or("engine path has no parent")?)
-            .map_err(|e| format!("engine directory: {e}"))?
-            .join(exe.file_name().ok_or("engine path has no filename")?);
-        let expected = expected
-            .to_string_lossy()
-            .trim_start_matches("\\\\?\\")
-            .to_lowercase();
+        let expected = image_path(exe)?;
         let mut processes = Self(Vec::new());
         unsafe {
             let snapshot =
@@ -185,9 +232,11 @@ impl EngineProcesses {
                             let _ = CloseHandle(handle);
                             return Err(format!("engine process path: {e}"));
                         }
-                        let actual = String::from_utf16_lossy(&path[..size as usize])
-                            .trim_start_matches("\\\\?\\")
-                            .to_lowercase();
+                        let actual = String::from_utf16_lossy(&path[..size as usize]);
+                        let actual = image_path(Path::new(&actual)).map_err(|error| {
+                            let _ = CloseHandle(handle);
+                            error
+                        })?;
                         if actual == expected {
                             processes.0.push(handle);
                         } else {
