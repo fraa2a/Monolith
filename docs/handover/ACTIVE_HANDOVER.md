@@ -1,6 +1,15 @@
 # Active Handover
 
-Updated: 2026-10-08
+Updated: 2026-10-09
+
+## Current checkpoint: audit correction PR #8 in progress
+
+- User authorized the complete 2026-10-09 audit corrections in one PR: https://github.com/fraa2a/Monolith/pull/8. Branch `fix/audit-errors`, baseline `2e8c4ec1616215344b968a5f09a004cf9df6d494`. No merge or release is requested.
+- Remote checkpoint `3b77da296507f6f68b0888efeb9da9f3158b8d0a` preserves initial engine helpers, host/UI/updater and logger changes. Core CI passed on that checkpoint. Windows CI exposed asymmetric process-path normalization and obsolete Tauri protocol-asset configuration; followups are being integrated.
+- Local worktrees were reset twice by the execution environment before final integration was published. Recover from the remote branch; commit and push each subsequent correction promptly. Do not infer final verification from tests of an earlier local tree.
+- The 45-finding implementation scope and runtime limits are in `docs/audit/2026-10-09-fixes.md`. Decisions ADR-0022/0023 describe changed contracts. Engine 1.6.3, UI 1.5.1, updater 1.0.3, Stream Deck 1.4.1.
+- Final native mutation routing, storage journal and recording lifecycle integration are pending reconstruction and fresh checks at this checkpoint. Keep PR draft until final review and verification are assessed.
+- Actual Windows capture/audio hardware, WebView2 media behavior, power loss and clean installation remain release checks. Historical entries below do not override this checkpoint or the user's current authorization.
 
 
 ## Current checkpoint: screenshot-based desktop UI redesign
