@@ -18,6 +18,7 @@
 
 #include <capture/capture.h>
 #include <audio/audio.h>
+#include <audio/source_recovery.h>
 #include <gamelist/gamelist.h>
 #include <encoding/encoding.h>
 #include <encoding/trim.h>
@@ -28,6 +29,7 @@
 #include <recording/finalization.h>
 #include <recording/bookmark_journal.h>
 #include <recording/bounded_worker.h>
+#include <recording/packet_writer.h>
 #include <encoding/media_ownership.h>
 #include <platform-win/platform_win.h>
 #include <logging/logging.h>
@@ -66,6 +68,8 @@ static constexpr UINT  WM_TRAYICON        = WM_APP + 1;
 static constexpr UINT  WM_SETTINGS_RELOAD = WM_APP + 2;
 static constexpr UINT  WM_FAST_SCAN       = WM_APP + 3; // posted by the WinEvent fg hook
 static constexpr UINT  WM_REFRESH_AUDIO_SOURCES = WM_APP + 4; // posted by Settings UI on dropdown open
+static constexpr UINT  WM_SHELL_SETTINGS = WM_APP + 5;
+static constexpr UINT  WM_SHELL_RECORDING = WM_APP + 6;
 
 enum Cmd : UINT {
     CMD_SAVE_REPLAY     = 1001,
@@ -258,6 +262,9 @@ struct AudioRoute { int track = 0; int mixer_src = -1; float gain = 1.0f; };
 struct ActiveCapture {
     std::unique_ptr<audio::WasapiCapture> capture;
     std::vector<AudioRoute> routes;
+    std::function<bool(audio::WasapiCapture&, audio::PacketCallback)> start;
+    const char* log_tag = "audio";
+    audio::SourceRecovery recovery;
 };
 static std::vector<ActiveCapture> g_audio_captures;
 static replay_buffer::ReplayBuffer  g_replay;
@@ -266,6 +273,7 @@ static recording::ManualRecorder    g_recording;
 static int g_enc_w = 0; // configured encoder width (even-aligned)
 static int g_enc_h = 0; // configured encoder height (even-aligned)
 static std::atomic<bool> g_video_enc_open_attempted{ false };
+static std::atomic<bool> g_encoder_ready{false};
 static std::atomic<uint64_t> g_perf_pacer_frames_submitted{ 0 };
 static std::atomic<uint64_t> g_perf_encoder_frames_submitted{ 0 };
 static std::atomic<uint64_t> g_perf_encoder_push_time_us_total{ 0 };
@@ -299,18 +307,49 @@ static std::wstring g_recordings_dir;
 static std::string g_recording_container = "mkv";
 static std::atomic<bool> g_replay_enabled{ true };
 static std::atomic<bool> g_recording_enabled{ true };
+static std::mutex g_replay_stats_mutex;
+static replay_buffer::ReplayBufferStats g_replay_stats;
+static std::atomic<bool> g_replay_stats_requested{true};
+static recording::PacketWriter g_packet_writer([](encoding::EncodedPacket packet) {
+    if (g_replay_enabled.load(std::memory_order_relaxed)) g_replay.push(packet);
+    g_recording.push(std::move(packet));
+    if (g_replay_stats_requested.exchange(false)) {
+        auto stats = g_replay.stats();
+        std::lock_guard lock(g_replay_stats_mutex);
+        g_replay_stats = stats;
+    }
+});
+
+static void queue_packet(encoding::EncodedPacket packet)
+{
+    if (!g_packet_writer.push(std::move(packet)))
+        g_recording.fail("Encoded write queue exhausted. Stop and restart capture; check disk speed.");
+}
+
 
 // Guard output-folder snapshots across settings reload and IPC mutation threads.
 static std::mutex    g_dirs_mutex;
 static std::wstring  g_clips_dir_snapshot;
 static std::wstring  g_recs_dir_snapshot;
 static settings::Config g_settings;
+static settings::Config g_shell_settings;
+static std::mutex g_shell_config_mutex;
+static settings::Config g_shell_pending_settings;
+static std::atomic<HWND> g_shell_hwnd{nullptr};
+static std::thread g_shell_thread;
+static std::atomic<bool> g_shutting_down{false};
+
+static void update_shell_settings()
+{
+    { std::lock_guard lock(g_shell_config_mutex); g_shell_pending_settings = g_settings; }
+    if (const auto shell = g_shell_hwnd.load()) PostMessageW(shell, WM_SHELL_SETTINGS, 0, 0);
+}
 
 // Catalog generation is polled by the UI host.
 static std::atomic<uint64_t>     g_clip_generation{0};
 
 // Bookmark time is elapsed QPC time minus accumulated pauses. Control writes
-// on the tray thread; IPC reads the atomic fields.
+// on the control thread; IPC reads the atomic fields.
 static std::atomic<int64_t> g_rec_clock_freq{0};
 static std::atomic<int64_t> g_rec_clock_start_qpc{0};
 static std::atomic<int64_t> g_rec_paused_qpc_total{0};
@@ -841,6 +880,19 @@ static void reconcile_catalogs()
 static recording::SessionBatch<recording::Bookmark> g_bookmarks;
 static void clear_pending_bookmarks() { g_bookmarks.begin(); }
 
+static bool start_recording_session()
+{
+    if (g_recording.state() != recording::RecordingState::Idle) return false;
+    clear_pending_bookmarks();
+    rec_clock_start();
+    if (g_packet_writer.control([] { return g_recording.start(g_recordings_dir, g_recording_container); }).get())
+        return true;
+    rec_clock_stop();
+    g_bookmarks.finish();
+    return false;
+}
+
+
 static bool flush_bookmarks(int64_t id, const std::wstring& folder,
                             const std::vector<recording::Bookmark>& bookmarks) {
     std::string error;
@@ -921,7 +973,8 @@ static std::string add_bookmark_now() {
     const auto session = g_bookmarks.id();
     const auto st = g_recording.state();
     if (!session) return "not recording";
-    if (st != recording::RecordingState::Recording) return "not recording";
+    if (st != recording::RecordingState::Recording || g_rec_pause_anchor_qpc.load() >= 0)
+        return "not recording or paused";
     if (!g_bookmarks.add({recording_elapsed_seconds(), "Bookmark", "#f59e0b"}, session))
         return "recording session changed or bookmark limit reached";
     feedback::play(feedback::Sound::ClipSaved);
@@ -930,12 +983,15 @@ static std::string add_bookmark_now() {
 
 static bool finish_recording() {
     if (g_recording.state() == recording::RecordingState::Idle) return false;
-    const auto original = g_recording.current_path();
-    auto owner = std::make_shared<encoding::MediaWriteGuard>(original);
-    std::wstring path;
-    g_recording.stop(&path);
-    rec_clock_stop();
     auto batch = g_bookmarks.finish();
+    rec_clock_stop();
+    std::wstring original, path;
+    std::shared_ptr<encoding::MediaWriteGuard> owner;
+    g_packet_writer.control([&] {
+        original = g_recording.current_path();
+        owner = std::make_shared<encoding::MediaWriteGuard>(original);
+        g_recording.stop(&path);
+    }).get();
     if (path.empty()) {
         std::error_code ec;
         const auto partial = original + L".failed";
@@ -1040,15 +1096,13 @@ static bool auto_record_start(HWND hwnd)
 {
     if (!g_settings.capture_auto_record || publication_blocks_start()) return false;
     if (!g_recording_enabled.load(std::memory_order_relaxed)) return false;
-    if (g_recording.state() != recording::RecordingState::Idle) return false;
-    if (!g_recording.start(g_recordings_dir, g_recording_container)) return false;
+    if (g_recording.state() != recording::RecordingState::Idle || g_packet_writer.failed()) return false;
+    if (!start_recording_session()) return false;
     if (!g_video.running()) media_start(hwnd);
     if (!g_video.running()) { g_recording.fail("Capture could not start."); media_stop(); return false; }
     g_auto_recording_active = true;
     g_auto_state            = AutoState::AutoRecording;
     g_recording_game_pid    = g_effective_game_pid;
-    clear_pending_bookmarks();
-    rec_clock_start();
     log_path("recording", "auto recording started: ", g_recording.current_path());
     feedback::play(feedback::Sound::RecordStart);
     tray_set_recording(true);
@@ -1254,9 +1308,8 @@ static void reload_settings_from_disk(HWND hwnd)
         previous.hotkey_recording_stop   != g_settings.hotkey_recording_stop ||
         previous.hotkey_pause_resume     != g_settings.hotkey_pause_resume ||
         previous.hotkey_add_bookmark     != g_settings.hotkey_add_bookmark) {
-        hotkeys_unregister(hwnd);
-        hotkeys_register(hwnd);
-        log_msg("hotkey", "hotkeys reloaded from settings");
+        update_shell_settings();
+        log_msg("hotkey", "hotkeys reload queued");
     }
 
     if (previous.update_auto_check != g_settings.update_auto_check) {
@@ -1351,11 +1404,7 @@ static bool open_audio_track(int track)
     acfg.stream_index = track;
 
     bool ok = encoder.open(acfg, [](encoding::EncodedPacket pkt) {
-        if (g_replay_enabled.load(std::memory_order_relaxed)) {
-            auto replay_pkt = pkt;
-            g_replay.push(std::move(replay_pkt));
-        }
-        g_recording.push(std::move(pkt));
+        queue_packet(std::move(pkt));
     });
 
     char msg[128];
@@ -1427,8 +1476,10 @@ static void publish_audio_params()
         if (encoder.is_open())
             params.push_back(encoder.stream_params());
     }
-    g_replay.set_audio_params(params);
-    g_recording.set_audio_params(params);
+    g_packet_writer.control([&] {
+        g_replay.set_audio_params(params);
+        g_recording.set_audio_params(params);
+    }).get();
 
     // Diagnostics: which logical audio tracks end up as streams in the output.
     char buf[160];
@@ -1514,6 +1565,23 @@ static void push_audio_to_routes(const std::vector<AudioRoute>& routes,
     }
 }
 
+static bool start_capture(ActiveCapture& source)
+{
+    return source.start(*source.capture,
+        [routes = source.routes, tag = source.log_tag](audio::PacketInfo const& packet) {
+            push_audio_to_routes(routes, packet, tag);
+        });
+}
+
+static void recover_audio_sources()
+{
+    for (auto& source : g_audio_captures) {
+        if (source.recovery.poll(GetTickCount64(), source.capture->needs_restart(),
+                [&] { source.capture->stop(); }, [&] { return start_capture(source); }))
+            log_msg(source.log_tag, "audio source recovered");
+    }
+}
+
 static bool start_endpoint_source(audio::WasapiCapture::Mode mode,
                                   const std::wstring& device_id,
                                   std::vector<int> tracks,
@@ -1521,24 +1589,20 @@ static bool start_endpoint_source(audio::WasapiCapture::Mode mode,
                                   const char* label,
                                   float gain = 1.0f)
 {
-    std::vector<AudioRoute> routes = make_routes(tracks, gain);
-    if (routes.empty()) return false;
-
-    auto capture = std::make_unique<audio::WasapiCapture>();
-    bool ok = capture->start_device(mode, device_id,
-        [routes, log_tag](audio::PacketInfo const& p) {
-            push_audio_to_routes(routes, p, log_tag);
-        });
-
-    if (ok) {
-        g_audio_captures.push_back({std::move(capture), routes});
-        log_msg(log_tag, label);
-        return true;
-    }
-
-    log_msg(log_tag, "WARNING: source failed to start");
-    release_routes(routes);
-    return false;
+    ActiveCapture source;
+    source.routes = make_routes(tracks, gain);
+    if (source.routes.empty()) return false;
+    source.capture = std::make_unique<audio::WasapiCapture>();
+    source.log_tag = log_tag;
+    source.start = [mode, device_id](audio::WasapiCapture& capture, audio::PacketCallback cb) {
+        return capture.start_device(mode, device_id, std::move(cb));
+    };
+    const bool ok = source.recovery.poll(GetTickCount64(), true,
+        [] {}, [&] { return start_capture(source); });
+    // Retain failed endpoints so plugging one in can recover the same routes.
+    g_audio_captures.push_back(std::move(source));
+    log_msg(log_tag, ok ? label : "audio endpoint unavailable; retry scheduled");
+    return ok;
 }
 
 static bool start_process_source(uint32_t pid,
@@ -1548,24 +1612,24 @@ static bool start_process_source(uint32_t pid,
                                  float gain = 1.0f)
 {
     if (pid == 0) return false;
-    std::vector<AudioRoute> routes = make_routes(tracks, gain);
-    if (routes.empty()) return false;
-
-    auto capture = std::make_unique<audio::WasapiCapture>();
-    bool ok = capture->start_process_loopback(pid,
-        [routes, log_tag](audio::PacketInfo const& p) {
-            push_audio_to_routes(routes, p, log_tag);
-        });
-
-    if (ok) {
-        g_audio_captures.push_back({std::move(capture), routes});
-        log_msg(log_tag, label);
-        return true;
+    ActiveCapture source;
+    source.routes = make_routes(tracks, gain);
+    if (source.routes.empty()) return false;
+    source.capture = std::make_unique<audio::WasapiCapture>();
+    source.log_tag = log_tag;
+    source.start = [pid](audio::WasapiCapture& capture, audio::PacketCallback cb) {
+        return capture.start_process_loopback(pid, std::move(cb));
+    };
+    const bool ok = source.recovery.poll(GetTickCount64(), true,
+        [] {}, [&] { return start_capture(source); });
+    if (!ok) {
+        log_msg(log_tag, "WARNING: process loopback failed");
+        release_routes(source.routes);
+        return false;
     }
-
-    log_msg(log_tag, "WARNING: process loopback failed");
-    release_routes(routes);
-    return false;
+    g_audio_captures.push_back(std::move(source));
+    log_msg(log_tag, label);
+    return true;
 }
 
 struct WindowProcessMatch {
@@ -2185,15 +2249,12 @@ static void resolve_target_size(int src_w, int src_h, const std::string& preset,
 
 static void media_start(HWND hwnd)
 {
-    // Publish the hwnd before any early return: IPC (set_selected_game) posts
-    // to it and the foreground hook needs it, even when the pipeline itself
-    // stays down (replay disabled + recording idle).
-    g_main_hwnd = hwnd;
-
+    g_packet_writer.reset();
     apply_runtime_settings();
+    update_shell_settings();
 
+    SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
     if (g_settings.active_game.detection_enabled) {
-        SetTimer(hwnd, kActiveGameTimerId, kActiveGamePollMs, nullptr);
         install_fg_hook();
     }
     // Do not run WGC/pacer/audio when no video output is active. Keep this
@@ -2275,7 +2336,9 @@ static void media_start(HWND hwnd)
                 // the last_* baselines below are shared mutable state.
                 static std::mutex stats_mutex;
                 std::lock_guard<std::mutex> stats_lk(stats_mutex);
-                auto stats = g_replay.stats();
+                g_replay_stats_requested.store(true);
+                replay_buffer::ReplayBufferStats stats;
+                { std::lock_guard lock(g_replay_stats_mutex); stats = g_replay_stats; }
                 size_t raw_capacity = 0;
                 {
                     std::lock_guard<std::mutex> lock(g_pacer_mutex);
@@ -2433,13 +2496,10 @@ static void media_start(HWND hwnd)
 
                 bool enc_ok = g_video_enc.open(vcfg, [](encoding::EncodedPacket pkt) {
                     g_perf_encoder_packets_output.fetch_add(1, std::memory_order_relaxed);
-                    if (g_replay_enabled.load(std::memory_order_relaxed)) {
-                        auto replay_pkt = pkt;
-                        g_replay.push(std::move(replay_pkt));
-                    }
-                    g_recording.push(std::move(pkt));
+                    queue_packet(std::move(pkt));
                 });
 
+                g_encoder_ready.store(enc_ok);
                 if (enc_ok) {
                     char enc_msg[256];
                     snprintf(enc_msg, sizeof(enc_msg),
@@ -2553,11 +2613,13 @@ static void media_start(HWND hwnd)
 static void media_stop()
 {
     g_opened_target = nullptr;
+    g_encoder_ready.store(false);
     // Drain capture before stopping the pacer and closing its encoder.
     g_video.stop();
     pacer_stop();
     stop_audio_system();
     g_video_enc.close(); // flushes + frees encoder
+    g_packet_writer.control([] {}).get();
     finish_recording();
     g_video_enc_open_attempted.store(false, std::memory_order_release);
     {
@@ -2682,6 +2744,12 @@ static HICON create_rec_icon()
 
 static void tray_set_recording(bool recording)
 {
+    const auto shell = g_shell_hwnd.load();
+    if (!shell) return;
+    if (GetWindowThreadProcessId(shell, nullptr) != GetCurrentThreadId()) {
+        PostMessageW(shell, WM_SHELL_RECORDING, recording ? 1 : 0, 0);
+        return;
+    }
     if (recording) {
         if (!g_icon_rec) g_icon_rec = create_rec_icon();
         if (!g_icon_rec) return;
@@ -2723,18 +2791,18 @@ static void tray_show_menu(HWND hwnd)
     const bool replay_on    = g_replay_enabled.load(std::memory_order_relaxed);
     const bool recording_on = g_recording_enabled.load(std::memory_order_relaxed);
     // Save Replay needs the component enabled and the encoder feeding the ring.
-    UINT save_flags  = (replay_on && g_video_enc.is_open()) ? MF_STRING : (MF_STRING | MF_GRAYED);
+    UINT save_flags  = (replay_on && g_encoder_ready.load() && !g_packet_writer.failed()) ? MF_STRING : (MF_STRING | MF_GRAYED);
     UINT start_flags = (recording_on && state == recording::RecordingState::Idle) ? MF_STRING : (MF_STRING | MF_GRAYED);
     UINT stop_flags  = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
     UINT pause_flags = (state == recording::RecordingState::Idle) ? (MF_STRING | MF_GRAYED) : MF_STRING;
     std::wstring save_text = L"Save Replay\t" + utf8_to_wide(
-        hotkey_or_default(g_settings.hotkey_save_replay, "Ctrl+Shift+F8"));
+        hotkey_or_default(g_shell_settings.hotkey_save_replay, "Ctrl+Shift+F8"));
     std::wstring start_text = L"Start Recording\t" + utf8_to_wide(
-        hotkey_or_default(g_settings.hotkey_recording_start, "Ctrl+Shift+F9"));
+        hotkey_or_default(g_shell_settings.hotkey_recording_start, "Ctrl+Shift+F9"));
     std::wstring stop_text = L"Stop Recording\t" + utf8_to_wide(
-        hotkey_or_default(g_settings.hotkey_recording_stop, "Ctrl+Shift+F10"));
+        hotkey_or_default(g_shell_settings.hotkey_recording_stop, "Ctrl+Shift+F10"));
     std::wstring pause_hotkey = utf8_to_wide(
-        hotkey_or_default(g_settings.hotkey_pause_resume, "Ctrl+Shift+F11"));
+        hotkey_or_default(g_shell_settings.hotkey_pause_resume, "Ctrl+Shift+F11"));
     std::wstring pause_text =
         (state == recording::RecordingState::Paused)
             ? (L"Resume Recording\t" + pause_hotkey)
@@ -2750,7 +2818,7 @@ static void tray_show_menu(HWND hwnd)
     UINT bookmark_flags = (state == recording::RecordingState::Recording)
         ? MF_STRING : (MF_STRING | MF_GRAYED);
     std::wstring bookmark_text = L"Add Bookmark\t" + utf8_to_wide(
-        hotkey_or_default(g_settings.hotkey_add_bookmark, "Ctrl+Shift+F12"));
+        hotkey_or_default(g_shell_settings.hotkey_add_bookmark, "Ctrl+Shift+F12"));
     AppendMenuW(menu, bookmark_flags,         CMD_ADD_BOOKMARK,    bookmark_text.c_str());
     AppendMenuW(menu, MF_SEPARATOR,          0,                   nullptr);
     AppendMenuW(menu, MF_STRING,             CMD_CHECK_UPDATE,    L"Check for Updates\x2026");
@@ -2994,15 +3062,15 @@ static void hotkeys_register(HWND hwnd)
     memset(g_key_down, 0, sizeof(g_key_down));
 
     register_one_hotkey(hwnd, CMD_SAVE_REPLAY, "save_replay",
-        g_settings.hotkey_save_replay, "Ctrl+Shift+F8");
+        g_shell_settings.hotkey_save_replay, "Ctrl+Shift+F8");
     register_one_hotkey(hwnd, CMD_RECORDING_START, "recording_start",
-        g_settings.hotkey_recording_start, "Ctrl+Shift+F9");
+        g_shell_settings.hotkey_recording_start, "Ctrl+Shift+F9");
     register_one_hotkey(hwnd, CMD_RECORDING_STOP, "recording_stop",
-        g_settings.hotkey_recording_stop, "Ctrl+Shift+F10");
+        g_shell_settings.hotkey_recording_stop, "Ctrl+Shift+F10");
     register_one_hotkey(hwnd, CMD_PAUSE_RESUME, "pause_resume",
-        g_settings.hotkey_pause_resume, "Ctrl+Shift+F11");
+        g_shell_settings.hotkey_pause_resume, "Ctrl+Shift+F11");
     register_one_hotkey(hwnd, CMD_ADD_BOOKMARK, "add_bookmark",
-        g_settings.hotkey_add_bookmark, "Ctrl+Shift+F12");
+        g_shell_settings.hotkey_add_bookmark, "Ctrl+Shift+F12");
 
     std::sort(g_hotkey_bindings.begin(), g_hotkey_bindings.end(),
         [](const HotkeyBinding& a, const HotkeyBinding& b) {
@@ -3043,6 +3111,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
 {
     switch (cmd) {
     case CMD_SAVE_REPLAY: {
+        if (g_packet_writer.failed()) { log_msg("replay", "save rejected: encoded writer failed"); break; }
         if (!g_replay_enabled.load(std::memory_order_relaxed)) {
             log_msg("replay", "save_replay ignored: replay buffer disabled in settings");
             break;
@@ -3059,7 +3128,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
         log_msg("replay", stats);
         feedback::play(feedback::Sound::ClipSaved);
         const double clip_duration = g_settings.replay_duration_seconds;
-        g_replay.save_clip([clip_duration](std::wstring path) {
+        g_packet_writer.control([clip_duration] { g_replay.save_clip([clip_duration](std::wstring path) {
             // Runs on the replay save thread (off the UI/tray loop).
             if (path.empty()) {
                 log_msg("replay", "WARNING: clip save failed or encoder not ready");
@@ -3067,7 +3136,7 @@ static void dispatch(Cmd cmd, HWND hwnd)
                 log_path("replay", "clip saved: ", path);
                 catalog_clip(path, "replay", clip_duration);
             }
-        });
+        }); }).get();
         break;
     }
     case CMD_RECORDING_START:
@@ -3080,12 +3149,13 @@ static void dispatch(Cmd cmd, HWND hwnd)
             log_msg("recording", "recording_start ignored: no supported game detected");
             break;
         }
-        if (g_recording.start(g_recordings_dir, g_recording_container)) {
+        if (g_packet_writer.failed() && g_recording.state() == recording::RecordingState::Idle) {
+            media_stop(); g_replay.clear();
+        }
+        if (start_recording_session()) {
             g_auto_recording_active = false;
             if (!g_video.running()) media_start(hwnd);
             if (!g_video.running()) { g_recording.fail("Capture could not start."); media_stop(); break; }
-            clear_pending_bookmarks();
-            rec_clock_start();
             log_path("recording", "recording started: ", g_recording.current_path());
             feedback::play(feedback::Sound::RecordStart);
             tray_set_recording(true);
@@ -3109,18 +3179,15 @@ static void dispatch(Cmd cmd, HWND hwnd)
     }
     case CMD_PAUSE_RESUME:
         if (g_recording.state() == recording::RecordingState::Paused) {
-            if (g_recording.resume()) {
-                rec_clock_resume();
+            rec_clock_resume();
+            if (g_packet_writer.control([] { return g_recording.resume(); }).get())
                 log_msg("recording", "recording resumed");
-            }
-        } else if (g_recording.pause()) {
+        } else if (g_recording.state() == recording::RecordingState::Recording) {
             rec_clock_pause();
-            log_msg("recording", "recording paused");
+            if (g_packet_writer.control([] { return g_recording.pause(); }).get())
+                log_msg("recording", "recording paused");
         } else {
-            char msg[96];
-            snprintf(msg, sizeof(msg), "pause_resume rejected: state=%s",
-                     recording::state_name(g_recording.state()));
-            log_msg("recording", msg);
+            log_msg("recording", "pause_resume rejected: no active recording");
         }
         break;
     case CMD_ADD_BOOKMARK: {
@@ -3130,8 +3197,8 @@ static void dispatch(Cmd cmd, HWND hwnd)
         break;
     }
     case CMD_SETTINGS:
-        log_msg("tray", "settings opened");
-        show_settings(hwnd);
+        if (const auto shell = g_shell_hwnd.load())
+            PostMessageW(shell, WM_COMMAND, MAKEWPARAM(CMD_SETTINGS, 0), 0);
         break;
     case CMD_CHECK_UPDATE:
         log_msg("updater", "manual update check requested");
@@ -3145,12 +3212,92 @@ static void dispatch(Cmd cmd, HWND hwnd)
 }
 
 
-static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+static LRESULT CALLBACK shell_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_CREATE:
         tray_add(hwnd);
         hotkeys_register(hwnd);
+        return 0;
+    case WM_SHELL_SETTINGS:
+        {
+            std::lock_guard lock(g_shell_config_mutex);
+            g_shell_settings = g_shell_pending_settings;
+        }
+        hotkeys_register(hwnd);
+        return 0;
+    case WM_SHELL_RECORDING:
+        tray_set_recording(wp != 0);
+        return 0;
+    case WM_TRAYICON:
+        if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONDBLCLK) {
+            apply_native_window_theme(hwnd);
+            tray_show_menu(hwnd);
+        }
+        return 0;
+    case WM_COMMAND:
+        if (g_shutting_down.load()) return 0;
+        if (LOWORD(wp) == CMD_SETTINGS) show_settings(g_main_hwnd);
+        else PostMessageW(g_main_hwnd, msg, wp, lp);
+        return 0;
+    case WM_SETTINGCHANGE:
+        apply_native_window_theme(hwnd);
+        return 0;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        hotkeys_unregister(hwnd);
+        tray_remove();
+        if (g_icon_rec) { DestroyIcon(g_icon_rec); g_icon_rec = nullptr; }
+        PostQuitMessage(0);
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+}
+
+static bool start_shell()
+{
+    update_shell_settings();
+    std::promise<HWND> ready;
+    auto started = ready.get_future();
+    g_shell_thread = std::thread([initial = g_settings, ready = std::move(ready)]() mutable {
+        g_shell_settings = initial;
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = shell_proc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MonolithShellWnd";
+        HWND shell = nullptr;
+        if (RegisterClassExW(&wc))
+            shell = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, kAppName,
+                WS_OVERLAPPED, 0, 0, 0, 0, nullptr, nullptr, wc.hInstance, nullptr);
+        g_shell_hwnd.store(shell);
+        ready.set_value(shell);
+        if (shell) {
+            MSG msg{};
+            while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+                TranslateMessage(&msg); DispatchMessageW(&msg);
+            }
+        }
+        g_shell_hwnd.store(nullptr);
+    });
+    return started.get() != nullptr;
+}
+
+static void stop_shell()
+{
+    if (const auto shell = g_shell_hwnd.load()) PostMessageW(shell, WM_CLOSE, 0, 0);
+    if (g_shell_thread.joinable()) g_shell_thread.join();
+}
+
+static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_CREATE:
+        g_main_hwnd = hwnd;
+        if (!start_shell()) { stop_shell(); return -1; }
         media_start(hwnd);
         ipc::start(hwnd, [&]() -> ipc::RecordingState {
             auto st = g_recording.state();
@@ -3162,8 +3309,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_clip_generation.load(std::memory_order_relaxed),
                 MONOLITH_VERSION_STRING,
                 g_video.running(),
-                g_replay_enabled.load() && g_video.running() && g_video_enc.is_open(),
-                publication_error().empty() ? g_recording.error() : publication_error(),
+                g_replay_enabled.load() && !g_packet_writer.failed() && g_video.running() && g_encoder_ready.load(),
+                g_packet_writer.failed() ? "Encoded write queue exhausted; restart capture and check disk speed." :
+                    (publication_error().empty() ? g_recording.error() : publication_error()),
             };
         }, handle_clip_mutation,
         [](const std::string& exe, uint32_t /*pid*/) {
@@ -3189,6 +3337,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             retry_publications();
             apply_pending_media(hwnd);
             poll_active_game();
+            recover_audio_sources();
             if (g_recording.state() == recording::RecordingState::Idle &&
                 g_settings.capture_mode == "game_only" && g_video.running() &&
                 recording::target_changed(g_opened_target, g_capture_target_hwnd.load())) {
@@ -3209,6 +3358,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             retry_publications();
             apply_pending_media(hwnd);
             poll_active_game();
+            recover_audio_sources();
             if (g_recording.state() == recording::RecordingState::Idle &&
                 g_settings.capture_mode == "game_only" && g_video.running() &&
                 recording::target_changed(g_opened_target, g_capture_target_hwnd.load())) {
@@ -3220,26 +3370,25 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_DESTROY:
+        g_shutting_down.store(true);
         settings_window::close_running();
         KillTimer(hwnd, kActiveGameTimerId);
         uninstall_fg_hook();
         updater::shutdown();
         ipc::stop();
         media_stop();
+        g_packet_writer.close();
         g_replay.wait_for_saves();
         g_catalog_worker.close();
         gamelist::shutdown();
-        hotkeys_unregister(hwnd);
-        tray_remove();
-        if (g_icon_rec) { DestroyIcon(g_icon_rec); g_icon_rec = nullptr; }
+        stop_shell();
         log_msg("app", "app shell stopped");
         PostQuitMessage(0);
         return 0;
 
     case WM_TRAYICON:
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONDBLCLK) {
-            apply_native_window_theme(hwnd);
-            tray_show_menu(hwnd);
+            if (const auto shell = g_shell_hwnd.load()) PostMessageW(shell, msg, wp, lp);
         }
         return 0;
 

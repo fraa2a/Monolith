@@ -21,3 +21,7 @@
 ## Review focus
 
 Slow disk and shutdown; interrupted trim and competing mutations; settings save failures and out-of-order responses; catalog/root/clip identity changes; optional audio recovery; first upgrade from the old updater. Do not equate a portable passing suite with Windows runtime certification.
+
+## Continuation checkpoint (2026-10-19)
+
+Recovered and previously tested commits are retained. M05/M06 integration now uses the production bounded packet writer, independent native shell pump and source-level WASAPI recovery. Portable native verification is phase1 9/9 and phase2 3/3; updated Windows CI is pending. The author performs review directly because the user prohibits subagents. Existing audit matrix entries distinguish implemented behavior from hardware-only verification and deferred optimizations. No merge/release is authorized by this continuation.

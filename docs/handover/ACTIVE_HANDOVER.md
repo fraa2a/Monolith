@@ -1,16 +1,16 @@
 # Active Handover
 
-Updated: 2026-10-09
+Updated: 2026-10-19
 
-## Current checkpoint: audit correction PR #8, local integration
+## Current checkpoint: audit correction PR #8, continued integration
 
-- User requested direct continuation without subagents and only essential remaining fixes/commits. No subagents were used in this continuation.
-- Branch `fix/audit-errors` retains remote checkpoint `3b77da2`. Recovered engine/UI/host/updater commits were cherry-picked. Local version/documentation commits were preserved.
-- Integrated recorder auto-start with replay disabled, deferred settings/target restarts, timestamped direct audio, operational IPC status, session bookmark publication/retry and shutdown drains. Storage now validates identities/revisions, serializes recoverable trims and restores bookmark sidecars. Added the missing `clip_capture_thumb` engine route and removed obsolete Tauri asset-protocol configuration.
-- Native suites, Rust suites, Windows-target updater check, both frontend builds, browser fixtures, Stream Deck and updater ordering checks pass locally. Exact scope/limits are in `docs/audit/2026-10-09-fixes.md`.
-- M05 full asynchronous recording writes/lifecycle and M06 automatic audio device recovery remain open. Abrupt exit before a finalization sidecar is written can still lose live bookmarks. Native Windows recorder/Tauri compilation, hardware recording/playback and clean update/install tests remain pending.
-- The automatic approval reviewer rejected `git push origin fix/audit-errors`, interpreting the current authorization as local commits only. Do not bypass it. User approval for publishing is needed before updating https://github.com/fraa2a/Monolith/pull/8. No merge or release was requested.
-- Engine 1.6.3, UI 1.5.1, updater 1.0.3, Stream Deck 1.4.1. Historical entries below do not override this checkpoint.
+- User requested direct continuation without subagents and only essential remaining fixes/commits. No subagents are used.
+- Published `8b136a7` contains the recovered work and completed storage/recorder/host integration. Core regression tests run 13 and Windows CI run 131 both succeeded. The user explicitly authorized publication. PR #8 remains draft; no merge or release is requested.
+- M06: WASAPI source recovery now retains endpoint/process startup descriptors and mixer routes, polls invalidation/default changes, retries missing endpoints with a one-second minimum interval, and preserves encoders/recording clocks. ReleaseBuffer failures also invalidate capture. The periodic timer runs independently of game detection settings.
+- M05: production encoder sinks now use an owned FIFO packet writer (4096 queued packets, 64 MiB queued payload), with ordered recording start/pause/resume/stop and replay snapshot barriers. Queue overload exposes failure and rejects subsequent packets/replay saves until reset. Recording clocks/session bookmarks close at command admission, before disk drain. Capture diagnostics read a cached replay snapshot rather than waiting on disk locks.
+- Tray/hotkeys run on an owned native shell message thread using copied hotkey settings and atomic readiness. The existing control window serializes media lifecycle, device recovery and settings. Teardown joins capture/audio producers, flushes encoder tails, drains the writer, completes recording publication, then joins owned workers/shell. No process-model change.
+- Portable phase1 9/9 and phase2 3/3 pass. Phase2 holds the real FFmpeg recording muxer to verify nonblocking packet admission, ordered stop and a decodable result. Text/whitespace checks pass. Windows compilation for this continuation is pending CI; live tray responsiveness, device replacement/format changes, abrupt-exit bookmarks and clean update/install remain hardware/runtime checks.
+- Exact prior verification is in `docs/audit/2026-10-09-fixes.md`. Engine 1.6.3, UI 1.5.1, updater 1.0.3, Stream Deck 1.4.1.
 
 
 ## Current checkpoint: screenshot-based desktop UI redesign

@@ -1,5 +1,6 @@
 #include <encoding/trim.h>
 #include <recording/recording.h>
+#include <recording/packet_writer.h>
 #include <disk-segments/disk_segments.h>
 #include <replay-buffer/packet_ring.h>
 #include <replay-buffer/replay_buffer.h>
@@ -21,9 +22,17 @@ namespace fs = std::filesystem;
 std::mutex save_gate_mutex;
 std::condition_variable save_gate;
 bool block_save = false, save_entered = false;
+bool block_recording = false, recording_entered = false;
 bool fail_write = false;
 extern "C" int __real_av_interleaved_write_frame(AVFormatContext*, AVPacket*);
 extern "C" int __wrap_av_interleaved_write_frame(AVFormatContext* fmt, AVPacket* packet) {
+    {
+        std::unique_lock lk(save_gate_mutex);
+        if (block_recording) {
+            recording_entered = true; save_gate.notify_all();
+            save_gate.wait(lk, [] { return !block_recording; });
+        }
+    }
     if (fail_write) return AVERROR(EIO);
     return __real_av_interleaved_write_frame(fmt, packet);
 }
@@ -165,6 +174,28 @@ int main(int argc, char** argv) {
     std::promise<std::wstring> recovered_save;
     replay.save_clip([&](auto p) { recovered_save.set_value(p); });
     CHECK(!recovered_save.get_future().get().empty());
+    {
+        recording::ManualRecorder slow;
+        slow.set_video_params(media.video); slow.set_audio_params(media.audio);
+        CHECK(slow.start((dir/"queued-recording").wstring(), "mp4"));
+        recording::PacketWriter writer([&](auto packet) { slow.push(std::move(packet)); });
+        struct ReleaseRecording {
+            ~ReleaseRecording() {
+                std::lock_guard lk(save_gate_mutex);
+                block_recording = false; save_gate.notify_all();
+            }
+        } release_recording;
+        { std::lock_guard lk(save_gate_mutex); block_recording = true; recording_entered = false; }
+        CHECK(writer.push(*first_video));
+        { std::unique_lock lk(save_gate_mutex); CHECK(save_gate.wait_for(lk, 5s, [] { return recording_entered; })); }
+        // Producers can enqueue the remaining encoded packets while the real muxer is stalled.
+        for (const auto& packet : media.packets) if (&packet != &*first_video) CHECK(writer.push(packet));
+        std::wstring output;
+        auto stopped = writer.control([&] { return slow.stop(&output); });
+        CHECK(stopped.wait_for(0ms) == std::future_status::timeout);
+        { std::lock_guard lk(save_gate_mutex); block_recording = false; save_gate.notify_all(); }
+        CHECK(stopped.get() && !output.empty()); decode(output);
+    }
     recording::ManualRecorder recorder;
     recorder.set_video_params(media.video); recorder.set_audio_params(media.audio);
     CHECK(recorder.start((dir/"recordings"/"nested").wstring(), "mp4"));

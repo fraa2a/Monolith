@@ -297,7 +297,12 @@ static void capture_thread(ImplT* impl)
                 break;
             }
 
-            impl->cap_client->ReleaseBuffer(frames);
+            hr = impl->cap_client->ReleaseBuffer(frames);
+            if (FAILED(hr)) {
+                audio_log("audio", "ReleaseBuffer failed; scheduling source recovery");
+                impl->running.store(false, std::memory_order_release);
+                break;
+            }
             hr = impl->cap_client->GetNextPacketSize(&packet_size);
             if (FAILED(hr)) {
                 impl->running.store(false, std::memory_order_release);

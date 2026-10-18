@@ -40,3 +40,12 @@ add_test(NAME segment_session COMMAND segment_session_test)
 add_executable(finalization_test finalization_test.cpp)
 target_include_directories(finalization_test PRIVATE ../../libs)
 add_test(NAME finalization COMMAND finalization_test)
+
+add_executable(source_recovery_test source_recovery_test.cpp)
+target_include_directories(source_recovery_test PRIVATE ../../libs)
+add_test(NAME source_recovery COMMAND source_recovery_test)
+
+add_executable(packet_writer_test packet_writer_test.cpp)
+target_include_directories(packet_writer_test PRIVATE ../../libs)
+target_link_libraries(packet_writer_test PRIVATE Threads::Threads)
+add_test(NAME packet_writer COMMAND packet_writer_test)

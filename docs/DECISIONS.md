@@ -359,3 +359,15 @@ Old clients accept the compatible manifest, but their first upgrade still runs o
 The recorder now verifies catalog/clip identity while holding the catalog mutation lock; trim, bookmark edits and captured thumbnails also require the current media revision. Trim journals the original media backup and updates duration, revision and bookmarks in one SQLite transaction. A prepared operation restores the original on recovery; a committed operation cleans its workspace. Recovery does not imply filesystem/SQLite atomicity or certified power-loss durability.
 
 Manual recording publication owns the media and a bounded session bookmark batch until catalog/bookmark writes complete. Failed publication retains its finalization state for retry and gates new recording starts. Recovery sidecars are attached by reconciliation; live markers before finalization are not crash-durable. Captured thumbnails use a validated 32-hex token under the fixed local `Monolith/thumb-upload` root and are copied into the catalog thumbnail folder by the engine. Rust remains a read-only catalog consumer.
+
+
+## Audio source recovery during recording (2026-10-16)
+
+Retain WASAPI source descriptors and routes for the pipeline lifetime. Recover only the failed or default-changed capture, after joining its old callback thread, and retry unavailable endpoints on the periodic control tick. Do not close AAC encoders, replace mixer slots, reset capture time origins or restart the recording on device recovery. Endpoint recovery also runs with active-game detection disabled. Device format changes still pass through the encoder's existing input-format conversion. Hardware behavior requires Windows smoke testing.
+
+
+## Recorder packet and shell ownership (2026-10-19)
+
+Encoder callbacks only admit shared encoded payloads to an owned bounded FIFO writer. Replay disk writes and manual mux writes share its order. Recording boundaries and replay snapshots use a reserved control slot, so a stop follows accepted packets without waiting for later producers. Queue overload stops further admission and exposes an operational error instead of silently dropping an arbitrary middle of a stream. A pipeline reset drains the old queue before clearing its failure. The default bound is 4096 queued packets/64 MiB, plus one active packet and one reserved control job. Shutdown first joins producers/flushes encoders, then drains the writer before releasing the recording and catalog workers.
+
+The existing engine control window continues serializing media lifecycle and settings operations. Native tray menus and low-level keyboard hooks run on a separate owned message thread, which posts commands to the control window. Menu/hotkey configuration is copied under a mutex; readiness and recording state use atomic snapshots. This keeps media open/close/recovery and disk drains out of the tray/hook message loop without changing the process model or IPC contract. Recording clocks and bookmark admission follow control requests rather than delayed disk completion. Hardware smoke tests remain required.
