@@ -8,6 +8,7 @@
 namespace recording {
 class PacketWriter {
     encoding::PacketSink sink_;
+    std::mutex admission_;
     std::atomic<bool> failed_{false};
     BoundedWorker worker_;
 public:
@@ -15,6 +16,7 @@ public:
                           size_t bytes = 64 * 1024 * 1024)
         : sink_(std::move(sink)), worker_(packets, bytes, [this] { failed_ = true; }) {}
     bool push(encoding::EncodedPacket packet) {
+        std::lock_guard lock(admission_);
         if (failed_) return false;
         const auto bytes = packet.size();
         if (worker_.submit([this, packet = std::move(packet)] { sink_(packet); }, bytes))
