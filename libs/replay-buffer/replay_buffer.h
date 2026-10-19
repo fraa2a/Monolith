@@ -27,6 +27,7 @@ class ReplayBuffer {
 public:
      ReplayBuffer();
     ~ReplayBuffer();
+    void wait_for_saves();
     ReplayBuffer(const ReplayBuffer&)            = delete;
     ReplayBuffer& operator=(const ReplayBuffer&) = delete;
 

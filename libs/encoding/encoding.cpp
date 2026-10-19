@@ -694,7 +694,7 @@ static AVSampleFormat wasapi_to_av_fmt(int bit_depth, bool is_float)
 
 void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
                              int sample_rate, int channels,
-                             int bit_depth, bool is_float)
+                             int bit_depth, bool is_float, int64_t capture_us)
 {
     std::lock_guard lk(impl_->mutex);
     if (!impl_->ctx || bytes <= 0) return;
@@ -705,6 +705,19 @@ void AudioEncoder::push_pcm(const uint8_t* data, int bytes,
     AVSampleFormat src_fmt = wasapi_to_av_fmt(input.bit_depth, is_float);
     const int src_frames = input.frames;
     const uint8_t* src_data = input.data;
+
+    if (capture_us >= 0) {
+        const int64_t captured = av_rescale(capture_us, impl_->cfg_sample_rate, 1000000);
+        const int queued = av_audio_fifo_size(impl_->fifo);
+        const int64_t expected = impl_->next_pts + queued;
+        const int64_t tolerance = impl_->cfg_sample_rate / 20;
+        if (impl_->next_pts == 0 && queued == 0) impl_->next_pts = captured;
+        else if (captured > expected + tolerance) {
+            av_audio_fifo_reset(impl_->fifo);
+            if (impl_->swr) swr_free(&impl_->swr);
+            impl_->next_pts = captured;
+        } else if (captured + tolerance < expected) return;
+    }
 
     // (Re-)init swr if the input format changed.
     bool need_swr = !impl_->swr

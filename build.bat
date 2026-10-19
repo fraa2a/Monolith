@@ -7,8 +7,8 @@ set "CMAKE_MT="
 for /r "C:\Program Files (x86)\Windows Kits\" %%f in (mt.exe) do set "CMAKE_MT=%%f" & goto :found_mt
 :found_mt
 if defined CMAKE_MT (
-    echo Found mt.exe: %CMAKE_MT%
-    set "CMAKE_MT_ARG=-DCMAKE_MT:FILEPATH=%CMAKE_MT%"
+    echo Found mt.exe: "%CMAKE_MT%"
+    set CMAKE_MT_ARG="-DCMAKE_MT:FILEPATH=%CMAKE_MT%"
 ) else (
     echo WARNING: mt.exe not found -- SxS manifest will be broken!
     set "CMAKE_MT_ARG="
@@ -17,7 +17,7 @@ if defined CMAKE_MT (
 :: Find vcpkg root.
 if not defined VCPKG_ROOT set "VCPKG_ROOT=%CD%\vcpkg"
 if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" (
-    set "TOOLCHAIN=-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
+    set TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
 ) else (
     set "TOOLCHAIN="
 )

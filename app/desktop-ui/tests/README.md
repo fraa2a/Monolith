@@ -26,3 +26,11 @@ Fixture thumbnails are generated test data, not shipped app content. Media
 requests return an empty response. This check does not validate decoding,
 recording devices, Windows dialogs, native window behavior or WebView2. Those
 still need a Windows runtime smoke test.
+
+The audit regressions in `audit.mjs` use port 4174. They cover settings close
+paths, shared draft serialization and visible failures, stable clip identities,
+focused-control keys, collection events, bounded visible metadata repair,
+accessible field names, Favorites removal and fullscreen window restoration.
+They also check pipeline status, compact collection membership queries and the
+unsupported audio-track notice. Mock media events prove thumbnail UI updates;
+they do not validate codecs, multitrack playback or native Windows behavior.

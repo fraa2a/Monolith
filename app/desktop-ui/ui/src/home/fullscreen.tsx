@@ -1,8 +1,10 @@
+import { AudioTrackNotice } from "./audio-track-notice.tsx";
+import { ownsPlayerKeys } from "../lib/player.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { type Clip, mediaUrl } from "../lib/api.ts";
 import { Icon } from "../shell/icons.tsx";
 import { useMultiTrackAudio, type MultiTrackHandle } from "../lib/multitrack.ts";
-import { appWindow } from "../lib/window.ts";
+import { usePlayerWindow } from "../lib/window.ts";
 
 interface Props {
   clip: Clip;
@@ -110,6 +112,7 @@ export function FullscreenChrome(
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (ownsPlayerKeys(e) && e.key !== "Escape") return;
       if (e.key === "Escape") { onClose(); return; }
       if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); togglePlay(); wake(); return; }
       if (e.key === "ArrowLeft") { skip(-SKIP_SECONDS); wake(); return; }
@@ -198,10 +201,7 @@ export function Fullscreen({ clip, initialTime = 0, onClose }: FullscreenProps) 
 
   const multitrack = useMultiTrackAudio(videoEl, mediaUrl(clip));
 
-  useEffect(() => {
-    appWindow.maximize();
-    return () => { appWindow.unmaximize(); };
-  }, []);
+  usePlayerWindow(true);
 
   return (
     <div class="fs-backdrop">
@@ -221,6 +221,7 @@ export function Fullscreen({ clip, initialTime = 0, onClose }: FullscreenProps) 
         }}
       />
       <FullscreenChrome videoEl={videoEl} multitrack={multitrack} onClose={onClose} />
+      {multitrack.unsupported && <div class="fs-track-notice"><AudioTrackNotice clip={clip} /></div>}
     </div>
   );
 }

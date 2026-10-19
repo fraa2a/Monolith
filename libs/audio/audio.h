@@ -128,6 +128,7 @@ public:
     bool start_process_loopback(uint32_t process_id, PacketCallback cb);
     void stop();
     bool running() const;
+    bool needs_restart() const;
 
 private:
     struct Impl;

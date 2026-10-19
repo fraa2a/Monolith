@@ -41,7 +41,8 @@ fn read_components_json() -> Option<Installed> {
 }
 
 /// Read the translation-independent fixed VERSIONINFO block.
-fn file_version(path: &Path) -> Option<String> {
+#[cfg(windows)]
+pub fn file_version(path: &Path) -> Option<String> {
     if !path.is_file() {
         return None;
     }
@@ -101,4 +102,9 @@ fn file_version(path: &Path) -> Option<String> {
             format!("{major}.{minor}.{patch}.{build}")
         })
     }
+}
+
+#[cfg(not(windows))]
+pub fn file_version(_: &Path) -> Option<String> {
+    None
 }

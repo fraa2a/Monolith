@@ -12,6 +12,7 @@ enum class RecordingState {
     Idle,
     Recording,
     Paused,
+    Failed,
 };
 
 class ManualRecorder {
@@ -33,6 +34,8 @@ public:
     bool stop(std::wstring* output_path = nullptr);
 
     void push(encoding::EncodedPacket pkt);
+    void fail(std::string error);
+    std::string error() const;
 
     RecordingState state() const;
     std::wstring current_path() const;

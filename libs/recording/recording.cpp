@@ -1,6 +1,7 @@
 #include "recording.h"
 
 #include <encoding/mux_common.h>
+#include <encoding/media_ownership.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -39,10 +40,13 @@ struct StreamTiming {
 
 struct ManualRecorder::Impl {
     mutable std::mutex          mutex;
-    RecordingState              state = RecordingState::Idle;
+    std::atomic<RecordingState> state{RecordingState::Idle};
+    mutable std::mutex error_mutex;
+    std::string error;
     std::wstring                output_dir;
     std::string                 container = "mkv";
     std::wstring                path;
+    std::shared_ptr<encoding::MediaWriteGuard> guard;
 
     encoding::VideoStreamParams vsp;
     std::vector<encoding::AudioStreamParams> audio_params;
@@ -147,7 +151,8 @@ static bool write_packet(ImplT* impl, const encoding::EncodedPacket& ep)
         dst_stream = impl->video_stream;
     else
         dst_stream = impl->audio_streams[ep.stream_index];
-    if (!dst_stream) return false;
+    // A track introduced after the header is deferred to the next recording.
+    if (!dst_stream) return ep.stream_index != 0;
 
     StreamTiming& timing = impl->timing[ep.stream_index];
     const auto origin = av_rescale_q(impl->origin_pts, AVRational{impl->origin_num, impl->origin_den},
@@ -207,6 +212,8 @@ bool ManualRecorder::start(std::wstring output_dir, std::string container)
     impl_->output_dir = std::move(output_dir);
     impl_->container = (container == "mp4") ? "mp4" : "mkv";
     impl_->path = generate_recording_path(impl_->output_dir, impl_->container);
+    { std::lock_guard error_lock(impl_->error_mutex); impl_->error.clear(); }
+    impl_->guard = std::make_shared<encoding::MediaWriteGuard>(impl_->path);
     impl_->state = RecordingState::Recording;
     return true;
 }
@@ -233,18 +240,27 @@ bool ManualRecorder::stop(std::wstring* output_path)
     std::lock_guard lk(impl_->mutex);
     if (impl_->state == RecordingState::Idle) return false;
     const bool wrote_packet = impl_->wrote_packet;
+    const bool failed = impl_->state == RecordingState::Failed;
     const bool complete = close_output(impl_);
     if (!complete) std::fprintf(stderr, "[recording] output could not be finalized\n");
     if (output_path) *output_path = complete && wrote_packet ? impl_->path : std::wstring{};
-    impl_->path.clear();
+    if (!complete && !impl_->path.empty()) {
+        std::error_code ec;
+        std::filesystem::rename(impl_->path, impl_->path + L".failed", ec);
+        if (ec) {
+            std::lock_guard error_lock(impl_->error_mutex);
+            impl_->error += " Partial output could not be moved to a recovery file.";
+        }
+    }
+    impl_->path.clear(); impl_->guard.reset();
     impl_->state = RecordingState::Idle;
-    return true;
+    return complete && !failed;
 }
 
 void ManualRecorder::push(encoding::EncodedPacket pkt)
 {
     std::lock_guard lk(impl_->mutex);
-    if (impl_->state == RecordingState::Idle) return;
+    if (impl_->state == RecordingState::Idle || impl_->state == RecordingState::Failed) return;
 
     if (impl_->state == RecordingState::Paused) {
         if (pkt.stream_index >= 0 && pkt.stream_index <= 6) {
@@ -272,14 +288,29 @@ void ManualRecorder::push(encoding::EncodedPacket pkt)
 
     if (!impl_->output_failed && !write_packet(impl_, pkt)) {
         impl_->output_failed = true;
+        fail("Recording packet write failed. Check the output folder and disk space.");
         std::fprintf(stderr, "[recording] packet write failed\n");
     }
 }
 
 RecordingState ManualRecorder::state() const
 {
-    std::lock_guard lk(impl_->mutex);
-    return impl_->state;
+    return impl_->state.load();
+}
+
+void ManualRecorder::fail(std::string error)
+{
+    auto state = impl_->state.load();
+    while (state != RecordingState::Idle) {
+        if (impl_->state.compare_exchange_weak(state, RecordingState::Failed)) {
+            std::lock_guard lk(impl_->error_mutex);
+            impl_->error = std::move(error);
+            return;
+        }
+    }
+}
+std::string ManualRecorder::error() const {
+    std::lock_guard lk(impl_->error_mutex); return impl_->error;
 }
 
 std::wstring ManualRecorder::current_path() const
@@ -294,6 +325,7 @@ const char* state_name(RecordingState state)
     case RecordingState::Idle:      return "idle";
     case RecordingState::Recording: return "recording";
     case RecordingState::Paused:    return "paused";
+    case RecordingState::Failed:    return "failed";
     }
     return "unknown";
 }

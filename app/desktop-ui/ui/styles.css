@@ -1569,3 +1569,7 @@ body {
   .set-field-control > .input, .set-field-control > .select { min-width: 0; width: 100%; }
   .duration-row { flex-wrap: wrap; }
 }
+
+.audio-track-notice { display: flex; align-items: center; gap: 12px; color: var(--text-dim); font-size: 12px; padding: 8px 0; }
+.audio-track-notice .btn { flex-shrink: 0; }
+.fs-track-notice { position: fixed; left: 24px; right: 24px; bottom: 100px; z-index: 110; padding: 0 12px; background: rgba(21, 21, 21, .9); border-radius: var(--r-lg); }

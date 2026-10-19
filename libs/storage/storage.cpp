@@ -1,6 +1,9 @@
 #include "storage.h"
 
 #include <encoding/encoding.h>
+#include <encoding/trim.h>
+#include <encoding/media_ownership.h>
+#include <recording/bookmark_journal.h>
 #include <platform-win/platform_win.h>
 
 #include <sqlite3.h>
@@ -15,9 +18,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <ctime>
+#include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <random>
 #include <sstream>
@@ -285,6 +292,60 @@ std::mutex g_mutation_map_guard;
 std::unordered_map<std::wstring, std::weak_ptr<std::recursive_mutex>>
     g_mutation_map;
 
+std::wstring joined(const std::wstring &folder, const std::wstring &name) {
+  return (fs::path(folder) / name).wstring();
+}
+bool media_busy(const std::wstring &folder, const std::wstring &video, std::string *error) {
+  if (!encoding::media_is_owned(joined(folder, video))) return false;
+  if (error) *error = "clip is busy publishing";
+  return true;
+}
+bool media_path_valid(const std::wstring &folder, const std::wstring &path, std::string *error) {
+  std::error_code ec;
+  const auto status = fs::symlink_status(path, ec);
+  if (ec || !fs::is_regular_file(status)) {
+    if (error) *error = "media is not an accessible regular file";
+    return false;
+  }
+#ifdef _WIN32
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    if (error) *error = "media reparse points are not allowed";
+    return false;
+  }
+#endif
+  const auto root = fs::canonical(folder, ec);
+  if (ec) { if (error) *error = ec.message(); return false; }
+  const auto target = fs::canonical(path, ec);
+  if (ec || target.parent_path() != root) {
+    if (error) *error = "media resolves outside the catalog root";
+    return false;
+  }
+  return true;
+}
+bool directory_valid(const std::wstring &parent, const std::wstring &path, std::string *error) {
+  std::error_code ec;
+  const auto status = fs::symlink_status(path, ec);
+  if (ec || !fs::is_directory(status) || fs::is_symlink(status)) {
+    if (error) *error = "invalid media subdirectory";
+    return false;
+  }
+#ifdef _WIN32
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    if (error) *error = "media subdirectory reparse points are not allowed";
+    return false;
+  }
+#endif
+  const auto root = fs::canonical(parent, ec);
+  if (ec) { if (error) *error = ec.message(); return false; }
+  const auto target = fs::canonical(path, ec);
+  if (ec || target.parent_path() != root) {
+    if (error) *error = "media subdirectory resolves outside its parent";
+    return false;
+  }
+  return true;
+}
 bool leaf(const std::wstring &s) {
   return !s.empty() && s != L"." && s != L".." &&
          s.back() != L'.' && s.back() != L' ' &&
@@ -301,11 +362,11 @@ bool token_ok(const std::string &s) {
   });
 }
 std::wstring quarantine_dir(const std::wstring &folder) {
-  return folder + L"\\.monolith-mutations";
+  return joined(folder, L".monolith-mutations");
 }
 bool no_replace_move(const std::wstring &from, const std::wstring &to) {
 #ifdef _WIN32
-  return MoveFileW(from.c_str(), to.c_str()) != FALSE;
+  return MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
 #else
   std::error_code ec;
   if (fs::exists(to, ec) || ec)
@@ -316,7 +377,8 @@ bool no_replace_move(const std::wstring &from, const std::wstring &to) {
 }
 bool path_exists(const std::wstring &p) {
   std::error_code ec;
-  return fs::exists(p, ec) && !ec;
+  // Inaccessible paths must never be treated as absent by mutations.
+  return fs::exists(p, ec) || bool(ec);
 }
 std::string new_token() {
   std::random_device rd;
@@ -331,6 +393,9 @@ public:
     std::error_code ec;
     auto canonical = fs::weakly_canonical(db_path, ec);
     key_ = ec ? db_path : canonical.wstring();
+#ifdef _WIN32
+    std::transform(key_.begin(), key_.end(), key_.begin(), ::towlower);
+#endif
     {
       std::lock_guard guard(g_mutation_map_guard);
       auto &weak = g_mutation_map[key_];
@@ -448,7 +513,7 @@ bool journal_clear(sqlite3 *db, const std::string &token, std::string *error) {
   return ok;
 }
 bool valid_mutation(const Mutation &m) {
-  return token_ok(m.token) && (m.op == "delete" || m.op == "rename") &&
+  return token_ok(m.token) && (m.op == "delete" || m.op == "rename" || m.op == "trim") &&
          (m.stage == "prepared" || m.stage == "committed") && leaf(m.old_v) &&
          optional_leaf(m.old_t) && optional_leaf(m.new_v) &&
          optional_leaf(m.new_t);
@@ -486,12 +551,12 @@ struct ClipDb::Impl {
       sqlite3_close_v2(db);
   }
 
-  std::wstring thumbs_dir() const { return folder + L"\\.thumbs"; }
+  std::wstring thumbs_dir() const { return joined(folder, L".thumbs"); }
   std::wstring video_path(const std::wstring &basename) const {
-    return folder + L"\\" + basename;
+    return joined(folder, basename);
   }
   std::wstring thumb_path(const std::wstring &basename) const {
-    return thumbs_dir() + L"\\" + basename;
+    return joined(thumbs_dir(), basename);
   }
 };
 
@@ -510,6 +575,20 @@ bool row_has_video(sqlite3 *db, int64_t id, const std::wstring &video) {
   sqlite3_finalize(st);
   return ok;
 }
+bool shared_video(sqlite3 *db, int64_t id, const std::wstring &video, std::string *error) {
+  sqlite3_stmt *st = nullptr;
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM clips WHERE video_file=? AND id<>? LIMIT 1", -1, &st, nullptr) != SQLITE_OK) {
+    if (error) *error = sqlite3_errmsg(db);
+    return true;
+  }
+  const auto name = wide_to_utf8(video);
+  sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(st, 2, id);
+  const int result = sqlite3_step(st);
+  sqlite3_finalize(st);
+  if (result != SQLITE_DONE && error) *error = "media has duplicate catalog references";
+  return result != SQLITE_DONE;
+}
 bool recover_mutations(sqlite3 *db, const std::wstring &folder,
                        std::string *error) {
   sqlite3_stmt *st = nullptr;
@@ -524,7 +603,8 @@ bool recover_mutations(sqlite3 *db, const std::wstring &folder,
     return false;
   }
   std::vector<Mutation> all;
-  while (sqlite3_step(st) == SQLITE_ROW) {
+  int scan_result = SQLITE_OK;
+  while ((scan_result = sqlite3_step(st)) == SQLITE_ROW) {
     Mutation m;
     const auto text = [&](int n) {
       const auto *x = sqlite3_column_text(st, n);
@@ -547,18 +627,55 @@ bool recover_mutations(sqlite3 *db, const std::wstring &folder,
     }
     all.push_back(std::move(m));
   }
+  if (scan_result != SQLITE_DONE) {
+    if (error) *error = sqlite3_errmsg(db);
+    sqlite3_finalize(st); return false;
+  }
   sqlite3_finalize(st);
   for (const auto &m : all) {
+    if (m.op == "trim") {
+      const auto work = joined(quarantine_dir(folder), utf8_to_wide(m.token));
+      if (!directory_valid(folder, quarantine_dir(folder), error)) return false;
+      const auto backup = joined(work, m.new_v), temporary = joined(work, m.new_t), original = joined(folder, m.old_v);
+      std::error_code ec;
+      const auto workspace_status = fs::symlink_status(work, ec);
+      if ((ec && ec != std::errc::no_such_file_or_directory) || fs::is_symlink(workspace_status)) {
+        if (error) *error = "cannot inspect trim workspace";
+        return false;
+      }
+      if (fs::exists(work, ec) && !directory_valid(quarantine_dir(folder), work, error)) return false;
+      if (ec) { if (error) *error = "cannot inspect trim workspace"; return false; }
+      if (!row_has_video(db, m.id, m.old_v)) { if (error) *error = "trim catalog identity changed"; return false; }
+      const bool backup_present = fs::exists(backup, ec);
+      if (ec) { if (error) *error = "cannot inspect original trim backup"; return false; }
+      if (m.stage == "prepared" && backup_present) {
+        if (!media_path_valid(work, backup, error)) return false;
+        fs::remove(original, ec);
+        if (ec || !no_replace_move(backup, original)) {
+          if (error) *error = "cannot restore original trim media";
+          return false;
+        }
+      }
+      if (!media_path_valid(folder, original, error)) return false;
+      for (const auto &file : {backup, temporary}) {
+        fs::remove(file, ec);
+        if (ec) { if (error) *error = "cannot clean trim workspace: " + ec.message(); return false; }
+      }
+      fs::remove(work, ec);
+      if (ec) { if (error) *error = "cannot clean trim workspace: " + ec.message(); return false; }
+      if (!journal_clear(db, m.token, error)) return false;
+      continue;
+    }
     const bool deleting = m.op == "delete";
-    const std::wstring vd = deleting ? quarantine_dir(folder) + L"\\" + m.new_v
-                                     : folder + L"\\" + m.new_v;
+    const std::wstring vd = deleting ? joined(quarantine_dir(folder), m.new_v)
+                                     : joined(folder, m.new_v);
     const std::wstring td =
         deleting
-            ? (m.new_t.empty() ? L"" : quarantine_dir(folder) + L"\\" + m.new_t)
-            : (m.new_t.empty() ? L"" : folder + L"\\.thumbs\\" + m.new_t);
-    const std::wstring vs = folder + L"\\" + m.old_v;
+            ? (m.new_t.empty() ? L"" : joined(quarantine_dir(folder), m.new_t))
+            : (m.new_t.empty() ? L"" : joined(joined(folder, L".thumbs"), m.new_t));
+    const std::wstring vs = joined(folder, m.old_v);
     const std::wstring ts =
-        m.old_t.empty() ? L"" : folder + L"\\.thumbs\\" + m.old_t;
+        m.old_t.empty() ? L"" : joined(joined(folder, L".thumbs"), m.old_t);
     if (m.stage == "prepared") {
       if (path_exists(vs) && path_exists(vd)) {
         if (error)
@@ -630,8 +747,13 @@ std::unique_ptr<ClipDb> ClipDb::open(const std::wstring &folder,
   }
 
   const std::wstring db_name = (source == "manual") ? L"recs.db" : L"clips.db";
-  const std::wstring db_path = folder + L"\\" + db_name;
+  const std::wstring db_path = joined(folder, db_name);
 
+  MutationLock mutation_lock(db_path);
+  if (!mutation_lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return nullptr;
+  }
   std::error_code ec;
   fs::create_directories(folder, ec);
   const bool existed = fs::exists(db_path, ec);
@@ -650,7 +772,7 @@ std::unique_ptr<ClipDb> ClipDb::open(const std::wstring &folder,
   }
 
   exec(db, "PRAGMA journal_mode=WAL;", nullptr);
-  exec(db, "PRAGMA synchronous=NORMAL;", nullptr);
+  exec(db, "PRAGMA synchronous=FULL;", nullptr);
   exec(db, "PRAGMA busy_timeout=4000;", nullptr);
   exec(db, "PRAGMA foreign_keys=ON;", nullptr);
 
@@ -696,8 +818,23 @@ std::unique_ptr<ClipDb> ClipDb::open(const std::wstring &folder,
     exec(db, "ALTER TABLE clips ADD COLUMN game_executable_path TEXT;",
          nullptr);
 
-  MutationLock mutation_lock(db_path);
-  if (!mutation_lock.ok() || !journal_schema(db, error) ||
+  if (!has_column(db, "clips", "media_revision") &&
+      !exec(db, "ALTER TABLE clips ADD COLUMN media_revision INTEGER NOT NULL DEFAULT 0;", error)) {
+    sqlite3_close(db); return nullptr;
+  }
+  if (!has_column(db, "clips", "clip_uid") &&
+      !exec(db, "ALTER TABLE clips ADD COLUMN clip_uid TEXT NOT NULL DEFAULT '';", error)) {
+    sqlite3_close(db); return nullptr;
+  }
+  if (!exec(db, "BEGIN IMMEDIATE;"
+                "UPDATE clips SET clip_uid=lower(hex(randomblob(16))) WHERE clip_uid='';"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_clip_uid ON clips(clip_uid);"
+                "CREATE TABLE IF NOT EXISTS catalog_metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+                "INSERT OR IGNORE INTO catalog_metadata VALUES ('catalog_uid',lower(hex(randomblob(16))));"
+                "COMMIT;", error)) {
+    exec(db, "ROLLBACK;", nullptr); sqlite3_close(db); return nullptr;
+  }
+  if (!journal_schema(db, error) ||
       !recover_mutations(db, folder, error)) {
     if (error && error->empty())
       *error = "cannot acquire catalog mutation lock";
@@ -716,13 +853,34 @@ const std::wstring &ClipDb::folder() const { return impl_->folder; }
 std::wstring ClipDb::thumbs_dir() const { return impl_->thumbs_dir(); }
 
 int64_t ClipDb::insert_clip(const ClipRow &row, std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok() || !leaf(row.video_file) || !optional_leaf(row.thumbnail_file)) {
+    if (error) *error = "invalid catalog media path or mutation lock failure";
+    return -1;
+  }
+  sqlite3_stmt *existing = nullptr;
+  if (sqlite3_prepare_v2(impl_->db, "SELECT id FROM clips WHERE video_file=? LIMIT 1", -1,
+                         &existing, nullptr) != SQLITE_OK) {
+    if (error) *error = sqlite3_errmsg(impl_->db);
+    return -1;
+  }
+  const auto name = wide_to_utf8(row.video_file);
+  sqlite3_bind_text(existing, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+  const int found = sqlite3_step(existing);
+  const int64_t prior = found == SQLITE_ROW ? sqlite3_column_int64(existing, 0) : -1;
+  sqlite3_finalize(existing);
+  if (found == SQLITE_ROW) return prior;
+  if (found != SQLITE_DONE) {
+    if (error) *error = sqlite3_errmsg(impl_->db);
+    return -1;
+  }
   static const char *sql =
       "INSERT INTO clips (video_file, thumbnail_file, title, created_at_utc, "
       "source, "
       "duration_seconds, game_process_name, game_display_name, "
       "game_executable_path, "
-      "discord_app_id, game_source, steam_app_id, confidence, favorite) "
-      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+      "discord_app_id, game_source, steam_app_id, confidence, favorite, clip_uid) "
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,lower(hex(randomblob(16))))";
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db, sql, -1, &st, nullptr) != SQLITE_OK) {
     if (error)
@@ -802,6 +960,8 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string *error) {
       *error = "clip not found or has invalid catalog paths";
     return false;
   }
+  if (media_busy(impl_->folder, video, error)) return false;
+  if (remove_files && shared_video(impl_->db, id, video, error)) remove_files = false;
   if (!remove_files) {
     if (!exec(impl_->db, "BEGIN", error) ||
         !delete_clip_rows(impl_->db, id, error) ||
@@ -812,7 +972,13 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string *error) {
     return true;
   }
   const std::wstring source_video = impl_->video_path(video);
-  if (!path_exists(source_video)) { // Reconcile's missing-video case: rows
+  std::error_code source_error;
+  const bool source_present = fs::exists(source_video, source_error);
+  if (source_error) {
+    if (error) *error = "cannot inspect video: " + source_error.message();
+    return false;
+  }
+  if (!source_present) { // Reconcile's missing-video case: rows
                                     // only, no quarantine required.
     if (!exec(impl_->db, "BEGIN", error) ||
         !delete_clip_rows(impl_->db, id, error) ||
@@ -822,9 +988,12 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string *error) {
     }
     return true;
   }
+  if (!media_path_valid(impl_->folder, source_video, error)) return false;
   if (thumb.empty())
     thumb = thumb_basename_for(video);
   const bool have_thumb = path_exists(impl_->thumb_path(thumb));
+  if (have_thumb && (!directory_valid(impl_->folder, impl_->thumbs_dir(), error) ||
+                     !media_path_valid(impl_->thumbs_dir(), impl_->thumb_path(thumb), error))) return false;
   Mutation m{new_token(), "delete", "prepared",
              id,          video,    utf8_to_wide(new_token()),
              thumb,       L""};
@@ -836,14 +1005,14 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string *error) {
     m.old_t.clear();
   std::error_code ec;
   fs::create_directories(quarantine_dir(impl_->folder), ec);
-  if (ec) {
+  if (ec || !directory_valid(impl_->folder, quarantine_dir(impl_->folder), error)) {
     if (error)
       *error = "cannot create mutation quarantine";
     return false;
   }
   if (!journal_put(impl_->db, m, error))
     return false;
-  const std::wstring qv = quarantine_dir(impl_->folder) + L"\\" + m.new_v;
+  const std::wstring qv = joined(quarantine_dir(impl_->folder), m.new_v);
   if (!no_replace_move(source_video, qv)) {
     journal_clear(impl_->db, m.token, nullptr);
     if (error)
@@ -852,7 +1021,7 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string *error) {
   }
   if (have_thumb &&
       !no_replace_move(impl_->thumb_path(thumb),
-                       quarantine_dir(impl_->folder) + L"\\" + m.new_t)) {
+                       joined(quarantine_dir(impl_->folder), m.new_t))) {
     if (!no_replace_move(qv, source_video)) {
       if (error)
         *error = "thumbnail move failed and video restore failed";
@@ -875,10 +1044,10 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string *error) {
   std::error_code cleanup;
   fs::remove(qv, cleanup);
   if (have_thumb)
-    fs::remove(quarantine_dir(impl_->folder) + L"\\" + m.new_t, cleanup);
+    fs::remove(joined(quarantine_dir(impl_->folder), m.new_t), cleanup);
   if (path_exists(qv) ||
       (have_thumb &&
-       path_exists(quarantine_dir(impl_->folder) + L"\\" + m.new_t))) {
+       path_exists(joined(quarantine_dir(impl_->folder), m.new_t)))) {
     if (error)
       *error = "delete committed; quarantine cleanup deferred";
     return false;
@@ -887,6 +1056,12 @@ bool ClipDb::remove_clip(int64_t id, bool remove_files, std::string *error) {
 }
 
 bool ClipDb::set_favorite(int64_t id, bool favorite, std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db, "UPDATE clips SET favorite=? WHERE id=?",
                          -1, &st, nullptr) != SQLITE_OK) {
@@ -910,6 +1085,12 @@ bool ClipDb::set_favorite(int64_t id, bool favorite, std::string *error) {
 }
 
 bool ClipDb::set_duration(int64_t id, double seconds, std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db,
                          "UPDATE clips SET duration_seconds=? WHERE id=?", -1,
@@ -934,6 +1115,9 @@ bool ClipDb::set_duration(int64_t id, double seconds, std::string *error) {
 }
 
 std::wstring ClipDb::video_file_for(int64_t id) const {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) return {};
+
   std::wstring result;
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db, "SELECT video_file FROM clips WHERE id=?",
@@ -951,6 +1135,12 @@ std::wstring ClipDb::video_file_for(int64_t id) const {
 bool ClipDb::add_bookmark(int64_t id, int seq, double time_seconds,
                           const std::string &label, const std::string &color,
                           std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   if (!clip_exists(impl_->db, id)) {
     if (error)
       *error = "clip not found";
@@ -980,6 +1170,12 @@ bool ClipDb::add_bookmark(int64_t id, int seq, double time_seconds,
 
 bool ClipDb::update_bookmark(int64_t id, int seq, const std::string &label,
                              const std::string &color, std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db,
                          "UPDATE clip_bookmarks SET label=?, color=? WHERE "
@@ -1007,6 +1203,12 @@ bool ClipDb::update_bookmark(int64_t id, int seq, const std::string &label,
 }
 
 bool ClipDb::remove_bookmark(int64_t id, int seq, std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db,
                          "DELETE FROM clip_bookmarks WHERE clip_id=? AND seq=?",
@@ -1026,6 +1228,12 @@ bool ClipDb::remove_bookmark(int64_t id, int seq, std::string *error) {
 
 bool ClipDb::set_bookmark_time(int64_t id, int seq, double time_seconds,
                                std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(
           impl_->db,
@@ -1053,6 +1261,12 @@ bool ClipDb::set_bookmark_time(int64_t id, int seq, double time_seconds,
 
 bool ClipDb::list_bookmarks(int64_t id, std::vector<BookmarkRow> &out,
                             std::string *error) const {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   out.clear();
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(
@@ -1065,7 +1279,8 @@ bool ClipDb::list_bookmarks(int64_t id, std::vector<BookmarkRow> &out,
     return false;
   }
   sqlite3_bind_int64(st, 1, id);
-  while (sqlite3_step(st) == SQLITE_ROW) {
+  int result = SQLITE_OK;
+  while ((result = sqlite3_step(st)) == SQLITE_ROW) {
     BookmarkRow row;
     row.seq = sqlite3_column_int(st, 0);
     row.time_seconds = sqlite3_column_double(st, 1);
@@ -1075,12 +1290,19 @@ bool ClipDb::list_bookmarks(int64_t id, std::vector<BookmarkRow> &out,
       row.color = reinterpret_cast<const char *>(c);
     out.push_back(std::move(row));
   }
+  if (result != SQLITE_DONE && error) *error = sqlite3_errmsg(impl_->db);
   sqlite3_finalize(st);
-  return true;
+  return result == SQLITE_DONE;
 }
 
 bool ClipDb::set_title(int64_t id, const std::string &title,
                        std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   const std::string value = title.empty() ? "Untitled" : title;
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db, "UPDATE clips SET title=? WHERE id=?", -1,
@@ -1106,6 +1328,12 @@ bool ClipDb::set_title(int64_t id, const std::string &title,
 
 bool ClipDb::add_hashtag(int64_t id, const std::string &tag,
                          std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   if (tag.empty()) {
     if (error)
       *error = "empty tag";
@@ -1136,6 +1364,12 @@ bool ClipDb::add_hashtag(int64_t id, const std::string &tag,
 
 bool ClipDb::remove_hashtag(int64_t id, const std::string &tag,
                             std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   sqlite3_stmt *st = nullptr;
   if (sqlite3_prepare_v2(impl_->db,
                          "DELETE FROM clip_hashtags WHERE clip_id=? AND tag=?",
@@ -1154,6 +1388,12 @@ bool ClipDb::remove_hashtag(int64_t id, const std::string &tag,
 }
 
 bool ClipDb::regenerate_thumbnail(int64_t id, std::string *error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) {
+    if (error) *error = "cannot acquire catalog mutation lock";
+    return false;
+  }
+
   std::wstring video_base, thumb_base;
   {
     sqlite3_stmt *st = nullptr;
@@ -1182,11 +1422,12 @@ bool ClipDb::regenerate_thumbnail(int64_t id, std::string *error) {
 
   std::error_code ec;
   fs::create_directories(impl_->thumbs_dir(), ec);
+  if (ec || !directory_valid(impl_->folder, impl_->thumbs_dir(), error)) return false;
   const std::wstring thumb =
       thumb_base.empty() ? thumb_basename_for(video_base) : thumb_base;
   const std::wstring vpath = impl_->video_path(video_base);
   const std::wstring tpath = impl_->thumb_path(thumb);
-  if (!fs::exists(vpath, ec)) {
+  if (!media_path_valid(impl_->folder, vpath, error)) {
     if (error)
       *error = "video file missing";
     return false;
@@ -1249,10 +1490,14 @@ bool ClipDb::rename_clip(int64_t id, const std::wstring &new_stem,
       *error = "clip not found or has invalid catalog paths";
     return false;
   }
+  if (media_busy(impl_->folder, old_v, error) || shared_video(impl_->db, id, old_v, error) ||
+      !media_path_valid(impl_->folder, impl_->video_path(old_v), error)) return false;
   const std::wstring new_v = new_stem + fs::path(old_v).extension().wstring();
   const std::wstring old_thumb =
       old_t.empty() ? thumb_basename_for(old_v) : old_t;
   const bool have_thumb = path_exists(impl_->thumb_path(old_thumb));
+  if (have_thumb && (!directory_valid(impl_->folder, impl_->thumbs_dir(), error) ||
+                     !media_path_valid(impl_->thumbs_dir(), impl_->thumb_path(old_thumb), error))) return false;
   const std::wstring new_t = have_thumb ? new_stem + L".png" : L"";
   if (path_exists(impl_->video_path(new_v)) ||
       (!new_t.empty() && path_exists(impl_->thumb_path(new_t)))) {
@@ -1317,6 +1562,138 @@ bool ClipDb::rename_clip(int64_t id, const std::wstring &new_stem,
   return journal_clear(impl_->db, m.token, error);
 }
 
+bool ClipDb::capture_thumbnail(int64_t id, const std::wstring& upload_folder,
+    const std::string& token, std::string* error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok() || token.size() != 32 || !std::all_of(token.begin(), token.end(),
+      [](unsigned char c) { return std::isxdigit(c); })) {
+    if (error) *error = "invalid thumbnail token";
+    return false;
+  }
+  const auto video = video_file_for(id);
+  if (!leaf(video) || media_busy(impl_->folder, video, error)) return false;
+  const auto upload = joined(upload_folder, utf8_to_wide(token + ".png"));
+  if (!directory_valid(fs::path(upload_folder).parent_path().wstring(), upload_folder, error) ||
+      !media_path_valid(upload_folder, upload, error)) return false;
+  std::error_code ec;
+  const auto size = fs::file_size(upload, ec);
+  if (ec || size < 8 || size > 8 * 1024 * 1024) { if (error) *error = "invalid thumbnail size"; return false; }
+  std::ifstream input(fs::path(upload), std::ios::binary);
+  char signature[8]{};
+  input.read(signature, 8);
+  if (!input || std::memcmp(signature, "\x89PNG\r\n\x1a\n", 8) != 0) {
+    if (error) *error = "invalid thumbnail PNG";
+    return false;
+  }
+  fs::create_directories(impl_->thumbs_dir(), ec);
+  if (ec || !directory_valid(impl_->folder, impl_->thumbs_dir(), error)) return false;
+  const auto name = L"capture-" + utf8_to_wide(new_token()) + L".png";
+  const auto target = impl_->thumb_path(name);
+  if (!fs::copy_file(upload, target, fs::copy_options::none, ec) || ec) {
+    if (error) *error = "cannot copy captured thumbnail";
+    return false;
+  }
+  sqlite3_stmt* st = nullptr;
+  bool ok = sqlite3_prepare_v2(impl_->db, "UPDATE clips SET thumbnail_file=? WHERE id=?", -1, &st, nullptr) == SQLITE_OK;
+  const auto text = wide_to_utf8(name);
+  if (ok) {
+    sqlite3_bind_text(st, 1, text.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_int64(st, 2, id);
+    ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(impl_->db) == 1;
+  }
+  sqlite3_finalize(st);
+  if (!ok) { if (error) *error = sqlite3_errmsg(impl_->db); fs::remove(target, ec); }
+  return ok;
+}
+
+bool ClipDb::mutate_verified(int64_t id, const std::string& catalog_uid,
+    const std::string& clip_uid, int64_t revision, const std::function<bool()>& mutation,
+    std::string* error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok()) { if (error) *error = "cannot acquire catalog mutation lock"; return false; }
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(impl_->db,
+      "SELECT video_file,media_revision FROM clips WHERE id=? AND clip_uid=? "
+      "AND EXISTS(SELECT 1 FROM catalog_metadata WHERE key='catalog_uid' AND value=?)",
+      -1, &st, nullptr) != SQLITE_OK) {
+    if (error) *error = sqlite3_errmsg(impl_->db);
+    return false;
+  }
+  sqlite3_bind_int64(st, 1, id);
+  sqlite3_bind_text(st, 2, clip_uid.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(st, 3, catalog_uid.c_str(), -1, SQLITE_TRANSIENT);
+  const int result = sqlite3_step(st);
+  const auto video = result == SQLITE_ROW ? utf8_to_wide(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))) : std::wstring();
+  const auto current = result == SQLITE_ROW ? sqlite3_column_int64(st, 1) : -1;
+  sqlite3_finalize(st);
+  if (result != SQLITE_ROW || (revision >= 0 && current != revision)) {
+    if (error) *error = "clip identity or media revision changed; refresh the library";
+    return false;
+  }
+  if (!leaf(video) || media_busy(impl_->folder, video, error)) return false;
+  return mutation();
+}
+
+bool ClipDb::trim_clip(int64_t id, double start, double end, std::string* error) {
+  MutationLock lock(impl_->db_path);
+  if (!lock.ok() || !std::isfinite(start) || !std::isfinite(end) || start < 0 || end <= start) {
+    if (error) *error = "invalid trim interval or mutation lock failure";
+    return false;
+  }
+  const auto video = video_file_for(id), path = impl_->video_path(video);
+  if (!leaf(video) || media_busy(impl_->folder, video, error) ||
+      shared_video(impl_->db, id, video, error) || !media_path_valid(impl_->folder, path, error)) return false;
+  std::error_code ec;
+  const auto size = fs::file_size(path, ec);
+  if (ec) { if (error) *error = ec.message(); return false; }
+  const auto modified = fs::last_write_time(path, ec);
+  if (ec) { if (error) *error = ec.message(); return false; }
+  const auto token = new_token();
+  const auto quarantine = quarantine_dir(impl_->folder);
+  fs::create_directories(quarantine, ec);
+  if (ec || !directory_valid(impl_->folder, quarantine, error)) return false;
+  const auto work = joined(quarantine, utf8_to_wide(token));
+  if (!fs::create_directory(work, ec) || ec) { if (error) *error = "cannot create trim workspace"; return false; }
+  const auto backup = joined(work, L"original" + fs::path(video).extension().wstring());
+  const auto temporary = joined(work, L"trimmed" + fs::path(video).extension().wstring());
+  encoding::TrimResult retained;
+  bool ok = encoding::trim_clip_lossless(path, start, end, temporary, error, &retained);
+  if (!ok) ok = encoding::trim_clip_reencode(path, start, end, temporary, error, &retained);
+  if (!ok || !std::isfinite(retained.duration_seconds) || retained.duration_seconds <= 0) {
+    fs::remove_all(work, ec); return false;
+  }
+  if (!media_path_valid(impl_->folder, path, error) || fs::file_size(path, ec) != size || ec ||
+      fs::last_write_time(path, ec) != modified || ec) {
+    if (error) *error = "clip changed during trim";
+    fs::remove_all(work, ec); return false;
+  }
+  Mutation m{token, "trim", "prepared", id, video, fs::path(backup).filename().wstring(),
+             L"", fs::path(temporary).filename().wstring()};
+  if (!journal_put(impl_->db, m, error)) { fs::remove_all(work, ec); return false; }
+  if (!no_replace_move(path, backup) || !no_replace_move(temporary, path)) {
+    if (error) *error = "cannot replace trim media; recovery retained";
+    recover_mutations(impl_->db, impl_->folder, nullptr); return false;
+  }
+  std::vector<BookmarkRow> bookmarks;
+  ok = list_bookmarks(id, bookmarks, error) && exec(impl_->db, "BEGIN IMMEDIATE", error);
+  if (ok) ok = set_duration(id, retained.duration_seconds, error);
+  for (const auto& b : bookmarks) {
+    if (!ok) break;
+    const auto shifted = retained.retime_bookmark(b.time_seconds);
+    ok = shifted ? set_bookmark_time(id, b.seq, *shifted, error) : remove_bookmark(id, b.seq, error);
+  }
+  if (ok) {
+    sqlite3_stmt* st = nullptr;
+    ok = sqlite3_prepare_v2(impl_->db, "UPDATE clips SET media_revision=media_revision+1 WHERE id=?", -1, &st, nullptr) == SQLITE_OK;
+    if (ok) { sqlite3_bind_int64(st, 1, id); ok = sqlite3_step(st) == SQLITE_DONE; }
+    sqlite3_finalize(st);
+  }
+  if (ok) ok = journal_stage(impl_->db, token, "committed", error) && exec(impl_->db, "COMMIT", error);
+  if (!ok) { exec(impl_->db, "ROLLBACK", nullptr); recover_mutations(impl_->db, impl_->folder, nullptr); return false; }
+  if (!recover_mutations(impl_->db, impl_->folder, error)) return false;
+  regenerate_thumbnail(id, nullptr);
+  return true;
+}
+
 ReconcileStats ClipDb::reconcile(std::string *error) {
   MutationLock lock(impl_->db_path);
   if (!lock.ok()) {
@@ -1326,7 +1703,14 @@ ReconcileStats ClipDb::reconcile(std::string *error) {
   }
   ReconcileStats stats;
   std::error_code ec;
+  if (!fs::is_directory(impl_->folder, ec) || ec) {
+    if (error) *error = "catalog root is unavailable";
+    return stats;
+  }
+  fs::directory_iterator visible(impl_->folder, ec);
+  if (ec) { if (error) *error = "cannot inspect catalog root: " + ec.message(); return stats; }
   fs::create_directories(impl_->thumbs_dir(), ec);
+  const bool thumbs_valid = !ec && directory_valid(impl_->folder, impl_->thumbs_dir(), error);
 
   // Snapshot rows first so we can mutate without invalidating a live cursor.
   struct Row {
@@ -1340,7 +1724,8 @@ ReconcileStats ClipDb::reconcile(std::string *error) {
     if (sqlite3_prepare_v2(impl_->db,
                            "SELECT id, video_file, thumbnail_file FROM clips",
                            -1, &st, nullptr) == SQLITE_OK) {
-      while (sqlite3_step(st) == SQLITE_ROW) {
+      int result = SQLITE_OK;
+      while ((result = sqlite3_step(st)) == SQLITE_ROW) {
         Row r;
         r.id = sqlite3_column_int64(st, 0);
         if (const unsigned char *v = sqlite3_column_text(st, 1))
@@ -1349,9 +1734,14 @@ ReconcileStats ClipDb::reconcile(std::string *error) {
           r.thumb = utf8_to_wide(reinterpret_cast<const char *>(t));
         rows.push_back(std::move(r));
       }
+      if (result != SQLITE_DONE) {
+        if (error) *error = sqlite3_errmsg(impl_->db);
+        sqlite3_finalize(st); return stats;
+      }
       sqlite3_finalize(st);
-    } else if (error) {
-      *error = sqlite3_errmsg(impl_->db);
+    } else {
+      if (error) *error = sqlite3_errmsg(impl_->db);
+      return stats;
     }
   }
 
@@ -1362,17 +1752,27 @@ ReconcileStats ClipDb::reconcile(std::string *error) {
       continue;
     }
     const std::wstring vpath = impl_->video_path(r.video);
-    if (!fs::exists(vpath, ec)) {
+    const bool present = fs::exists(vpath, ec);
+    if (ec) {
+      if (error) *error = "cannot inspect catalog media: " + ec.message();
+      known.insert(r.video); continue;
+    }
+    if (!present) {
+      if (!fs::is_directory(impl_->folder, ec) || ec) {
+        if (error) *error = "catalog root became unavailable";
+        continue;
+      }
       if (remove_clip(r.id, /*remove_files=*/true, nullptr))
         stats.removed++;
       continue;
     }
     known.insert(r.video);
+    if (encoding::media_is_owned(vpath) || !media_path_valid(impl_->folder, vpath, error)) continue;
 
     std::wstring thumb =
         r.thumb.empty() ? thumb_basename_for(r.video) : r.thumb;
     const std::wstring tpath = impl_->thumb_path(thumb);
-    if (!fs::exists(tpath, ec)) {
+    if (thumbs_valid && !fs::exists(tpath, ec) && !ec) {
       if (encoding::generate_thumbnail(vpath, tpath)) {
         // persist the (possibly new) thumbnail basename
         sqlite3_stmt *st = nullptr;
@@ -1392,19 +1792,26 @@ ReconcileStats ClipDb::reconcile(std::string *error) {
 
   // Import orphan video files (migration of clips created before the DB).
   if (fs::is_directory(impl_->folder, ec)) {
-    for (const auto &entry : fs::directory_iterator(impl_->folder, ec)) {
+    fs::directory_iterator it(impl_->folder, ec), end;
+    if (ec) { if (error) *error = "cannot scan catalog root: " + ec.message(); return stats; }
+    for (; it != end; it.increment(ec)) {
+      if (ec) { if (error) *error = "catalog scan failed: " + ec.message(); break; }
+      const auto &entry = *it;
       if (!entry.is_regular_file(ec))
         continue;
       const fs::path &p = entry.path();
       if (!is_video_ext(p))
         continue;
       const std::wstring base = p.filename().wstring();
-      if (known.count(base))
-        continue;
+      std::wstring lower = base;
+      std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+      if (known.count(base) || lower.find(L".trimming.") != std::wstring::npos ||
+          lower.find(L".partial.") != std::wstring::npos || encoding::media_is_owned(p.wstring()) ||
+          !media_path_valid(impl_->folder, p.wstring(), error)) continue;
 
       const std::wstring thumb = thumb_basename_for(base);
       std::wstring thumb_stored;
-      if (encoding::generate_thumbnail(impl_->video_path(base),
+      if (thumbs_valid && encoding::generate_thumbnail(impl_->video_path(base),
                                        impl_->thumb_path(thumb)))
         thumb_stored = thumb;
 
@@ -1419,6 +1826,32 @@ ReconcileStats ClipDb::reconcile(std::string *error) {
         stats.imported++;
     }
   }
+  sqlite3_stmt* recovery = nullptr;
+  std::vector<std::pair<int64_t,std::wstring>> recoverable;
+  if (sqlite3_prepare_v2(impl_->db, "SELECT id,video_file FROM clips", -1, &recovery, nullptr) == SQLITE_OK) {
+    while (sqlite3_step(recovery) == SQLITE_ROW) {
+      const auto* name = sqlite3_column_text(recovery, 1);
+      if (name) recoverable.emplace_back(sqlite3_column_int64(recovery, 0), utf8_to_wide(reinterpret_cast<const char*>(name)));
+    }
+  }
+  sqlite3_finalize(recovery);
+  for (const auto& [id, video] : recoverable) {
+    const auto media = impl_->video_path(video);
+    std::error_code journal_error;
+    if (!leaf(video) || encoding::media_is_owned(media) ||
+        !fs::exists(recording::bookmark_journal_path(media), journal_error) || journal_error) continue;
+    std::vector<recording::Bookmark> recovered;
+    std::string detail;
+    bool ok = recording::read_bookmark_journal(media, recovered, &detail);
+    int seq = 1;
+    for (const auto& b : recovered) {
+      if (!ok) break;
+      ok = add_bookmark(id, seq++, b.time_seconds, b.label, b.color, &detail);
+    }
+    if (ok) fs::remove(recording::bookmark_journal_path(media), journal_error);
+    else if (error) *error = "bookmark recovery failed: " + detail;
+  }
+  if (ec && error) *error = "catalog scan failed: " + ec.message();
   return stats;
 }
 

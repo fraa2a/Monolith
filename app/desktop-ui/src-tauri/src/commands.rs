@@ -1,8 +1,8 @@
 // Native Tauri commands. Run blocking disk, decode and network work through spawn_blocking.
 
-use crate::{clip_catalog, engine_rpc, game_catalog, settings_store};
 #[cfg(target_os = "windows")]
 use crate::exe_icon;
+use crate::{clip_catalog, engine_rpc, game_catalog, settings_store};
 use base64::{engine::general_purpose, Engine as _};
 use clip_catalog::{Clip, ClipFilter, ClipSource};
 use game_catalog::CatalogEntry;
@@ -32,7 +32,6 @@ async fn blocking_result<T: Send + 'static>(
         .map_err(|err| err.to_string())?
 }
 
-
 #[tauri::command]
 pub async fn list_clips(filter: ClipFilter) -> Vec<Clip> {
     blocking(move || clip_catalog::list_clips(&filter)).await
@@ -47,7 +46,6 @@ pub async fn distinct_games() -> Vec<String> {
 pub async fn distinct_hashtags() -> Vec<String> {
     blocking(clip_catalog::distinct_hashtags).await
 }
-
 
 #[tauri::command]
 pub async fn engine_status() -> Value {
@@ -91,78 +89,168 @@ pub async fn set_selected_game(exe: String, pid: Option<u32>) -> Result<(), Stri
     }
 }
 
-
-#[tauri::command]
-pub async fn clip_set_duration(source: String, id: i64, duration: f64) -> Result<(), String> {
+async fn clip_mutation(
+    method: &'static str,
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    mut params: Value,
+) -> Result<(), String> {
     let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::set_duration(src, id, duration)).await
+    params["source"] = serde_json::json!(src.as_str());
+    params["id"] = serde_json::json!(id);
+    params["catalog_uid"] = serde_json::json!(catalog_uid);
+    params["clip_uid"] = serde_json::json!(clip_uid);
+    blocking_result(move || crate::clip_mutations::send(method, params)).await
 }
-
 #[tauri::command]
-pub async fn thumb_capture(source: String, id: i64, data_url: String) -> Result<String, String> {
+pub async fn clip_set_duration(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    media_revision: i64,
+    duration: f64,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_set_duration",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({"duration":duration,"media_revision":media_revision}),
+    )
+    .await
+}
+#[tauri::command]
+pub async fn thumb_capture(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    media_revision: i64,
+    data_url: String,
+) -> Result<String, String> {
     let src = parse_source(&source)?;
-    let result = blocking_result(move || {
-        let encoded = data_url.split_once(',').map(|(_, data)| data).unwrap_or(&data_url);
-        let decoded = general_purpose::STANDARD
-            .decode(encoded.as_bytes())
-            .map_err(|_| "bad thumbnail data".to_string())?;
-        clip_catalog::save_thumbnail_capture(src, id, &decoded)
+    blocking_result(move || {
+        crate::clip_mutations::capture(
+            src.as_str(),
+            id,
+            &catalog_uid,
+            &clip_uid,
+            media_revision,
+            &data_url,
+        )
     })
-    .await;
-    if let Err(err) = &result {
-        eprintln!("[thumb_capture] {source} clip {id} failed: {err}");
-    }
-    result
+    .await
 }
-
 #[tauri::command]
-pub async fn clip_set_favorite(source: String, id: i64, favorite: bool) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::set_favorite(src, id, favorite)).await
+pub async fn clip_set_favorite(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    favorite: bool,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_set_favorite",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({"favorite":favorite}),
+    )
+    .await
 }
-
 #[tauri::command]
-pub async fn clip_set_title(source: String, id: i64, title: String) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::set_title(src, id, &title)).await
+pub async fn clip_set_title(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    title: String,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_set_title",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({"title":title}),
+    )
+    .await
 }
-
 #[tauri::command]
-pub async fn clip_add_hashtag(source: String, id: i64, tag: String) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::add_hashtag(src, id, &tag)).await
+pub async fn clip_add_hashtag(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    tag: String,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_add_hashtag",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({"tag":tag}),
+    )
+    .await
 }
-
 #[tauri::command]
-pub async fn clip_remove_hashtag(source: String, id: i64, tag: String) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::remove_hashtag(src, id, &tag)).await
+pub async fn clip_remove_hashtag(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    tag: String,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_remove_hashtag",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({"tag":tag}),
+    )
+    .await
 }
-
 #[tauri::command]
-pub async fn clip_rename(source: String, id: i64, new_name: String) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    let params = serde_json::json!({ "source": src.as_str(), "id": id, "new_name": new_name });
-    let result = blocking(move || engine_rpc::mutate_clip("clip_rename", params)).await;
-    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        Ok(())
-    } else {
-        Err(result.get("error").and_then(Value::as_str)
-            .unwrap_or("recorder must be running to rename clips").to_string())
-    }
+pub async fn clip_rename(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+    new_name: String,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_rename",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({"new_name":new_name}),
+    )
+    .await
 }
-
 #[tauri::command]
-pub async fn clip_delete(source: String, id: i64) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    let params = serde_json::json!({ "source": src.as_str(), "id": id });
-    let result = blocking(move || engine_rpc::mutate_clip("clip_delete", params)).await;
-    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        Ok(())
-    } else {
-        Err(result.get("error").and_then(Value::as_str)
-            .unwrap_or("recorder must be running to delete clips").to_string())
-    }
+pub async fn clip_delete(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_delete",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 // Explorer requires /select, and the path in separate arguments.
@@ -213,53 +301,27 @@ pub async fn open_updater() -> Result<(), String> {
     .await
 }
 
-// Only mutation that still needs the engine: thumbnail regeneration decodes a
-// video frame via FFmpeg, which only the recorder process links against.
 #[tauri::command]
-pub async fn clip_regen_thumb(source: String, id: i64) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    let result = blocking(move || {
-        let params = serde_json::json!({ "source": src.as_str(), "id": id });
-        engine_rpc::mutate_clip("clip_regen_thumb", params)
-    })
-    .await;
-    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        Ok(())
-    } else {
-        let err = result
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("engine error")
-            .to_string();
-        eprintln!("[clip_regen_thumb] {source} clip {id} failed: {err}");
-        Err(err)
-    }
+pub async fn clip_regen_thumb(
+    source: String,
+    id: i64,
+    catalog_uid: String,
+    clip_uid: String,
+) -> Result<(), String> {
+    clip_mutation(
+        "clip_regen_thumb",
+        source,
+        id,
+        catalog_uid,
+        clip_uid,
+        serde_json::json!({}),
+    )
+    .await
 }
-
-// Lossless trim of a clip's video file, performed by the engine (single
-// writer): the engine rewrites the file in place, retimes bookmarks and bumps
-// the clip generation. `start`/`end` are seconds into the original file.
 #[tauri::command]
-pub async fn clip_trim(source: String, id: i64, start: f64, end: f64) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    let result = blocking(move || {
-        let params = serde_json::json!({
-            "source": src.as_str(), "id": id, "start": start, "end": end,
-        });
-        engine_rpc::mutate_clip("clip_trim", params)
-    })
-    .await;
-    if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        Ok(())
-    } else {
-        let err = result
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("engine error")
-            .to_string();
-        eprintln!("[clip_trim] {source} clip {id} failed: {err}");
-        Err(err)
-    }
+pub async fn clip_trim(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,start: f64,end: f64) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_trim",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"start":start,"end":end}))).await
 }
 
 // Adds a bookmark at the current position of the running manual recording.
@@ -267,7 +329,8 @@ pub async fn clip_trim(source: String, id: i64, start: f64, end: f64) -> Result<
 // an engine error string when nothing is recording (or it is paused).
 #[tauri::command]
 pub async fn recording_add_bookmark() -> Result<(), String> {
-    let result = blocking(|| engine_rpc::mutate_clip("recording_add_bookmark", serde_json::json!({}))).await;
+    let result =
+        blocking(|| engine_rpc::mutate_clip("recording_add_bookmark", serde_json::json!({}))).await;
     if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
         Ok(())
     } else {
@@ -279,43 +342,46 @@ pub async fn recording_add_bookmark() -> Result<(), String> {
     }
 }
 
-
 #[tauri::command]
-pub async fn clip_list_bookmarks(source: String, id: i64) -> Result<Vec<clip_catalog::BookmarkRow>, String> {
+pub async fn clip_list_bookmarks(
+    source: String,
+    id: i64,
+) -> Result<Vec<clip_catalog::BookmarkRow>, String> {
     let src = parse_source(&source)?;
     blocking_result(move || clip_catalog::list_bookmarks(src, id)).await
 }
 
 #[tauri::command]
-pub async fn clip_add_bookmark(
-    source: String,
-    id: i64,
-    time_seconds: f64,
-    label: String,
-    color: String,
-) -> Result<(), String> {
-    let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::add_bookmark(src, id, time_seconds, &label, &color)).await
+pub async fn clip_add_bookmark(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,time_seconds: f64,label: String,color: String) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_add_bookmark",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"time_seconds":time_seconds,"label":label,"color":color}))).await
+}
+#[tauri::command]
+pub async fn clip_update_bookmark(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,seq: i64,label: String,color: String) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_update_bookmark",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"seq":seq,"label":label,"color":color}))).await
+}
+#[tauri::command]
+pub async fn clip_delete_bookmark(source: String,id: i64,catalog_uid: String,clip_uid: String,media_revision: i64,seq: i64) -> Result<(),String> {
+    let src=parse_source(&source)?;
+    blocking_result(move || crate::clip_mutations::timeline("clip_delete_bookmark",src.as_str(),id,&catalog_uid,&clip_uid,media_revision,serde_json::json!({"seq":seq}))).await
 }
 
 #[tauri::command]
-pub async fn clip_update_bookmark(
-    source: String,
-    id: i64,
-    seq: i64,
-    label: String,
-    color: String,
-) -> Result<(), String> {
+pub async fn clip_snapshot(source: String, id: i64) -> Result<Clip, String> {
     let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::update_bookmark(src, id, seq, &label, &color)).await
+    blocking_result(move || {
+        clip_catalog::clips_by_ids(src, &[id])?
+            .remove(&id)
+            .ok_or_else(|| "clip unavailable".into())
+    })
+    .await
 }
-
 #[tauri::command]
-pub async fn clip_delete_bookmark(source: String, id: i64, seq: i64) -> Result<(), String> {
+pub async fn collection_memberships(source: String, id: i64) -> Result<Vec<i64>, String> {
     let src = parse_source(&source)?;
-    blocking_result(move || clip_catalog::remove_bookmark(src, id, seq)).await
+    blocking_result(move || crate::collections::collection_memberships(src, id)).await
 }
-
 
 #[tauri::command]
 pub async fn list_collections() -> Result<Vec<crate::collections::CollectionSummary>, String> {
@@ -342,9 +408,22 @@ pub async fn add_clip_to_collection(
     collection_id: i64,
     source: String,
     clip_id: i64,
+    catalog_uid: String,
+    clip_uid: String,
 ) -> Result<(), String> {
     let src = parse_source(&source)?;
-    blocking_result(move || crate::collections::add_clip_to_collection(collection_id, src, clip_id)).await
+    blocking_result(move || {
+        crate::collections::add_clip_with_identity(
+            collection_id,
+            src,
+            clip_id,
+            clip_catalog::ClipIdentity {
+                catalog_uid,
+                clip_uid,
+            },
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -352,16 +431,28 @@ pub async fn remove_clip_from_collection(
     collection_id: i64,
     source: String,
     clip_id: i64,
+    catalog_uid: String,
+    clip_uid: String,
 ) -> Result<(), String> {
     let src = parse_source(&source)?;
-    blocking_result(move || crate::collections::remove_clip_from_collection(collection_id, src, clip_id)).await
+    let _ = clip_id;
+    blocking_result(move || {
+        crate::collections::remove_clip_with_identity(
+            collection_id,
+            src,
+            clip_catalog::ClipIdentity {
+                catalog_uid,
+                clip_uid,
+            },
+        )
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn collection_clips(collection_id: i64) -> Result<Vec<Clip>, String> {
     blocking_result(move || crate::collections::collection_clips(collection_id)).await
 }
-
 
 #[tauri::command]
 pub async fn get_settings() -> Value {
@@ -404,21 +495,20 @@ fn find_hotkey_collision(config: &Value) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn save_settings(app: tauri::AppHandle, config: Value) -> Result<(), String> {
+pub async fn save_settings(config: Value) -> Result<(), String> {
     if !config.is_object() {
         return Err("bad config".to_string());
     }
     if let Some(err) = find_hotkey_collision(&config) {
         return Err(err);
     }
-    blocking_result(move || settings_store::write_config(&config).map_err(|err| err.to_string())).await?;
+    blocking_result(move || settings_store::write_config(&config).map_err(|err| err.to_string()))
+        .await?;
     if let Err(err) = blocking(engine_rpc::reload_settings).await {
         // Settings are saved; the engine just couldn't reload them right now
         // (it may not be running - it reads the new values at next start).
         eprintln!("engine settings reload failed: {err}");
     }
-    // Add asset permissions for the updated output folders.
-    crate::asset_scope::refresh(&app);
     Ok(())
 }
 
@@ -436,22 +526,26 @@ pub async fn pick_folder(current: Option<String>) -> Option<String> {
                 dialog = dialog.set_directory(start);
             }
         }
-        dialog.pick_folder().map(|p| p.to_string_lossy().to_string())
+        dialog
+            .pick_folder()
+            .map(|p| p.to_string_lossy().to_string())
     })
     .await
 }
-
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
 pub async fn exe_icon(path: String, process: String) -> Option<String> {
     blocking(move || {
-        exe_icon::icon_png(&path, &process)
-            .map(|bytes| format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(bytes)))
+        exe_icon::icon_png(&path, &process).map(|bytes| {
+            format!(
+                "data:image/png;base64,{}",
+                general_purpose::STANDARD.encode(bytes)
+            )
+        })
     })
     .await
 }
-
 
 #[tauri::command]
 pub async fn game_catalog_map() -> BTreeMap<String, CatalogEntry> {

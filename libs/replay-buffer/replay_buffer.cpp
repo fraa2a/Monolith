@@ -3,6 +3,7 @@
 
 #include <disk-segments/disk_segments.h>
 #include <encoding/mux_common.h>
+#include <encoding/media_ownership.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -52,6 +53,13 @@ struct ReplayBuffer::Impl : detail::PacketRing {
 
 
 ReplayBuffer::ReplayBuffer()  : impl_(new Impl()) {}
+void ReplayBuffer::wait_for_saves() {
+    if (impl_->save_thread.joinable()) impl_->save_thread.join();
+    disk_segments::DiskSegmentBuffer* disk = nullptr;
+    { std::lock_guard lock(impl_->mutex); disk = impl_->disk.get(); }
+    if (disk) disk->wait_for_saves();
+}
+
 ReplayBuffer::~ReplayBuffer()
 {
     if (impl_->save_thread.joinable())
@@ -184,7 +192,8 @@ static std::wstring write_clip(
     const std::vector<encoding::AudioStreamParams>& audio_params,
     const std::wstring&                          out_dir,
     int                                          duration_sec,
-    const std::string&                           container)
+    const std::string&                           container,
+    std::shared_ptr<encoding::MediaWriteGuard>& guard)
 {
     if (pkts.empty()) return {};
     if (!vsp.tb_den) return {};
@@ -193,6 +202,7 @@ static std::wstring write_clip(
     CreateDirectoryW(out_dir.c_str(), nullptr);
 
     std::wstring path     = generate_clip_path(out_dir, duration_sec, container);
+    guard = std::make_shared<encoding::MediaWriteGuard>(path);
     std::string  path_utf = mux::wcs_to_utf8(path);
     if (path_utf.empty()) return {};
 
@@ -303,10 +313,11 @@ void ReplayBuffer::save_clip(std::function<void(std::wstring)> cb)
          cb = std::move(cb)]() mutable
         {
             std::wstring result;
+            std::shared_ptr<encoding::MediaWriteGuard> guard;
             try {
                 if (!snapshot.empty() && vsp_set) {
                     result = write_clip(std::move(snapshot), vsp, audio_params,
-                                        cfg.output_dir, cfg.duration_sec, cfg.container);
+                                        cfg.output_dir, cfg.duration_sec, cfg.container, guard);
                 }
             } catch (...) { OutputDebugStringA("[replay] save worker failed\n"); }
             try { if (cb) cb(result); }

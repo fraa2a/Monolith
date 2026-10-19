@@ -81,6 +81,9 @@ struct DisplayCapture::Impl {
     wgc::Direct3D11CaptureFramePool       pool{ nullptr };
     wgc::GraphicsCaptureSession           session{ nullptr };
     winrt::event_token                    frame_token{};
+    winrt::event_token                    closed_token{};
+    wgc::GraphicsCaptureItem              item{nullptr};
+    bool closed_registered = false;
     winrt::Windows::Graphics::SizeInt32   last_size{};
 
     std::atomic<bool>     active{ false };
@@ -304,6 +307,11 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
         auto item           = options.target_window
             ? item_from_window(options.target_window)
             : item_from_monitor(hmon);
+        impl_->item = item;
+        impl_->closed_token = item.Closed([state = impl_](auto const&, auto const&) {
+            state->active.store(false, std::memory_order_release);
+        });
+        impl_->closed_registered = true;
         impl_->last_size    = item.Size();
 
         // CreateFreeThreaded: callbacks arrive on the WinRT thread pool regardless
@@ -474,6 +482,10 @@ bool DisplayCapture::start(HMONITOR hmon, FrameCallback cb, CaptureOptions optio
 void DisplayCapture::stop()
 {
     impl_->active.store(false, std::memory_order_release);
+    if (impl_->closed_registered && impl_->item) {
+        impl_->item.Closed(impl_->closed_token); impl_->closed_registered = false;
+    }
+    impl_->item = nullptr;
     if (impl_->handler_registered && impl_->pool) {
         impl_->pool.FrameArrived(impl_->frame_token);
         impl_->handler_registered = false;

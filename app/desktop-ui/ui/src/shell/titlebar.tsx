@@ -10,7 +10,7 @@ import {
   type GameArtwork,
 } from "../lib/api.ts";
 import { appWindow } from "../lib/window.ts";
-import { getConfig, getRuntimeStatus, saveConfig, type Config, type RuntimeStatus } from "../lib/settings-api.ts";
+import { getConfig, getRuntimeStatus, editConfig, settingsDraft, settingsError, type Config, type RuntimeStatus } from "../lib/settings-api.ts";
 import { appLabel, monitorDisplayName } from "../lib/format.ts";
 import { Icon } from "./icons.tsx";
 import { Button } from "../components/ui/button.tsx";
@@ -20,22 +20,17 @@ interface Props {
   settingsActive: boolean;
 }
 
-function cloneConfig(config: Config | null): Config {
-  return JSON.parse(JSON.stringify(config ?? {}));
-}
-
 // Native dragging excludes interactive controls.
 
 export function Titlebar({ view, settingsActive }: Props) {
   const [runtime, setRuntime] = useState<RuntimeStatus>({});
   const [engine, setEngine] = useState<EngineStatus>({});
-  const [config, setConfig] = useState<Config | null>(null);
+  const config = settingsDraft.value;
   const [art, setArt] = useState<GameArtwork>({ icon: null, cover: null });
   const [exeIcon, setExeIcon] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [showConnectToast, setShowConnectToast] = useState(false);
   const hasCheckedOnce = useRef(false);
-  const saving = useRef(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -64,16 +59,7 @@ export function Titlebar({ view, settingsActive }: Props) {
     };
   }, []);
 
-  // Refresh config on open rather than polling over optimistic edits.
-  useEffect(() => {
-    let alive = true;
-    getConfig().then((cfg) => {
-      if (alive) setConfig(cfg);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [open, settingsActive]);
+  useEffect(() => { void getConfig(); }, []);
 
   // Dismiss the capture popover on Escape or a click/mousedown outside it - the
   // same affordance the rest of the UI uses. Without this the popover could only
@@ -138,30 +124,20 @@ export function Titlebar({ view, settingsActive }: Props) {
 
   const connected = engine.connected !== false;
   const recording = !!engine.recording;
-  const clipping = !recording && !!engine.replay_enabled;
-  const statusLabel = !connected ? "Disconnected" : recording ? "Recording" : clipping ? "Clipping" : "Idle";
+  const clipping = !recording && !!engine.replay_running;
+  const statusLabel = !connected ? "Disconnected" : engine.recording_error ? "Recording error" : recording ? "Recording" : clipping ? "Clipping" : "Idle";
   const gameLabel = activeGame?.process_id
     ? appLabel(activeGame.display_name, activeGame.process_name)
     : "";
   const subject = !connected ? "No engine" : (gameLabel || ((recording || clipping) ? "Screen" : "Ready"));
   const patternIcon = exeIcon ?? art.icon ?? null;
 
-  const persist = async (mutate: (draft: Config) => void) => {
-    if (saving.current || !config) return;
-    saving.current = true;
-    const previous = config;
-    const draft = cloneConfig(previous);
-    draft.capture_mode ??= {};
-    draft.capture ??= {};
-    mutate(draft);
-    setSaveError(null);
-    setConfig(draft);
-    const result = await saveConfig(draft);
-    if (!result.ok) {
-      setConfig(previous);
-      setSaveError(result.error ?? "Settings could not be saved");
-    }
-    saving.current = false;
+  const persist = (mutate: (draft: Config) => void) => {
+    editConfig((draft) => {
+      draft.capture_mode ??= {};
+      draft.capture ??= {};
+      mutate(draft);
+    }, true);
   };
 
   const setMode = (next: "always" | "game_only") => {
@@ -213,10 +189,10 @@ export function Titlebar({ view, settingsActive }: Props) {
 
   return (
     <>
-      {saveError && (
-        <div class="connect-toast">
-          <span>{saveError}</span>
-          <button class="connect-toast-close" onClick={() => setSaveError(null)} title="Dismiss">×</button>
+      {(saveError || settingsError.value || engine.recording_error) && (
+        <div class="connect-toast" role="alert">
+          <span>{saveError || settingsError.value || engine.recording_error}</span>
+          <button class="connect-toast-close" onClick={() => { setSaveError(null); settingsError.value = null; }} title="Dismiss">×</button>
         </div>
       )}
       {showConnectToast && (

@@ -1,7 +1,8 @@
+import { useSettingsClose } from "./lib/window.ts";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
   collectionsApi,
-  type Clip,
+  type Clip, clipKey,
   clipApi,
   type CollectionSummary,
   fetchClips,
@@ -37,6 +38,7 @@ const sameFilter = (a: Filter, b: Filter) =>
   a.game === b.game && a.hashtag === b.hashtag && a.favorite === b.favorite && a.search === b.search;
 
 export function App() {
+  useSettingsClose();
   const [clips, setClips] = useState<Clip[]>([]);
   const [games, setGames] = useState<string[]>([]);
   const [hashtags, setHashtags] = useState<string[]>([]);
@@ -49,7 +51,9 @@ export function App() {
   const [tagDialog, setTagDialog] = useState<Clip | null>(null);
   const [confirmDel, setConfirmDel] = useState<Clip | null>(null);
   const [fullscreen, setFullscreen] = useState<{ clip: Clip; initialTime: number } | null>(null);
-  const [detailIndex, setDetailIndex] = useState<number | null>(null);
+  const [detailKey, setDetailKey] = useState<string | null>(null);
+  const detailIndex = detailKey === null ? -1 : clips.findIndex((clip) => clipKey(clip) === detailKey);
+  useEffect(() => { if (detailKey !== null && detailIndex < 0) setDetailKey(null); }, [detailKey, detailIndex]);
   const [showSettings, setShowSettings] = useState(false);
   const [collectionView, setCollectionView] = useState<{ kind: "list" } | { kind: "detail"; id: number } | null>(null);
   const [collections, setCollections] = useState<CollectionSummary[]>([]);
@@ -82,15 +86,15 @@ export function App() {
 
   const updateClip = useCallback((next: Clip) => {
     setClips((items) => items.map((item) => (
-      item.source === next.source && item.id === next.id ? next : item
-    )));
-    setTagDialog((item) => item && item.source === next.source && item.id === next.id ? next : item);
+      clipKey(item) === clipKey(next) ? next : item
+    )).filter((clip) => (!filter.favorite || clip.favorite) && (!filter.game || filter.game === clip.game_display_name) && (!filter.hashtag || clip.hashtags.includes(filter.hashtag)) && (!filter.search || `${clip.title} ${clip.video_file}`.toLowerCase().includes(filter.search.toLowerCase()))));
+    setTagDialog((item) => item && clipKey(item) === clipKey(next) ? next : item);
     setFullscreen((item) => (
-      item && item.clip.source === next.source && item.clip.id === next.id
+      item && clipKey(item.clip) === clipKey(next)
         ? { ...item, clip: next }
         : item
     ));
-  }, []);
+  }, [filter]);
 
   useEffect(() => {
     void reload();
@@ -119,7 +123,7 @@ export function App() {
 
   const openDetail = useCallback((clip: Clip) => {
     const i = clips.findIndex((item) => item.source === clip.source && item.id === clip.id);
-    if (i >= 0) setDetailIndex(i);
+    if (i >= 0) setDetailKey(clipKey(clips[i]));
   }, [clips]);
 
   // Card-level mutations (favorite, thumbnail capture, duration fix) are all
@@ -171,7 +175,7 @@ export function App() {
       return;
     }
     setConfirmDel(null);
-    setDetailIndex(null);
+    setDetailKey(null);
     await reload(true);
   };
 
@@ -324,13 +328,13 @@ export function App() {
         />
       )}
 
-      {detailIndex !== null && clips.length > 0 && (
+      {detailIndex >= 0 && (
         <DetailView
           clips={clips}
-          index={Math.min(detailIndex, clips.length - 1)}
+          index={detailIndex}
           allHashtags={hashtags}
-          onIndex={setDetailIndex}
-          onClose={() => setDetailIndex(null)}
+          onIndex={(i) => setDetailKey(clipKey(clips[i]))}
+          onClose={() => setDetailKey(null)}
           onChanged={() => reload(true)}
           onClipUpdate={updateClip}
           onDelete={setConfirmDel}

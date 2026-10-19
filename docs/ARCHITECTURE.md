@@ -36,8 +36,8 @@ Long-term target = separate headless record engine process + UI/tray process in 
 
 - `app/recorder`: orchestrator, tray, hotkeys, app state, settings reload, updater, runtime status, command dispatch.
 - `app/desktop-ui`: Tauri v2/WebView2 host + Preact frontend. Rust modules:
-  `server.rs`, `media.rs`, `settings_store.rs`, `clip_catalog.rs`,
-  `engine_rpc.rs`, `game_catalog.rs`, `paths.rs`.
+  `main.rs`, `commands.rs`, `settings_store.rs`, `clip_catalog.rs`,
+  `collections.rs`, `engine_rpc.rs`, `game_catalog.rs`, `paths.rs`.
 - `libs/capture`: Windows.Graphics.Capture display capture over D3D11.
 - `libs/audio`: WASAPI loopback, mic/input device capture, process-loopback, active-game detect.
 - `libs/encoding`: FFmpeg H.264/H.265/AAC wrappers, thumbnail gen, mux helpers, `TrackMixer`.
@@ -54,7 +54,8 @@ Video path now:
 ```text
 Windows.Graphics.Capture frame
   -> D3D11 texture
-  -> CPU-readable staging texture
+  -> GPU downscale when supported
+  -> output-sized CPU-readable staging texture
   -> BGRA pacer buffer
   -> FFmpeg video encoder
   -> encoded video packets
@@ -119,7 +120,9 @@ Active Game detect = best-effort. Use fullscreen/foreground/audio signals + conf
 
 UI use system WebView2 window thru Tauri v2. This exception apply only to `app/desktop-ui`; record engine stay native, no embed browser runtime.
 
-Tauri host run loopback HTTP server, navigate WebView to `http://127.0.0.1:<port>/`. Keep normal frontend `fetch()`, media, thumbnail, SSE routes, no rewrite components to Tauri `invoke()`.
+The host serves the bundled Vite frontend. Operations use Tauri invoke commands
+and events. The recorder JSON-RPC endpoint is separate from frontend delivery.
+Media access is checked against the current configured roots.
 
 ## Runtime Paths
 
@@ -140,8 +143,6 @@ GPU texture -> CPU staging -> BGRA vector -> sws_scale/color conversion
 
 Priority perf work:
 
-1. GPU downscale before CPU readback.
-2. Output-sized staging texture.
-3. Explicit color range/matrix in CPU path.
-4. D3D11/NV12 hardware encoder path.
-5. AVPacket lifetime/ref-counting improve in mux path.
+GPU downscale and output-sized staging already exist with a native-size fallback.
+Remaining directions are explicit color range/matrix, GPU-resident D3D11/NV12
+encoding and fewer packet copies. Measure queue pressure and disk latency first.

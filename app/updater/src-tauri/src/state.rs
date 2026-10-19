@@ -1,7 +1,7 @@
 use crate::manifest::Manifest;
 use crate::versions::Installed;
 use serde_json::{json, Value};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,6 +77,7 @@ pub struct SharedState {
 /// threads and the recording watcher. Every mutation is followed by an
 /// "update-state" emit; the frontend re-renders from snapshots only.
 pub struct Core {
+    revision: AtomicU64,
     pub state: Mutex<SharedState>,
     pub manifest: Mutex<Option<Manifest>>,
     pub cancel: AtomicBool,
@@ -86,6 +87,7 @@ pub struct Core {
 impl Core {
     pub fn new() -> Self {
         Core {
+            revision: AtomicU64::new(0),
             state: Mutex::new(SharedState {
                 phase: Phase::Checking,
                 tag: String::new(),
@@ -107,6 +109,7 @@ impl Core {
     pub fn snapshot(&self) -> Value {
         let s = self.state.lock().unwrap();
         json!({
+            "revision": self.revision.fetch_add(1, Ordering::Relaxed),
             "phase": s.phase.as_str(),
             "tag": s.tag,
             "notesUrl": s.notes_url,
@@ -132,7 +135,49 @@ impl Core {
         })
     }
 
+    pub fn request_cancel(&self) {
+        let s = self.state.lock().unwrap();
+        if s.phase == Phase::Downloading {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+
+    pub fn begin_apply(&self) -> bool {
+        let mut s = self.state.lock().unwrap();
+        if s.phase != Phase::Downloading || self.cancel.load(Ordering::SeqCst) {
+            return false;
+        }
+        s.phase = Phase::Applying;
+        true
+    }
+
     pub fn phase(&self) -> Phase {
         self.state.lock().unwrap().phase
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cancellation_wins_until_the_applying_transition() {
+        let core = Core::new();
+        core.state.lock().unwrap().phase = Phase::Downloading;
+        core.request_cancel();
+        assert!(!core.begin_apply());
+        assert_eq!(core.phase(), Phase::Downloading);
+        core.cancel.store(false, Ordering::SeqCst);
+        assert!(core.begin_apply());
+        core.request_cancel();
+        assert!(!core.cancel.load(Ordering::SeqCst));
+        assert_eq!(core.phase(), Phase::Applying);
+    }
+
+    #[test]
+    fn snapshots_have_strictly_increasing_revisions() {
+        let core = Core::new();
+        let first = core.snapshot()["revision"].as_u64().unwrap();
+        let second = core.snapshot()["revision"].as_u64().unwrap();
+        assert!(second > first);
     }
 }

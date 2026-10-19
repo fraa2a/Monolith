@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // Same newline-delimited JSON-RPC 2.0 control socket the main UI and the
 // Stream Deck plugin speak (libs/ipc): 127.0.0.1:45991, one request per
@@ -104,15 +104,15 @@ pub fn request_engine_exit() {
     let _ = rpc("update_engine_exit");
 }
 
-pub fn wait_engine_exit(timeout: Duration) -> bool {
-    let start = Instant::now();
-    loop {
-        if !engine_running() {
-            return true;
-        }
-        if start.elapsed() >= timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
+pub fn ready_version(expected: &str) -> bool {
+    rpc("get_status")
+        .ok()
+        .and_then(|response| {
+            response
+                .get("result")?
+                .get("version")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .is_some_and(|version| version == expected)
 }

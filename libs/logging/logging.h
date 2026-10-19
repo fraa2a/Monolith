@@ -16,7 +16,7 @@ bool enabled();
 
 void log(const char* tag, const char* msg);
 
-// Error logging bypasses enabled() and opens the file on demand.
+// Error logging bypasses enabled() and queues persistent output.
 void log_error(const char* tag, const char* msg);
 
 } // namespace logging

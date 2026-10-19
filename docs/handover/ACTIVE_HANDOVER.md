@@ -1,6 +1,17 @@
 # Active Handover
 
-Updated: 2026-10-08
+Updated: 2026-10-19
+
+## Current checkpoint: audit correction PR #8, continued integration
+
+- User requested direct continuation without subagents and only essential remaining fixes/commits. No subagents are used.
+- Published `8b136a7` contains the recovered work and completed storage/recorder/host integration. Core regression tests run 13 and Windows CI run 131 both succeeded. The user explicitly authorized publication. PR #8 remains draft; no merge or release is requested.
+- M06: WASAPI source recovery now retains endpoint/process startup descriptors and mixer routes, polls invalidation/default changes, retries missing endpoints with a one-second minimum interval, and preserves encoders/recording clocks. ReleaseBuffer failures also invalidate capture. The periodic timer runs independently of game detection settings.
+- M05: production encoder sinks now use an owned FIFO packet writer (4096 queued packets, 64 MiB queued payload), with ordered recording start/pause/resume/stop and replay snapshot barriers. Queue overload exposes failure and rejects subsequent packets/replay saves until reset. Recording clocks/session bookmarks close at command admission, before disk drain. Capture diagnostics read a cached replay snapshot rather than waiting on disk locks.
+- Tray/hotkeys run on an owned native shell message thread using copied hotkey settings and atomic readiness. The existing control window serializes media lifecycle, device recovery and settings. Teardown joins capture/audio producers, flushes encoder tails, drains the writer, completes recording publication, then joins owned workers/shell. No process-model change.
+- Final author review serialized concurrent producer admission around the queue failure latch, preventing a later producer from slipping past the first overflow. Focused writer/worker/recovery tests and phase2 3/3 pass after this correction.
+- Portable phase1 9/9 and phase2 3/3 pass. Phase2 holds the real FFmpeg recording muxer to verify nonblocking packet admission, ordered stop and a decodable result. Text/whitespace checks pass. Windows compilation for this continuation is pending CI; live tray responsiveness, device replacement/format changes, abrupt-exit bookmarks and clean update/install remain hardware/runtime checks.
+- Exact prior verification is in `docs/audit/2026-10-09-fixes.md`. Engine 1.6.3, UI 1.5.1, updater 1.0.3, Stream Deck 1.4.1.
 
 
 ## Current checkpoint: screenshot-based desktop UI redesign

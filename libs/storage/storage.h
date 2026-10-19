@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -120,6 +121,13 @@ public:
     // new_stem has no path or extension; media and thumbnail retain their extensions.
     // File rename is separate from the display title.
     bool rename_clip(int64_t id, const std::wstring& new_stem, std::string* error);
+
+    bool mutate_verified(int64_t id, const std::string& catalog_uid,
+                         const std::string& clip_uid, int64_t revision,
+                         const std::function<bool()>& mutation, std::string* error);
+    bool trim_clip(int64_t id, double start, double end, std::string* error);
+    bool capture_thumbnail(int64_t id, const std::wstring& upload_folder,
+                           const std::string& token, std::string* error);
 
     // Reconcile absent media, missing thumbnails and uncataloged files on a background worker.
     ReconcileStats reconcile(std::string* error);

@@ -7,6 +7,9 @@ export type ClipSource = "replay" | "manual";
 export interface Clip {
   id: number;
   source: ClipSource;
+  catalog_uid: string;
+  clip_uid: string;
+  media_revision: number;
   video_file: string;
   // User-facing display name, independent of the on-disk filename. Defaults to
   // "Untitled" for new clips; renaming edits this, not the file.
@@ -26,6 +29,14 @@ export interface Clip {
   // Absolute filesystem paths, used with convertFileSrc() for <video>/<img> src.
   video_path: string;
   thumbnail_path: string | null;
+}
+
+export function clipKey(clip: Clip): string {
+  return JSON.stringify([clip.source, clip.catalog_uid || clip.video_path, clip.clip_uid || `${clip.id}:${clip.created_at_utc}`]);
+}
+
+export function clipIdentity(clip: Clip) {
+  return { source: clip.source, id: clip.id, catalogUid: clip.catalog_uid, clipUid: clip.clip_uid };
 }
 
 export interface Filter {
@@ -77,28 +88,29 @@ export interface CollectionSummary {
   color: string;
   created_at_utc: string;
   clip_count: number;
+  unresolved_count?: number;
 }
 
 export const clipApi = {
+  snapshot: (c: Clip) => invoke<Clip>("clip_snapshot", { source: c.source, id: c.id }),
   setFavorite: (c: Clip, favorite: boolean) =>
-    ok(invoke("clip_set_favorite", { source: c.source, id: c.id, favorite })),
+    ok(invoke("clip_set_favorite", { ...clipIdentity(c), favorite })),
   addHashtag: (c: Clip, tag: string) =>
-    ok(invoke("clip_add_hashtag", { source: c.source, id: c.id, tag })),
+    ok(invoke("clip_add_hashtag", { ...clipIdentity(c), tag })),
   removeHashtag: (c: Clip, tag: string) =>
-    ok(invoke("clip_remove_hashtag", { source: c.source, id: c.id, tag })),
+    ok(invoke("clip_remove_hashtag", { ...clipIdentity(c), tag })),
   // Renames the on-disk file (advanced action). new_name is a stem, no extension.
   rename: (c: Clip, new_name: string) =>
-    ok(invoke("clip_rename", { source: c.source, id: c.id, newName: new_name })),
+    ok(invoke("clip_rename", { ...clipIdentity(c), newName: new_name })),
   // Edits the display title only; the file on disk is untouched.
   setTitle: (c: Clip, title: string) =>
-    ok(invoke("clip_set_title", { source: c.source, id: c.id, title })),
+    ok(invoke("clip_set_title", { ...clipIdentity(c), title })),
   // Asks the engine to rebuild a missing/corrupt thumbnail.
-  regenThumb: (c: Clip) => ok(invoke("clip_regen_thumb", { source: c.source, id: c.id })),
-  delete: (c: Clip) => ok(invoke("clip_delete", { source: c.source, id: c.id })),
+  regenThumb: (c: Clip) => ok(invoke("clip_regen_thumb", { ...clipIdentity(c) })),
+  delete: (c: Clip) => ok(invoke("clip_delete", { ...clipIdentity(c) })),
   setDuration: (c: Clip, duration: number) =>
-    ok(invoke("clip_set_duration", { source: c.source, id: c.id, duration })),
-  // thumb_capture returns the thumbnail filename; keep it on the envelope so
-  // clip-card can update the grid row without a refetch.
+    ok(invoke("clip_set_duration", { ...clipIdentity(c), mediaRevision: c.media_revision, duration })),
+  // The card reads clip_snapshot after capture to receive the absolute path.
   saveCapturedThumb: async (c: Clip, dataUrl: string): Promise<{
     ok: boolean;
     thumbnail_file?: string;
@@ -106,8 +118,8 @@ export const clipApi = {
   }> => {
     try {
       const thumbnail_file = await invoke<string>("thumb_capture", {
-        source: c.source,
-        id: c.id,
+        ...clipIdentity(c),
+        mediaRevision: c.media_revision,
         dataUrl,
       });
       return { ok: true, thumbnail_file };
@@ -117,15 +129,15 @@ export const clipApi = {
   },
   revealInExplorer: (c: Clip) => ok(invoke("reveal_in_explorer", { path: c.video_path })),
   trim: (c: Clip, start: number, end: number) =>
-    ok(invoke("clip_trim", { source: c.source, id: c.id, start, end })),
+    ok(invoke("clip_trim", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, start, end })),
   listBookmarks: (c: Clip) =>
-    invoke<BookmarkRow[]>("clip_list_bookmarks", { source: c.source, id: c.id }),
+    invoke<BookmarkRow[]>("clip_list_bookmarks", { ...clipIdentity(c) }),
   addBookmark: (c: Clip, timeSeconds: number, label: string, color: string) =>
-    ok(invoke("clip_add_bookmark", { source: c.source, id: c.id, timeSeconds, label, color })),
+    ok(invoke("clip_add_bookmark", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, timeSeconds, label, color })),
   updateBookmark: (c: Clip, seq: number, label: string, color: string) =>
-    ok(invoke("clip_update_bookmark", { source: c.source, id: c.id, seq, label, color })),
+    ok(invoke("clip_update_bookmark", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, seq, label, color })),
   deleteBookmark: (c: Clip, seq: number) =>
-    ok(invoke("clip_delete_bookmark", { source: c.source, id: c.id, seq })),
+    ok(invoke("clip_delete_bookmark", { ...clipIdentity(c), mediaRevision: c.media_revision ?? 0, seq })),
   recordingAddBookmark: () => ok(invoke("recording_add_bookmark")),
 };
 
@@ -134,11 +146,12 @@ export const collectionsApi = {
   create: (name: string, color: string) => invoke<number>("create_collection", { name, color }),
   rename: (id: number, name: string) => ok(invoke("rename_collection", { id, name })),
   remove: (id: number) => ok(invoke("delete_collection", { id })),
+  memberships: (c: Clip) => invoke<number[]>("collection_memberships", { source: c.source, id: c.id }),
   clips: (id: number) => invoke<Clip[]>("collection_clips", { collectionId: id }),
   addClip: (id: number, c: Clip) =>
-    ok(invoke("add_clip_to_collection", { collectionId: id, source: c.source, clipId: c.id })),
+    ok(invoke("add_clip_to_collection", { collectionId: id, source: c.source, clipId: c.id, catalogUid: c.catalog_uid, clipUid: c.clip_uid })),
   removeClip: (id: number, c: Clip) =>
-    ok(invoke("remove_clip_from_collection", { collectionId: id, source: c.source, clipId: c.id })),
+    ok(invoke("remove_clip_from_collection", { collectionId: id, source: c.source, clipId: c.id, catalogUid: c.catalog_uid, clipUid: c.clip_uid })),
 };
 
 export function subscribeClips(onChange: () => void): () => void {
@@ -158,12 +171,12 @@ export function subscribeClips(onChange: () => void): () => void {
 }
 
 export function mediaUrl(c: Clip): string {
-  return convertFileSrc(c.video_path);
+  return convertFileSrc(c.video_path, "media");
 }
 
 export function thumbUrl(c: Clip): string | null {
   if (!c.thumbnail_path) return null;
-  return convertFileSrc(c.thumbnail_path);
+  return convertFileSrc(c.thumbnail_path, "media");
 }
 
 export interface CatalogEntry {
@@ -249,6 +262,9 @@ export interface EngineStatus {
   recording?: boolean;
   paused?: boolean;
   replay_enabled?: boolean;
+  capture_running?: boolean;
+  replay_running?: boolean;
+  recording_error?: string;
   recording_enabled?: boolean;
   clip_generation?: number;
   // Engine component version (the interface version is separate - the two

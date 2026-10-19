@@ -10,6 +10,7 @@ mod http;
 mod install;
 mod manifest;
 mod paths;
+mod process;
 mod state;
 mod versions;
 
@@ -53,6 +54,7 @@ fn updater_start(app: AppHandle) {
     if core().phase() != Phase::Available || core().busy.swap(true, Ordering::SeqCst) {
         return;
     }
+    core().cancel.store(false, Ordering::SeqCst);
     std::thread::spawn(move || {
         run_pipeline(&app);
         core().busy.store(false, Ordering::SeqCst);
@@ -61,7 +63,7 @@ fn updater_start(app: AppHandle) {
 
 #[tauri::command]
 fn updater_cancel() {
-    core().cancel.store(true, Ordering::Relaxed);
+    core().request_cancel();
 }
 
 #[tauri::command]
@@ -125,7 +127,7 @@ fn run_check(app: &AppHandle, auto: bool) {
             // Compare unparseable versions as strings to allow replacement.
             _ => from != to,
         };
-        if force || newer {
+        if newer || (force && from == to) {
             comps.push(ComponentState {
                 key: key.to_string(),
                 from,
@@ -210,7 +212,6 @@ fn set_comp(key: &str, mutate: impl FnOnce(&mut ComponentState)) {
 }
 
 fn run_pipeline(app: &AppHandle) {
-    core().cancel.store(false, Ordering::Relaxed);
     set_phase(app, Phase::Downloading);
 
     let app_dir = paths::app_dir();
@@ -278,27 +279,15 @@ fn run_pipeline(app: &AppHandle) {
         };
 
         match download::download(
-            &info.url,
+            key,
+            info,
             &zip_path,
-            info.size,
-            &info.sha256,
-            &info.ed_signature,
             &core().cancel,
             &on_progress,
             &on_verify,
         ) {
             Err(e) if e == download::CANCELLED => {
-                let _ = std::fs::remove_dir_all(&staging);
-                {
-                    let mut s = core().state.lock().unwrap();
-                    s.speed_bps = 0;
-                    for c in s.components.iter_mut() {
-                        c.status = CompStatus::Pending;
-                        c.downloaded = 0;
-                    }
-                    s.phase = Phase::Available;
-                }
-                emit_state(app);
+                cancelled(app, &staging);
                 return;
             }
             Err(e) => {
@@ -317,9 +306,20 @@ fn run_pipeline(app: &AppHandle) {
         fail(app, "a recording is in progress - stop it and retry");
         return;
     }
-    set_phase(app, Phase::Applying);
+    if !core().begin_apply() {
+        cancelled(app, &staging);
+        return;
+    }
+    emit_state(app);
     let has = |k: &str| keys.iter().any(|x| x == k);
-    let engine_was_running = engine_rpc::engine_running();
+    let engine_processes = match process::EngineProcesses::capture(&app_dir.join("Monolith.exe")) {
+        Ok(processes) => processes,
+        Err(error) => {
+            fail(app, &error);
+            return;
+        }
+    };
+    let engine_was_running = engine_processes.running();
     let installed = {
         let s = core().state.lock().unwrap();
         let mut v = s.installed.clone().unwrap_or(versions::Installed {
@@ -369,7 +369,7 @@ fn run_pipeline(app: &AppHandle) {
     }
     if has("engine") && engine_was_running {
         engine_rpc::request_engine_exit();
-        if !engine_rpc::wait_engine_exit(Duration::from_secs(20)) {
+        if engine_processes.wait_exit(Duration::from_secs(20)).is_err() {
             let restore = tx
                 .abort()
                 .err()
@@ -412,16 +412,43 @@ fn run_pipeline(app: &AppHandle) {
     set_phase(app, Phase::Done);
 }
 
+fn cancelled(app: &AppHandle, staging: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(staging);
+    let mut s = core().state.lock().unwrap();
+    s.speed_bps = 0;
+    for c in &mut s.components {
+        c.status = CompStatus::Pending;
+        c.downloaded = 0;
+    }
+    s.phase = Phase::Available;
+    drop(s);
+    emit_state(app);
+}
+
 fn recover_update(app_dir: &std::path::Path) -> Result<(), String> {
     let interrupted = install::pending(app_dir)?;
-    let running = interrupted && engine_rpc::engine_running();
+    let engine_processes = if interrupted {
+        Some(process::EngineProcesses::capture(
+            &app_dir.join("Monolith.exe"),
+        )?)
+    } else {
+        None
+    };
+    let running = engine_processes
+        .as_ref()
+        .is_some_and(|processes| processes.running());
     if running {
         if engine_rpc::recording() {
             return Err("stop the recording before recovering the update".into());
         }
         engine_rpc::close_ui()?;
         engine_rpc::request_engine_exit();
-        if !engine_rpc::wait_engine_exit(Duration::from_secs(20)) {
+        if engine_processes
+            .as_ref()
+            .unwrap()
+            .wait_exit(Duration::from_secs(20))
+            .is_err()
+        {
             return Err("close Monolith before recovering the update".into());
         }
     }
@@ -442,6 +469,19 @@ fn prepare_update(
     for key in keys {
         let src = staging.join(key);
         archive::extract_zip(&staging.join(format!("{key}.zip")), &src)?;
+        let (exe, expected) = match key.as_str() {
+            "engine" => ("Monolith.exe", &installed.engine),
+            "ui" => ("Monolith.UI.exe", &installed.ui),
+            "updater" => ("Updater.exe", &installed.updater),
+            _ => return Err("unknown component".into()),
+        };
+        let payload_version = versions::file_version(&src.join(exe))
+            .ok_or("component executable has no version metadata")?;
+        if three_part(&payload_version) != *expected {
+            return Err(format!(
+                "{key} payload version does not match signed metadata"
+            ));
+        }
         let prefix = if key == "ui" {
             std::path::Path::new("ui")
         } else {
@@ -463,14 +503,17 @@ fn prepare_update(
 
 fn restart_engine(app_dir: &std::path::Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
-    Command::new(app_dir.join("Monolith.exe"))
+    let expected = versions::installed().engine;
+    let mut child = Command::new(app_dir.join("Monolith.exe"))
         .current_dir(app_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| e.to_string())?;
-    Ok(())
+    process::wait_ready(&mut child, Duration::from_secs(30), || {
+        engine_rpc::ready_version(&expected)
+    })
 }
 
 fn focus_existing_instance() -> bool {

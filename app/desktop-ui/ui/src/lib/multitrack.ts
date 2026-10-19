@@ -1,7 +1,7 @@
 // WebView2 plays the first audio track. Hidden elements select additional tracks
 // by fragment and follow the visible video clock; unavailable tracks are ignored.
 
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 const DRIFT_CORRECT_SEC = 0.15;
 
@@ -10,6 +10,7 @@ interface ShadowTrack {
 }
 
 export interface MultiTrackHandle {
+  unsupported: boolean;
   setMuted: (muted: boolean) => void;
   setVolume: (volume: number) => void;
 }
@@ -19,6 +20,7 @@ export function useMultiTrackAudio(
   video: HTMLVideoElement | null,
   src: string | null,
 ): MultiTrackHandle {
+  const [unsupported, setUnsupported] = useState(false);
   const shadowsRef = useRef<ShadowTrack[]>([]);
   const mutedRef = useRef(true);
   const volumeRef = useRef(1);
@@ -53,6 +55,7 @@ export function useMultiTrackAudio(
     }
 
     let cancelled = false;
+    setUnsupported(!(video as any).audioTracks);
     mutedRef.current = video.muted;
     volumeRef.current = video.volume;
 
@@ -60,6 +63,7 @@ export function useMultiTrackAudio(
       if (cancelled) return;
       teardown();
       const tracks = (video as any).audioTracks;
+      setUnsupported(!tracks);
       const count = tracks && typeof tracks.length === "number" ? tracks.length : 0;
       if (count <= 1) return;
 
@@ -163,6 +167,7 @@ export function useMultiTrackAudio(
   }, [video, src]);
 
   return {
+    unsupported,
     setMuted: applyMuted,
     setVolume: applyVolume,
   };

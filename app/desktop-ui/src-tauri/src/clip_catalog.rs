@@ -1,8 +1,7 @@
 use crate::{game_catalog, settings_store};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
@@ -36,10 +35,13 @@ pub struct ClipFilter {
     pub search: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Clip {
     pub id: i64,
     pub source: String,
+    pub catalog_uid: String,
+    pub clip_uid: String,
+    pub media_revision: i64,
     pub video_file: String,
     pub title: String,
     pub thumbnail_file: Option<String>,
@@ -58,12 +60,8 @@ pub struct Clip {
     pub thumbnail_path: Option<String>,
 }
 
-fn db_path(source: ClipSource) -> PathBuf {
-    let dirs = settings_store::output_dirs();
-    match source {
-        ClipSource::Replay => dirs.clips.join("clips.db"),
-        ClipSource::Manual => dirs.recs.join("recs.db"),
-    }
+fn catalog_path(source: ClipSource, folder: &Path) -> PathBuf {
+    folder.join(match source { ClipSource::Replay=>"clips.db",ClipSource::Manual=>"recs.db" })
 }
 
 fn media_folder(source: ClipSource) -> PathBuf {
@@ -74,34 +72,30 @@ fn media_folder(source: ClipSource) -> PathBuf {
     }
 }
 
-// Bookmark sequences are 1-based within each clip.
-
-const BOOKMARK_DDL: &str = "CREATE TABLE IF NOT EXISTS clip_bookmarks (
-    clip_id INTEGER NOT NULL,
-    seq INTEGER NOT NULL,
-    time_seconds REAL NOT NULL,
-    label TEXT NOT NULL,
-    color TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (clip_id, seq))";
-
-fn open(source: ClipSource, readonly: bool) -> Option<Connection> {
-    let path = db_path(source);
-    if !path.is_file() {
-        return None;
-    }
-    let flags = if readonly {
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-    } else {
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-    };
-    let conn = Connection::open_with_flags(path, flags).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(4000));
-    if !readonly {
-        // Ensure the bookmarks table exists once per write connection instead
-        // of re-running the DDL on every add_bookmark insert.
-        let _ = conn.execute(BOOKMARK_DDL, []);
-    }
+fn open(source: ClipSource) -> Option<Connection> {
+    let conn =
+        Connection::open_with_flags(catalog_path(source,&media_folder(source)),OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    conn.busy_timeout(std::time::Duration::from_millis(4000))
+        .ok()?;
     Some(conn)
+}
+
+#[derive(Clone)]
+pub struct ClipIdentity {
+    pub catalog_uid: String,
+    pub clip_uid: String,
+}
+
+pub fn identity(source: ClipSource, id: i64) -> Result<ClipIdentity, String> {
+    let conn = open(source).ok_or_else(|| "catalog unavailable".to_string())?;
+    let identity = conn.query_row(
+        "SELECT (SELECT value FROM catalog_metadata WHERE key='catalog_uid'), clip_uid FROM clips WHERE id=?1",
+        params![id], |row| Ok(ClipIdentity { catalog_uid: row.get(0)?, clip_uid: row.get(1)? }),
+    ).map_err(|err| format!("catalog identity unavailable: {err}"))?;
+    if identity.catalog_uid.is_empty() || identity.clip_uid.is_empty() {
+        return Err("catalog identity migration required; start the recorder".into());
+    }
+    Ok(identity)
 }
 
 fn file_size(path: &Path) -> u64 {
@@ -148,10 +142,28 @@ fn clip_select_sql(conn: &Connection) -> String {
     } else {
         "NULL"
     };
+    let uid_expr = if has_column(conn, "clips", "clip_uid") {
+        "clip_uid"
+    } else {
+        "''"
+    };
+    let revision_expr = if has_column(conn, "clips", "media_revision") {
+        "media_revision"
+    } else {
+        "0"
+    };
+    let catalog_uid = conn
+        .query_row(
+            "SELECT value FROM catalog_metadata WHERE key='catalog_uid'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_default();
+    let catalog_uid = catalog_uid.replace('\'', "''");
     format!(
         "SELECT id, video_file, thumbnail_file, created_at_utc, duration_seconds,
                 game_process_name, game_display_name, favorite,
-                COALESCE(NULLIF(title, ''), 'Untitled'), {discord_expr}, {exe_path_expr}
+                COALESCE(NULLIF(title, ''), 'Untitled'), {discord_expr}, {exe_path_expr}, '{catalog_uid}', {uid_expr}, {revision_expr}
          FROM clips",
     )
 }
@@ -184,6 +196,9 @@ fn map_clip_row(
     Ok(Clip {
         id,
         source: source.as_str().to_string(),
+        catalog_uid: row.get(11)?,
+        clip_uid: row.get(12)?,
+        media_revision: row.get(13)?,
         video_file,
         title: row
             .get::<_, String>(8)
@@ -211,11 +226,15 @@ fn map_clip_row(
     })
 }
 
-fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
-    let Some(conn) = open(source, true) else {
+fn read_source(source: ClipSource,filter: &ClipFilter) -> Vec<Clip> {
+    read_source_in(source,filter,&media_folder(source))
+}
+
+pub(crate) fn read_source_in(source: ClipSource,filter: &ClipFilter,folder: &Path) -> Vec<Clip> {
+    let Ok(conn)=Connection::open_with_flags(catalog_path(source,folder),OpenFlags::SQLITE_OPEN_READ_ONLY) else {
         return Vec::new();
     };
-    let folder = media_folder(source);
+    let _=conn.busy_timeout(std::time::Duration::from_millis(4000));
     let tags = clip_hashtags(&conn);
     let artwork = game_catalog::ArtworkCache::load();
     // ISO-8601 strings sort lexicographically; list_clips re-sorts the merged
@@ -227,7 +246,7 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
     };
 
     let Ok(rows) = stmt.query_map([], |row| {
-        map_clip_row(row, source, &folder, &tags, &artwork)
+        map_clip_row(row,source,folder,&tags,&artwork)
     }) else {
         return Vec::new();
     };
@@ -237,15 +256,18 @@ fn read_source(source: ClipSource, filter: &ClipFilter) -> Vec<Clip> {
         .collect()
 }
 
-pub fn clips_by_ids(source: ClipSource, ids: &[i64]) -> Result<HashMap<i64, Clip>, String> {
-    let path = db_path(source);
+pub fn clips_by_ids(source: ClipSource,ids: &[i64]) -> Result<HashMap<i64,Clip>,String> {
+    clips_by_ids_in(source,ids,&media_folder(source))
+}
+
+pub(crate) fn clips_by_ids_in(source: ClipSource,ids: &[i64],folder: &Path) -> Result<HashMap<i64,Clip>,String> {
+    let path=catalog_path(source,folder);
     path.metadata()
         .map_err(|err| format!("catalog unavailable: {err}"))?;
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|err| err.to_string())?;
     conn.busy_timeout(std::time::Duration::from_millis(4000))
         .map_err(|err| err.to_string())?;
-    let folder = media_folder(source);
     let tags = clip_hashtags(&conn);
     let artwork = game_catalog::ArtworkCache::load();
     let sql = format!("{} WHERE id = ?1", clip_select_sql(&conn));
@@ -254,7 +276,7 @@ pub fn clips_by_ids(source: ClipSource, ids: &[i64]) -> Result<HashMap<i64, Clip
     for &id in ids {
         let clip = stmt
             .query_row(params![id], |row| {
-                map_clip_row(row, source, &folder, &tags, &artwork)
+                map_clip_row(row,source,folder,&tags,&artwork)
             })
             .optional()
             .map_err(|err| err.to_string())?;
@@ -336,106 +358,6 @@ pub fn distinct_hashtags() -> Vec<String> {
     tags.into_iter().collect()
 }
 
-fn video_file_for(conn: &Connection, id: i64) -> Result<String, String> {
-    conn.query_row(
-        "SELECT video_file FROM clips WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    )
-    .map_err(|_| "clip not found".to_string())
-}
-
-pub fn set_duration(source: ClipSource, id: i64, duration: f64) -> Result<(), String> {
-    if !duration.is_finite() || duration <= 0.0 {
-        return Err("invalid duration".to_string());
-    }
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    conn.execute(
-        "UPDATE clips SET duration_seconds = ?1 WHERE id = ?2",
-        params![duration, id],
-    )
-    .map_err(|err| err.to_string())?;
-    if conn.changes() == 0 {
-        return Err("clip not found".to_string());
-    }
-    Ok(())
-}
-
-fn clip_exists(conn: &Connection, id: i64) -> bool {
-    conn.query_row("SELECT 1 FROM clips WHERE id = ?1", params![id], |_| Ok(()))
-        .is_ok()
-}
-
-fn thumb_basename_for(video_file: &str) -> String {
-    Path::new(video_file)
-        .file_stem()
-        .map(|stem| format!("{}.png", stem.to_string_lossy()))
-        .unwrap_or_else(|| "thumb.png".to_string())
-}
-
-pub fn set_favorite(source: ClipSource, id: i64, favorite: bool) -> Result<(), String> {
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    conn.execute(
-        "UPDATE clips SET favorite = ?1 WHERE id = ?2",
-        params![favorite as i64, id],
-    )
-    .map_err(|err| err.to_string())?;
-    if conn.changes() == 0 {
-        return Err("clip not found".to_string());
-    }
-    Ok(())
-}
-
-pub fn set_title(source: ClipSource, id: i64, title: &str) -> Result<(), String> {
-    let value = if title.is_empty() { "Untitled" } else { title };
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    conn.execute(
-        "UPDATE clips SET title = ?1 WHERE id = ?2",
-        params![value, id],
-    )
-    .map_err(|err| err.to_string())?;
-    if conn.changes() == 0 {
-        return Err("clip not found".to_string());
-    }
-    Ok(())
-}
-
-pub fn add_hashtag(source: ClipSource, id: i64, tag: &str) -> Result<(), String> {
-    if tag.is_empty() {
-        return Err("empty tag".to_string());
-    }
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    if !clip_exists(&conn, id) {
-        return Err("clip not found".to_string());
-    }
-    conn.execute(
-        "INSERT OR IGNORE INTO clip_hashtags (clip_id, tag) VALUES (?1, ?2)",
-        params![id, tag],
-    )
-    .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
-pub fn remove_hashtag(source: ClipSource, id: i64, tag: &str) -> Result<(), String> {
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    conn.execute(
-        "DELETE FROM clip_hashtags WHERE clip_id = ?1 AND tag = ?2",
-        params![id, tag],
-    )
-    .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
 #[derive(Serialize)]
 pub struct BookmarkRow {
     pub seq: i64,
@@ -445,7 +367,7 @@ pub struct BookmarkRow {
 }
 
 pub fn list_bookmarks(source: ClipSource, id: i64) -> Result<Vec<BookmarkRow>, String> {
-    let Some(conn) = open(source, true) else {
+    let Some(conn) = open(source) else {
         return Err("catalog unavailable".to_string());
     };
     let Ok(mut stmt) = conn.prepare(
@@ -468,206 +390,4 @@ pub fn list_bookmarks(source: ClipSource, id: i64) -> Result<Vec<BookmarkRow>, S
         .map_err(|err| err.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())
-}
-
-pub fn add_bookmark(
-    source: ClipSource,
-    id: i64,
-    time_seconds: f64,
-    label: &str,
-    color: &str,
-) -> Result<(), String> {
-    if !time_seconds.is_finite() || time_seconds < 0.0 {
-        return Err("invalid bookmark time".to_string());
-    }
-    let Some(mut conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|err| err.to_string())?;
-    if !clip_exists(&tx, id) {
-        return Err("clip not found".to_string());
-    }
-    let next_seq: i64 = tx
-        .query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM clip_bookmarks WHERE clip_id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
-        .map_err(|err| err.to_string())?;
-    tx.execute(
-        "INSERT INTO clip_bookmarks (clip_id, seq, time_seconds, label, color)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, next_seq, time_seconds, label, color],
-    )
-    .map_err(|err| err.to_string())?;
-    tx.commit().map_err(|err| err.to_string())
-}
-
-pub fn update_bookmark(
-    source: ClipSource,
-    id: i64,
-    seq: i64,
-    label: &str,
-    color: &str,
-) -> Result<(), String> {
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    conn.execute(
-        "UPDATE clip_bookmarks SET label = ?1, color = ?2 WHERE clip_id = ?3 AND seq = ?4",
-        params![label, color, id, seq],
-    )
-    .map_err(|err| err.to_string())?;
-    if conn.changes() == 0 {
-        return Err("bookmark not found".to_string());
-    }
-    Ok(())
-}
-
-pub fn remove_bookmark(source: ClipSource, id: i64, seq: i64) -> Result<(), String> {
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    conn.execute(
-        "DELETE FROM clip_bookmarks WHERE clip_id = ?1 AND seq = ?2",
-        params![id, seq],
-    )
-    .map_err(|err| err.to_string())?;
-    if conn.changes() == 0 {
-        return Err("bookmark not found".to_string());
-    }
-    Ok(())
-}
-
-pub fn remove_clip(source: ClipSource, id: i64) -> Result<(), String> {
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    let row = conn
-        .query_row(
-            "SELECT video_file, thumbnail_file FROM clips WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )
-        .map_err(|_| "clip not found".to_string())?;
-    let (video_file, thumbnail_file) = row;
-
-    // One transaction: a failure between the DELETEs must not strand hashtag
-    // or bookmark rows pointing at a deleted clip.
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|err| err.to_string())?;
-    tx.execute("DELETE FROM clip_bookmarks WHERE clip_id = ?1", params![id])
-        .map_err(|err| err.to_string())?;
-    tx.execute("DELETE FROM clip_hashtags WHERE clip_id = ?1", params![id])
-        .map_err(|err| err.to_string())?;
-    tx.execute("DELETE FROM clips WHERE id = ?1", params![id])
-        .map_err(|err| err.to_string())?;
-    tx.commit().map_err(|err| err.to_string())?;
-
-    let folder = media_folder(source);
-    let _ = fs::remove_file(folder.join(&video_file));
-    let thumb = thumbnail_file.unwrap_or_else(|| thumb_basename_for(&video_file));
-    let _ = fs::remove_file(folder.join(".thumbs").join(&thumb));
-    Ok(())
-}
-
-pub fn rename_clip(source: ClipSource, id: i64, new_stem: &str) -> Result<(), String> {
-    if new_stem.is_empty() || new_stem.chars().any(|c| "\\/:*?\"<>|.".contains(c)) {
-        return Err("invalid clip name".to_string());
-    }
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    let row = conn
-        .query_row(
-            "SELECT video_file, thumbnail_file FROM clips WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )
-        .map_err(|_| "clip not found".to_string())?;
-    let (old_video, old_thumb) = row;
-
-    let folder = media_folder(source);
-    let ext = Path::new(&old_video)
-        .extension()
-        .map(|e| e.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let new_video = if ext.is_empty() {
-        new_stem.to_string()
-    } else {
-        format!("{new_stem}.{ext}")
-    };
-    let new_thumb = format!("{new_stem}.png");
-
-    if folder.join(&new_video).is_file() {
-        return Err("a clip with that name already exists".to_string());
-    }
-
-    fs::rename(folder.join(&old_video), folder.join(&new_video))
-        .map_err(|_| "could not rename video file".to_string())?;
-
-    let old_thumb_name = old_thumb.unwrap_or_else(|| thumb_basename_for(&old_video));
-    let thumb_renamed = fs::rename(
-        folder.join(".thumbs").join(&old_thumb_name),
-        folder.join(".thumbs").join(&new_thumb),
-    )
-    .is_ok();
-
-    if let Err(err) = conn.execute(
-        "UPDATE clips SET video_file = ?1, thumbnail_file = ?2 WHERE id = ?3",
-        params![
-            new_video,
-            if thumb_renamed {
-                Some(&new_thumb)
-            } else {
-                None
-            },
-            id
-        ],
-    ) {
-        // Restore the prior filename if the catalog update fails.
-        let _ = fs::rename(folder.join(&new_video), folder.join(&old_video));
-        if thumb_renamed {
-            let _ = fs::rename(
-                folder.join(".thumbs").join(&new_thumb),
-                folder.join(".thumbs").join(&old_thumb_name),
-            );
-        }
-        return Err(err.to_string());
-    }
-    Ok(())
-}
-
-pub fn save_thumbnail_capture(source: ClipSource, id: i64, png: &[u8]) -> Result<String, String> {
-    if png.is_empty() || png.len() > 8 * 1024 * 1024 {
-        return Err("invalid thumbnail".to_string());
-    }
-    if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Err("thumbnail must be png".to_string());
-    }
-    let Some(conn) = open(source, false) else {
-        return Err("catalog unavailable".to_string());
-    };
-    let video_file = video_file_for(&conn, id)?;
-    let stem = Path::new(&video_file)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "invalid video name".to_string())?;
-    let thumb_file = format!("{stem}.png");
-    let folder = media_folder(source).join(".thumbs");
-    fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
-    fs::write(folder.join(&thumb_file), png).map_err(|err| err.to_string())?;
-    conn.execute(
-        "UPDATE clips SET thumbnail_file = ?1 WHERE id = ?2",
-        params![thumb_file, id],
-    )
-    .map_err(|err| err.to_string())?;
-    if conn.changes() == 0 {
-        return Err("clip not found".to_string());
-    }
-    Ok(thumb_file)
 }

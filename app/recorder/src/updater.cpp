@@ -26,6 +26,11 @@ std::filesystem::path module_dir()
 // tree) and returns an empty path when it is not present.
 std::filesystem::path resolve_updater(const std::filesystem::path& base)
 {
+    std::error_code recovery_error;
+    const auto recovery = base / ".update-recovery" / "Updater.exe";
+    if (std::filesystem::is_regular_file(base / ".update-transaction" / "journal.json", recovery_error) &&
+        std::filesystem::is_regular_file(recovery, recovery_error))
+        return recovery;
     const std::filesystem::path candidates[] = {
         base / "Updater.exe", // installed / CMake copy (app root)
         // Dev: running the recorder straight from a build tree, before the copy.

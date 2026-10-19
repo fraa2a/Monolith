@@ -4,6 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { attachState } from "./state-stream";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Phase =
@@ -33,6 +34,7 @@ interface InstalledVersions {
 }
 
 interface UpdateState {
+  revision: number;
   phase: Phase;
   tag: string;
   notesUrl: string;
@@ -352,13 +354,11 @@ function BufferBar({ state }: { state: UpdateState }) {
 export function Updater() {
   const [state, setState] = useState<UpdateState | null>(null);
 
-  useEffect(() => {
-    invoke<UpdateState>("updater_state").then(setState).catch(() => {});
-    const un = listen<UpdateState>("update-state", (e) => setState(e.payload));
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
+  useEffect(() => attachState<UpdateState>(
+    receive => listen<UpdateState>("update-state", event => receive(event.payload)),
+    () => invoke<UpdateState>("updater_state"),
+    setState,
+  ), []);
 
   if (!state) {
     return (
@@ -367,6 +367,7 @@ export function Updater() {
         <CheckingState />
         <BufferBar
           state={{
+            revision: 0,
             phase: "checking",
             tag: "",
             notesUrl: "",

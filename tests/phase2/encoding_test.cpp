@@ -30,6 +30,20 @@ int main() {
     video.push_bgra(bgra.data(), 64 * 4, 64, 64);
     video.flush(); CHECK(packets > 0); video.close();
 
+    encoding::AudioEncoder audio;
+    encoding::AudioEncoder::Config acfg;
+    std::vector<int64_t> audio_dts;
+    CHECK(audio.open(acfg, [&](auto p) { audio_dts.push_back(p.dts_usec); }));
+    std::vector<float> pcm(4800 * 2, 0.25f);
+    audio.push_pcm(reinterpret_cast<const uint8_t*>(pcm.data()), static_cast<int>(pcm.size() * 4),
+        48000, 2, 32, true, 600000000);
+    audio.close(); CHECK(!audio_dts.empty() && audio_dts.front() > 599000000);
+    audio_dts.clear();
+    CHECK(audio.open(acfg, [&](auto p) { audio_dts.push_back(p.dts_usec); }));
+    audio.push_pcm(reinterpret_cast<const uint8_t*>(pcm.data()), static_cast<int>(pcm.size() * 4),
+        48000, 2, 32, true, 700000000);
+    audio.close(); CHECK(!audio_dts.empty() && audio_dts.front() > 699000000);
+
     encoding::TrackMixer mixer;
     CHECK(!mixer.open(48000, 65, {}));
     std::promise<void> called;
